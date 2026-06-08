@@ -1,1 +1,43 @@
+# IDE
 .idea/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Env / secrets
+.env
+.env.*
+*.local
+
+# Training artefacts
+ckpts/
+checkpoints/
+outputs/
+runs/
+logs/
+*.log
+
+# WandB / experiment trackers
+wandb/
+mlruns/
+
+# Eval results
+eval/results/
+
+# Buffer dumps (large, regenerated per run)
+buffer_dumps/
+*.lmdb
+*.sqlite
+*.sqlite-journal

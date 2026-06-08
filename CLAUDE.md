@@ -4,22 +4,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 仓库性质
 
-这是一个**研究设计文档仓库**，不含可执行代码。所有文件为 Markdown 格式的 Continual Learning 设计文档。仓库所有者：@孙豪。
+Continual Learning over Agentic LLM 的训练项目。仓库所有者：@孙豪。
 
-- **无构建/测试/lint 命令** — 仓库内无代码，所有操作均为 Markdown 编辑
-- **无 git 仓库** — 文件版本通过手动备份管理，不做 commit/push
+- **设计文档**：全部位于 `doc/`，是项目的需求与设计依据
+- **代码骨架**：`replay_buffer/`、`trainer/`、`configs/`、`eval/`、`scripts/`、`tests/`
+- **训练框架**：[verl](https://github.com/volcengine/verl)（pip 安装，不 fork，详见 `doc/VerlIntegration.md`）
+
+## 目录结构
+
+```
+agentic_cl_research/
+├── CLAUDE.md                # 本文件，AI 协作指南
+├── README.md                # 项目入口
+├── pyproject.toml           # 项目元数据与依赖
+├── doc/                     # 设计文档（详见下表）
+├── replay_buffer/           # 7 桶 Buffer 实现（与 verl 解耦的纯 Python 模块）
+├── trainer/                 # CL Loss 与训练入口（基于 verl，零源码改动）
+├── configs/                 # 20 个实验的 yaml
+├── eval/                    # ClawEval 评测
+├── scripts/                 # 训练 / 评测启动脚本
+└── tests/                   # 单元测试
+```
 
 ## 文档结构与关系
 
+所有设计文档位于 `doc/`：
+
 | 文件 | 内容 | 定位 |
 |------|------|------|
-| `CL_Update_Sunhao.md` | CL 总设计：Loss 公式、Replay Buffer、实验路线、评测指标、参考文献 | **主文档**，其他文档的上下文依赖 |
-| `BucketDesign.md` | Replay Buffer 7 桶结构的详细论证（为什么这样分桶、为什么不用难度分桶、quota 推导过程） | CL_Update_Sunhao.md 中 Replay Buffer 部分的完整展开 |
-| `BucketDesign_compressed.md` | BucketDesign.md 的精简版，仅保留结论和公式 | 快速查阅版 |
-| `ContinualLearning.md` | CL Loop 全流程概述：数据获取、更新策略、工具环境、评测 | 多人协作总览，各模块负责人分工 |
-| `ClawEval_Metadata.md` | ClawEval 评测数据集的任务分类、难度分布、工具能力层、模型排名 | 评测基准参考 |
+| `doc/CL_Update_Sunhao.md` | CL 总设计：Loss 公式、Replay Buffer、实验路线、评测指标、参考文献 | **主文档**，其他文档的上下文依赖 |
+| `doc/BucketDesign.md` | Replay Buffer 7 桶结构的详细论证（为什么这样分桶、为什么不用难度分桶、quota 推导过程） | `CL_Update_Sunhao.md` 中 Replay Buffer 部分的完整展开 |
+| `doc/BucketDesign_compressed.md` | `BucketDesign.md` 的精简版，仅保留结论和公式 | 快速查阅版 |
+| `doc/ContinualLearning.md` | CL Loop 全流程概述：数据获取、更新策略、工具环境、评测 | 多人协作总览，各模块负责人分工 |
+| `doc/ClawEval_Metadata.md` | ClawEval 评测数据集的任务分类、难度分布、工具能力层、模型排名 | 评测基准参考 |
+| `doc/VerlIntegration.md` | verl 集成指导：是否 fork、Replay Buffer 接入方式、推荐工程结构、风险点 | 实现路径参考 |
 
-阅读顺序建议：`ContinualLearning.md`（全貌）→ `CL_Update_Sunhao.md`（技术细节）→ `BucketDesign.md`（分桶论证）→ `ClawEval_Metadata.md`（评测数据）。
+阅读顺序建议：`ContinualLearning.md`（全貌）→ `CL_Update_Sunhao.md`（技术细节）→ `BucketDesign.md`（分桶论证）→ `ClawEval_Metadata.md`（评测数据）→ `VerlIntegration.md`（落地工程）。
 
 ## 核心设计要点
 
@@ -64,9 +84,11 @@ Phase 1 (B1) → Phase 2 (K1-K5, K2-R) ──┐
 
 ### $L_{replay}$ 权重公式
 
-$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \gamma^{\text{block}(t)} \cdot \beta_{\text{type}(t)},\; q_5,\; q_{95}\big)\Big)$$
+$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \big(\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}\big),\; q_5,\; q_{95}\big)\Big)$$
 
-三维度：Priority（trajectory 级）× 块位置衰减（$\gamma$=0.97, $K$=20）× final_answer boost（$\beta_{\text{final}}$=2.0）。实验对比 W0（均权）vs W2（主方案）。
+两维度：Priority（trajectory 级）× **U 形块权重**（首尾两端高、中间低；起步 $\gamma=\delta=0.88$）。块按**动作块**（`<think>` / `<toolcall>` / `<observation>` / `<final_answer>` 等结构标签）划分，$K_i$ 因 trajectory 而异——具体标签集合与切分规则待数据到位后定，代码 fallback 用等长 $K=20$。Phase 3 对照 W0（均权）vs W2（主方案）。
+
+> **2026-06-08 反转**：原方案为单调块衰减 + final_answer boost；改为 U 形是因为"末端的重要性不止 final_answer 一个 token 段，靠近末端的多个块都重要"，单点 boost 抓不住整段。详见 `doc/CL_Update_Sunhao.md`。
 
 ## 术语与缩写
 

@@ -1,22 +1,45 @@
-# 模型更新与 Continual Learning 设计
+# Continual Learning Loop
+
+**目标：** 在模拟环境中验证整个 Continual Learning loop 是否可行
+**原则：** 以模型能力提升为主要目标，不迭代优化 harness
+**方式：** 需要继续根据明确的任务来调研
 
 ---
 
-## 目录
+## 1. 用户数据如何获得
 
-- [调研思路与 CL Loss 设计](#调研思路与-cl-loss-设计)
-- [Replay Buffer 设计](#replay-buffer-设计)
-- [$L_{replay}$ 权重 $w$ 计算规则](#l_replay-权重-w-计算规则)
-- [实验参数组合设计](#实验参数组合设计)
-- [评测指标体系](#评测指标体系)
-- [待解决问题](#待解决问题)
-- [参考文献](#参考文献)
+负责人：@吴健 | 方式：真实环境模拟，模拟 user 使用 agent 任务
+
+**优势与挑战：**
+- 模拟数据质量高于真实数据，但多样性不足
+- 直接按最优轨迹模拟对话，相当于跳过真实场景回流数据的质量过滤流程
+
+**数据库构建：**
+- 需要构建 user 用户画像库 + seed query 库
+- 直接从回流数据中提取用户 query 作为 seed query
+- 获取一个 user 对应一个具体 workspace，指定 query 时默认持续使用该 user 的 workspace
+  - 问题：可能导致同一个 query 不能问多次
+
+**多样性保证：**
+- 建立行业任务库，根据回流数据做分析归类
+
+**待解决问题：**
+- 操作现有文件的行为很难模拟，能否规避？如何模拟？
 
 ---
 
-## 调研思路与 CL Loss 设计
+## 2. 如何更新
 
-### 调研思路概要
+负责人：@孙豪 | 方式：正常上线 2 周更新一次，使用 RL 模拟 rollout 128 更新，使用 RL 验证策略
+
+**在 RL verl 架构上修改，支持 Continual Learning。**
+
+**Rollout 策略调整：**
+- 正常：rollout 32×8
+- 调整为：1024×2 或 4096×2
+- 效果：query 多样性提高，单 query rollout 下降，一个 step 更久，一个 step 存一次
+
+# @孙豪 调研思路
 
 ```text
 新任务 rollout → compute reward / advantage → 计算 L_rl
@@ -25,17 +48,12 @@ replay buffer 采样旧数据 → 计算 L_replay
 最后按权重汇总 loss → update
 ```
 
-### 核心想法
+**核心想法：** 在现有 RL 更新流程上加入 replay 和策略约束，使模型在学习新任务时尽量减小对旧任务能力的遗忘。
 
-在现有 RL 更新流程上加入 replay 和策略约束，使模型在学习新任务时尽量减小对旧任务能力的遗忘。
-
-### CL Loss 公式
-
+CL loss：
 ---
 $$ L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_4 L_{ent} $$
 ---
-
-### 各 Loss 项定义
 
 其中各项含义如下：
 
@@ -52,11 +70,15 @@ $$ L_{replay} = \mathbb{E}_{(s,a) \sim Buffer}[-\log \pi_{new}(a|s) \cdot w] $$
 
 $$ L_{ent} = -\mathbb{E}_{s \sim \text{online rollout}}[H(\pi_{new}(\cdot|s))] = \mathbb{E}_{s}\left[\sum_a \pi_{new}(a|s) \log \pi_{new}(a|s)\right] $$
 
+> **$L_{ent}$ 公式直觉**：本质就是"在 entropy 前面加个负号"。
+> - $H$（entropy）想被**最大化**（让分布更平均、更不确定，防止坍缩）
+> - 但训练框架是 **minimize loss**，所以加负号 → minimize $(-H)$ 等价于 maximize $H$
+> - 两个等价写法的关系：$H = -\sum \pi \log \pi$（定义自带负号），所以 $-H = \sum \pi \log \pi$（两个负号抵消，看起来就没负号了）
+> - **信息论 entropy 越大 = 分布越平均 = 越不确定 = 多样性越高**（与日常语义"有序/确定"正好相反）
+
 $$ L_{reg} = ||\theta - \theta_{prev}||^2 \quad \text{（弃用，权重 0）} $$
 
 其中，$w$ 表示 replay 样本的权重，详见下方"$L_{replay}$ 权重 $w$ 计算规则"。
-
-### Entropy 项必加的理由
 
 > **为什么 $L_{ent}$ 默认开启（直接进 B1 配置，不放 Phase 6 探索）：**
 >
@@ -66,11 +88,9 @@ $$ L_{reg} = ||\theta - \theta_{prev}||^2 \quad \text{（弃用，权重 0）} $
 >
 > **默认 $\lambda_4 = 0.001$**；若 output entropy 在前 100 step 下降 > 50%，调大到 0.005 ~ 0.01。
 
-## Replay Buffer 设计
+**Replay buffer 设计：**
 
-### 7 桶结构
-
-按能力/领域分 7 桶，桶内按抗遗忘 priority 存留，禁止跨桶淘汰。
+**结构：按能力/领域分 7 桶，桶内按抗遗忘 priority 存留，禁止跨桶淘汰。**
 
 ```text
 ReplayBuffer [195]
@@ -110,8 +130,6 @@ ReplayBuffer [195]
 
 > OfficeQA 单独成桶：办公语境与一般 knowledge 遗忘模式不同，并入 Knowledge/Analysis 会被稀释。不纳入 multimodal(4)：模态不同、数据太少、目标不一致。纯文本总计 195 任务。
 
-### 核心参数与 Quota 分配
-
 **核心参数：**
 - 总容量 $C$：10k–50k 条轨迹
 - 桶数 $B = 7$
@@ -127,9 +145,7 @@ $$q_i = q_{min} + (C - B \cdot q_{min}) \cdot \frac{n_i^{0.5}}{\sum_j n_j^{0.5}}
 
 **25k 示例**（$q_{min}=2000$）：Workflow≈4319, SysOps≈4272, Dialogue≈3938, Finance≈3337, Communication≈3092, Knowledge≈3047, OfficeQA≈2995
 
-### Priority 定义（抗遗忘）
-
-**抗遗忘价值，不使用 reward 绝对值**
+**Priority 定义：抗遗忘价值，不使用 reward 绝对值**
 
 $$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket\_difficulty_i)$$
 
@@ -142,8 +158,6 @@ $$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket
 
 > 高 priority = 代表旧能力 + 已出现退化 + 稀有 + 不重复 + 覆盖边界。**Priority 反映的是"这条轨迹对防止遗忘有多重要"，而非"这条轨迹当时取得了多高 reward"。** 随训练推进 reward 整体上升，若按 reward 绝对值排优先级，旧轨迹会系统性被淘汰，buffer 退化为滑动窗口，失去 CL 意义。
 
-### 淘汰规则与采样规则
-
 **淘汰规则：桶内淘汰，禁止跨桶挤出**
 - 桶未满 → 新轨迹直接接纳
 - 桶已满 → 只在该桶内淘汰最低 priority 轨迹
@@ -154,9 +168,7 @@ $$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket
 1. **采桶**：混合策略——部分按 soft target 比例 + 部分按均匀，兼顾大桶覆盖与长尾能力；长期无新任务的桶给予 starvation_boost
 2. **桶内采轨迹**：按 priority 加权随机采样，不贪心选 top-k，避免只重复"明星轨迹"
 
-### 冷启动处理
-
-
+**冷启动处理：**
 - Buffer 全空 → replay_ratio = 0，纯学新任务
 - 轨迹积累未达 warmup 阈值 → replay_ratio 线性爬升至目标值
 - 空桶 quota 暂不分配给其他桶，等轨迹到来时优先接纳
@@ -165,75 +177,19 @@ $$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket
 
 ### $L_{replay}$ 权重 $w$ 计算规则
 
-#### 最终公式
+> **公式与超参的单一信源在 [`CL_Update_Sunhao.md` § $L_{replay}$ 权重 $w$ 计算规则](CL_Update_Sunhao.md#l_replay-权重-w-计算规则)**。本文档不再重复，避免双份维护漂移。
 
-$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \gamma^{\text{block}(t)} \cdot \beta_{\text{type}(t)},\; q_5,\; q_{95}\big)\Big)$$
+简版（截至 2026-06-08）：
 
-三个独立维度合成：
+$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \big(\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}\big),\; q_5,\; q_{95}\big)\Big)$$
 
-| 维度 | 作用对象 | 公式 | 起步超参 |
-|---|---|---|---|
-| **A. Priority（trajectory 级）** | 每条轨迹一个值 | 4 信号融合（forgetting_risk / rarity / diversity / difficulty） | $\alpha_1$=0.4, $\alpha_2$=$\alpha_3$=$\alpha_4$=0.2 |
-| **B. 块位置衰减（token 级，粗粒度）** | 轨迹分为 $K$ 块，块内等权 | $\gamma^{\text{block}(t)}$ | $\gamma$=0.97，$K$=20（待数据后细化） |
-| **C. 特殊 token boost（token 级，针对 final_answer）** | 识别到 final_answer 段时单独乘 boost | $\beta_{\text{final}}$ if 在 final_answer 段，否则 1.0 | $\beta_{\text{final}}$=2.0 |
+两维度：Priority（trajectory 级，4 信号融合）× **U 形块权重**（首尾两端高、中间低；起步 $\gamma=\delta=0.88$）。块按**动作块**（`<think>` / `<toolcall>` / `<observation>` / `<final_answer>` 等结构标签）划分，$K_i$ 因 trajectory 而异——具体标签集合与切分规则待数据到位后定，代码 fallback 用等长 $K=20$。Phase 3 对照 W0（均权）vs W2（主方案）。
 
-最后做 **clip 到 [5%, 95%] 分位数 → normalize**（保证 batch 内 $\sum w$ 归一）。
+> **2026-06-08 反转**：原方案为单调块衰减 + final_answer boost；改为 U 形是因为"末端的重要性不止 final_answer 一个 token 段，靠近末端的多个块都重要"，单点 boost 抓不住整段。详细论证、备选方案、与 advantage 的关系见主文档。
 
-#### 三种实验方案（Phase 3 对照）
+### 实验参数组合设计
 
-| 编号 | 方案 | 公式 | 角色 |
-|---|---|---|---|
-| **W0** | Baseline 均分 | $w_t^{(i)} = \frac{1}{N \cdot \|\tau_i\|}$（轨迹等权 + 内 token 平均） | 等权对照 |
-| **W2** | Priority × 块衰减 × final_answer boost + clip | 上面最终公式 | 主方案，**替换原 R4-w 实验** |
-
-> 中间版本 W1（不带 clip）已合并入 W2，实验阶段直接对比 W0 vs W2。如 W2 表现差，再 ablation 去掉某个组件定位原因。
-
-#### 关键超参起步值
-
-| 超参 | 起步值 | 说明 |
-|---|---|---|
-| $\gamma$（块衰减底数） | **0.97** | $K$=20 时块 19 权重 = $0.97^{19} \approx 0.56$，首尾比 ~1.78×（温和） |
-| $K$（块数） | 20 | 1000 token 时每块 50 token，待数据后调整 |
-| $\beta_{\text{final}}$ | **2.0** | final_answer 段权重抬到 ~1.12（略超首块 1.0）|
-| Priority 4 信号融合权重 $\alpha$ | (0.4, 0.2, 0.2, 0.2) | forgetting_risk 占主导 |
-| Clip 分位数 | (5%, 95%) | 防极端值，对 outlier 鲁棒 |
-
-#### 设计动机
-
-- **Priority 加权**：让"防遗忘价值高"的轨迹对 loss 贡献更大（文献 A9）；
-- **块衰减**：早期 token 决定整条轨迹的"分支"（选哪个工具、走哪条路径），加权使模型对早期高方差决策点学习更准；
-- **Final_answer boost**：抵消块衰减导致 final_answer 权重过低，确保最终输出仍受重视；
-- **Clip**：防止单条样本因 priority + 块位置组合产生极端权重，放大噪声；
-- **整体剪枝（剪 $w_t^{(i)}$ 整体而非仅 priority）**：极端值由 priority、$\gamma^t$ 组合放大，必须对最终乘积剪枝才能控制。
-
-#### 暂未采用的备选方案（备查）
-
-以下方案在设计阶段评估过但未采用，记录原因便于后续如需扩展：
-
-| 备选方案 | 原理 | 暂不采用的原因 |
-|---|---|---|
-| **Token 级衰减**（$\gamma^t$，而非块衰减） | 每个 token 单独衰减 | 在 1000 token 长度下，$\gamma^t$ 衰减过急（$\gamma$=0.999 末段仍有 0.37），需块级粗粒度替代 |
-| **U 形权重**（$\gamma^t + \delta^{T-t}$） | 首尾都重，中间轻 | 两个指数项相加被相互稀释，量化效果弱（首尾差异 < 5%）；语义不如"final_answer boost"清晰 |
-| **Token 类型加权**（thinking/tool_call/observation 各自 $\beta$） | 按角色精细加权 | 超参从 1 个变为 3~5 个，工程上需可靠 XML 解析；与 advantage 信号易冲突，PoC 阶段过于复杂 |
-| **分段衰减**（每 turn 内独立 $\gamma^t$） | 多轮 agent 每轮开头都被强调 | 需识别 turn 边界，超参随 turn 数线性增长 |
-| **反向加权**（$\gamma^{T-t}$，越靠后越重） | final_answer 直接最重 | 与"加速状态空间收敛"的核心动机冲突；早期决策权重最低，违背设计意图 |
-| **绝对值 clip**（固定 $w_{min}$, $w_{max}$） | 直接限定权重范围 | 需要预知 priority × $\gamma^t$ 的绝对量级；不如百分位数对超参选取鲁棒 |
-| **Adaptive 权重**（GradNorm / Uncertainty Weighting） | 自动平衡各 loss 项梯度范数 | 实现复杂度高；与你现有"固定 $\lambda$ 跑 ablation"流程不兼容；可作为 Phase 6 探索 |
-| **学习式 token 权重**（$w_t$ 作为可学习参数） | 让模型自学权重 | 引入额外网络容量，过度复杂；缺少梯度信号约束 $w$ 的方向 |
-
-#### 与 advantage 信号的关系
-
-注意 GRPO 的真实训练强度 = $w \cdot A$。本方案 traj/query=2 下 advantage 量级压缩到 ±0.15 左右（vs traj/query=8 时 ±0.4），weight 设计在弱信号下作用更突出：
-
-- **weight 整体差异控制在 2~3×** 范围（避免 weight 过度主导 advantage）；
-- **关键位置（final_answer）通过 $\beta_{\text{final}}$ 显式 boost**，补足弱 advantage 下 final_answer 学习不足；
-- **不靠激进衰减**（$\gamma$ 过小会让末段完全学不到，配合弱 advantage 双重削弱）。
-
-监控指标见"评测指标体系"段，重点关注末块 token loss、final_answer 准确率、trajectory 末段 entropy。
-
-## 实验参数组合设计
-
-### 参数符号约定
+#### 参数符号约定
 
 | 参数 | 含义 | 默认 / 可调 |
 |---|---|---|
@@ -243,7 +199,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \gamm
 | $\lambda_4$ | $L_{ent}$ 权重 | **所有 Phase 固定 0.001，防 Echo Trap，不参与 ablation** |
 | $L_{reg}$ | 参数 L2 正则 | **弃用，权重为 0** |
 
-### 全局实验路线
+#### 全局实验路线
 
 ```
 Phase 1 (B1)          建立纯 RL 遗忘基线
@@ -263,7 +219,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 ---
 
-### 实验数量与成本总览
+#### 实验数量与成本总览
 
 | Phase | 训练数 | 备注 |
 |---|---|---|
@@ -281,7 +237,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 ---
 
-### Phase 1：Baseline
+#### Phase 1：Baseline
 
 **验证目标**：建立纯 RL 遗忘基线，量化灾难性遗忘程度。
 
@@ -293,7 +249,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 ---
 
-### Phase 2：KL 单独验证
+#### Phase 2：KL 单独验证
 
 **验证目标**：KL 约束能否减缓遗忘？$\pi_{ref}$ 选什么？$\lambda_2$ 多大？KL 在有 replay 时是否仍有效？
 
@@ -304,21 +260,21 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | K3 | $\pi_0$ | 0.10 | 0 | 强 KL + 初始锚定 |
 | K4 | $\pi_{t-1}$（上阶段 ckpt） | 0.05 | 0 | 中 KL + 阶段锚定（vs K2） |
 | K5 | $\pi_{t-1}$ | 0.10 | 0 | 强 KL + 阶段锚定（vs K3） |
-| K2-R | $\pi_0$ | 0.05 | 0.5 | 交互验证：K2 + replay（与 R4-K 对偶） |
+| **K2-R** | $\pi_0$ | 0.05 | **0.5** | **K2 + replay，交互验证（与 R4-K 对偶）** |
 
 **对照轴：**
 
 | 对照 | 实验组 | 变化变量 | 验证 |
 |---|---|---|---|
-| $\lambda_2$ 扫描 | K1 → K2 → K3 | 0.01 → 0.05 → 0.10 | KL 权重影响 |
-| $\pi_{ref}$ 锚点 | K2 ↔ K4，K3 ↔ K5 | $\pi_0$ → $\pi_{t-1}$ | 全局 vs 阶段性 |
+| $\lambda_2$ 扫描 | K1→K2→K3 | 0.01→0.05→0.10 | KL 权重影响 |
+| $\pi_{ref}$ 锚点 | K2↔K4，K3↔K5 | $\pi_0$ → $\pi_{t-1}$ | 全局 vs 阶段性 |
 | KL × Replay 交互 | K2 → K2-R | $\lambda_3$：0 → 0.5 | KL 在有 replay 时是否冗余 |
 
 **输出**：选出 top-2 KL 配置（K-best1, K-best2）供 Phase 4 组合使用。
 
 ---
 
-### Phase 3：Replay 单独验证
+#### Phase 3：Replay 单独验证
 
 **验证目标**：桶结构和 priority 是否真有价值（vs CLEAR 单 buffer）？Replay 在有 KL 时是否仍有效？
 
@@ -330,7 +286,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | R3 | 0 | 0.5 | 25k | 两级采样（quota + 均匀混合） | BucketDesign 基础版（vs R0） |
 | R4 | 0 | 0.5 | 25k | 两级采样 + 抗遗忘 priority | BucketDesign 完整版（vs R3） |
 | R5 | 0 | 0.5 | 25k | 两级采样 + reward-based priority | priority 类型对照（vs R4） |
-| R4-w | 0 | 0.5 | 25k | 同 R4 + W2 方案（priority × 块衰减 × final_answer boost + clip） | Reweighted Replay 主方案，详见 $L_{replay}$ 权重 $w$ 计算规则段 |
+| R4-w | 0 | 0.5 | 25k | 同 R4 + W2 方案（priority × U 形块权重 + clip） | Reweighted Replay 主方案，详见 $L_{replay}$ 权重 $w$ 计算规则段 |
 | R6 | 0 | 0.8 | 25k | 同 R4 | 高 replay 权重（vs R4） |
 | R4-K | 0.05 | 0.5 | 25k | 同 R4 | 交互验证：R4 + KL（与 K2-R 对偶） |
 
@@ -341,7 +297,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | 桶结构 vs CLEAR | R0 → R3 | 单 buffer reservoir → 两级 + 桶配额 | 桶结构在长尾分布下是否补偿稀释 |
 | 是否使用 priority | R3 → R4 | 桶内均匀 → priority | 抗遗忘 priority 价值 |
 | Priority 类型 | R4 → R5 | 抗遗忘 → reward | BucketDesign 核心主张 |
-| Priority 用法 | R4 → R4-w | 仅采样（$w$ 等权）→ W2 方案（priority × 块衰减 × final_answer boost + clip） | Reweighted Replay 综合效果 |
+| Priority 用法 | R4 → R4-w | 仅采样（$w$ 等权）→ W2 方案（priority × U 形块权重 + clip） | Reweighted Replay 综合效果 |
 | $\lambda_3$ 权重 | R4 → R6 | 0.5 → 0.8 | replay 权重对新/旧任务平衡 |
 | KL × Replay 交互 | R4 → R4-K | $\lambda_2$：0 → 0.05 | Replay 在有 KL 时是否冗余 |
 
@@ -359,7 +315,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 ---
 
-### Phase 4：KL × Replay 组合验证
+#### Phase 4：KL × Replay 组合验证
 
 **验证目标**：KL + Replay 组合是否互补？冗余还是协同？最优组合在哪？
 
@@ -383,7 +339,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 ---
 
-### Phase 5：Rollout 规模扩展
+#### Phase 5：Rollout 规模扩展
 
 **验证目标**：Phase 4 最优 CL 配置下，扩大 rollout 规模是否进一步提升效果？
 
@@ -394,7 +350,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 ---
 
-### Phase 6：补充探索项（按需触发）
+#### Phase 6：补充探索项（按需触发）
 
 | 类别 | 探索项 | 启动条件 |
 |---|---|---|
@@ -402,11 +358,11 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | 高优先（有明确触发逻辑） | **X7a** Adaptive $\lambda_4$（entropy 阈值反馈） | Phase 4 后某些 query entropy 不稳定 |
 | 低优先（按需探索） | X1-X4 / X7b：Soft reward 加权、Advantage 温度系数、动态 $\lambda_2$/$\lambda_3$ 调度、桶间亲和度加权 replay、Per-bucket 自适应 $\lambda_4$ | 资源充足或遇到对应问题时启动 |
 
-> **为什么 X6/X7 不进 Phase 1-4**：固定 $\lambda_2$/$\lambda_4$ 是 ablation 可比性的前提；引入动态调度会让 K2-R / R4-K / C 系列对照变量失控。
+> **为什么 X6/X7 不进 Phase 1-4**：固定 $\lambda_2$/$\lambda_4$ 是 ablation 可比性的前提；引入动态调度会让 K2-R / R4-K / C 系列对照变量失控。X5（蒸馏）/ 时间衰减等已排除（部署约束或场景不适用）。
 
 ---
 
-## 评测指标体系
+### 评测指标体系
 
 | 指标 | 定义 | 用途 |
 |------|------|------|
@@ -422,16 +378,16 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 ---
 
-## 待解决问题
+### 待解决问题
 
 1. $\pi_{ref}$ 具体使用哪个参考策略（初始模型 $\pi_0$ vs 上一阶段 $\pi_{t-1}$）→ Phase 2 实验回答
 2. replay buffer 的采样单位（整条轨迹 vs token-level segment）与采样比例 → Phase 3 实验回答
 3. 抗遗忘 priority 的 4 个信号（forgetting risk / rarity / diversity / within-bucket difficulty）的具体融合公式与权重 → Phase 3 R4/R5 对比实验回答
 4. 远距离桶 replay 的梯度冲突处理策略（降权 vs 投影 vs 自适应）→ Phase 6 X4 探索
 
-## 参考文献
+### 参考文献
 
-### A. Replay Buffer 优化 & Continual RL
+#### A. Replay Buffer 优化 & Continual RL
 
 | # | 论文 | 作者 | 年份 | 核心观点 | 链接 |
 |---|------|------|------|----------|------|
@@ -446,7 +402,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | A9 | Prioritized Generative Replay | Renhao Wang et al. | 2023 | 最优 replay 分布可由正则化 RL 目标推导，TD-error 驱动的占据比率可将离策略数据拉向在线策略最优分布 | [arxiv](https://arxiv.org/abs/2311.11557) |
 | A10 | Adaptive Replay Buffer for Offline-to-Online RL | Chihyeon Song et al. | 2025 | 固定数据混合比在 offline-to-online RL 中导致早期性能退化和上限受限；需自适应调整在线/离线数据比例 | [arxiv](https://arxiv.org/abs/2512.10510) |
 
-### B. LLM Agent 持续学习 & RL 训练
+#### B. LLM Agent 持续学习 & RL 训练
 
 | # | 论文 | 作者 | 年份 | 核心观点 | 链接 |
 |---|------|------|------|----------|------|
@@ -457,7 +413,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | B5 | BEPA: Bi-level Expert-to-Policy Assimilation | Zezhou Wang et al. | 2025 | 每 task 维护一条动态 cache 轨迹，用 on-policy 成功覆盖旧轨迹，比静态 off-policy expert 显著降低分布偏移（JS 散度 0.037 vs 0.168） | [arxiv](https://arxiv.org/abs/2601.05787) |
 | B6 | Continual Policy Distillation from Distributed RL Teachers | Yuxuan Li et al. | 2025 | 解耦 continual RL 为分布式单任务 RL + 策略蒸馏，恢复 >85% teacher 性能，任务遗忘 <10% | [arxiv](https://arxiv.org/abs/2507.05386) |
 
-### C. GUI Agent RL & 持续学习
+#### C. GUI Agent RL & 持续学习
 
 | # | 论文 | 作者 | 年份 | 核心观点 | 链接 |
 |---|------|------|------|----------|------|
@@ -465,7 +421,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | C2 | Continual GUI Agents | Ziwei Liu et al. | 2026 | GUI 分布随时间变化，现有方法无法维持稳定 grounding；提出持续学习框架应对 GUI 分布偏移 | [arxiv](https://arxiv.org/abs/2603.11395) |
 | C3 | GUI Agents with RL: Toward Digital Inhabitants | Junan Hu et al. | 2024 | SFT 无法处理长程信用分配/分布偏移/安全探索，RL 对 GUI 自动化至关重要 | [arxiv](https://arxiv.org/abs/2410.18082) |
 
-### D. 经典基础方法
+#### D. 经典基础方法
 
 | # | 论文 | 作者 | 年份 | 核心观点 | 链接 |
 |---|------|------|------|----------|------|
@@ -474,3 +430,27 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 ---
 ---
 
+## 3. 工具环境（Agent Framework）
+
+负责人：@郑乃榕 | 方式：通用工具环境，不需要多样性
+
+**待办：**
+- 需要一套自己的简单 agent loop harness 实现，参考 hermes 等
+- 只做必要的工具实现，约 30 个
+
+**待确认：**
+- 模型是否需要自己优化代码、优化 harness？
+- 选择 openclaw / hermes / 模拟工具？
+
+---
+
+## 4. 评测
+
+负责人：@杨益博 | 方式：全面能力评测在外部，一个 step 做一次评测
+
+---
+
+## 5. 与之前方案的区别
+
+1. **轨迹自生成** — 模型自己产出训练轨迹
+2. **大循环** — 每次迭代数据量大
