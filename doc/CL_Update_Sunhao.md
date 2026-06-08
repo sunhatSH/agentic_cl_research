@@ -169,6 +169,8 @@ $$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket
 
 $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \big(\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}\big),\; q_5,\; q_{95}\big)\Big)$$
 
+**作用域：仅 response tokens（模型生成部分）**。用户请求（prompt）不参与 loss 计算，也不参与块切分与权重分配——$t$ 从 response 首 token 开始计数，block(t) 的定义域 = response 内的动作块序列。与 verl 的 `response_mask` 作用域一致。
+
 两个独立维度合成：
 
 | 维度 | 作用对象 | 公式 | 起步超参 |
@@ -178,23 +180,28 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \big(
 
 最后做 **clip 到 [5%, 95%] 分位数 → normalize**（保证 batch 内 $\sum w$ 归一）。
 
-##### 块的定义：按动作块（action block）而非等长切分
+##### 块的定义：按动作块（action block）切分，退化时回退等长切分
 
-**不**采用"固定 $K$ 个等长 token 段"的切法（原方案）。改为按 trajectory 内的**结构标签**自然划分动作块，例如：
+**优先使用动作块切分**，按 trajectory 内的**结构标签**自然划分：
 
-- `<think>...</think>` — 思考块
+- `思索...完结` — 思考块
 - `<toolcall>...</toolcall>` — 工具调用块
 - `<observation>...</observation>` — 工具返回观测块
 - `<final_answer>...</final_answer>` — 最终回答块
-- 其他可能的结构（待数据观察后补充）
+- 其他可能的结构（待数据观察后补充，通过 `configs/base.yaml` 的 `block_types` 配置）
+
+**退化规则**：当轨迹无法解析动作块（无结构标签 / 标签不合法），或解析后仅得到 $K_i = 1$（整条轨迹只有一块 = 无 U 形可做），自动退化为**等长 token 切分**（fallback_K=20）。退化不报错，不丢弃样本——保证任何格式的轨迹都能拿到权重。
+
+**长块二次切分**：单个动作块超过阈值（默认 100 tokens）时，在块内做等长二次切分，子块继承父块的 U 形权重（块内不再做微 U）。避免一个 500-token 的长思考块和 30-token 的 toolcall 块获得相同分辨率。
 
 **理由**：
-1. **等长切分的中间点没有语义意义**——一个 50-token 的 `<think>` 和一个 200-token 的 `<toolcall>` 在等长切分下被混在同一块里，权重曲线对模型实际学到的"早期决策 vs 末端总结"区分度弱；
+1. **等长切分的中间点没有语义意义**——一个 50-token 的思索块和一个 200-token 的 `<toolcall>` 在等长切分下被混在同一块里，权重曲线对模型实际学到的"早期决策 vs 末端总结"区分度弱；
 2. **动作块与 agent loop 的语义对齐**——首块通常是首次思考（早期分支决策），末块通常是 final_answer + 邻近思考（结论生成），U 形的"首端重 + 末端重"能直接落到正确的语义段；
-3. **$K_i$ 因 trajectory 而异**——不同任务的动作步数差距很大（简单 QA 可能只有 1 think + 1 final_answer = 2 块；复杂 workflow 可能 10+ 块），用每条轨迹自己的 $K_i$ 而非全局 $K$；
-4. **跨样本可比性**：U 形曲线本质用相对位置 $\text{block}(t) / K_i$，$K_i$ 不同时端点都是 1.0、中点都是最低，clip + normalize 后仍可比。
+3. **$K_i$ 因 trajectory 而异**——不同任务的动作步数差距很大（简单 QA 可能只有 1 思考 + 1 final_answer = 2 块；复杂 workflow 可能 10+ 块），用每条轨迹自己的 $K_i$ 而非全局 $K$；
+4. **跨样本可比性**：U 形曲线本质用相对位置 $\text{block}(t) / K_i$，$K_i$ 不同时端点都是 1.0、中点都是最低，clip + normalize 后仍可比；
+5. **退化兜底**：纯文本轨迹 / 标签解析失败 / $K_i=1$ 时自动退化为等长切分，不丢样本、不崩训练。
 
-**实现先延后**：具体的标签集合、嵌套规则（如 `<toolcall>` 嵌套 `<think>` 怎么算）、退化情形（无标签的纯文本 trajectory 怎么处理）、过长块的二次切分阈值等——**等拿到真实 rollout 数据后再定**。在拿到数据前，代码以"等长 K 块"作为可工作的 fallback 实现。
+**实现先延后**：具体的标签集合、嵌套规则（如 `<toolcall>` 嵌套思索块怎么算）、退化判定的精确条件等——**等拿到真实 rollout 数据后再定**。在拿到数据前，代码以"等长 K 块"作为可工作的 fallback 实现。
 
 > **U 形动机（2026-06-08 反转）**：原方案是单调衰减 $\gamma^{\text{block}(t)}$ + final_answer boost $\beta_{\text{final}}$。反转原因：**末端的重要性不止 final_answer 一个 token 段，靠近末端的几个块（结论前的总结、决策前的关键判断）也很重要**——单点 boost 抓不住整段，应改为对末端整体抬升的连续曲线。$\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}$ 让首块（早期决策分支）与末块（最终输出 + 邻近段）同时受重视，中间块（执行细节）相对降权。原否决论证见下方"备选方案"表，已变更为采纳。
 
