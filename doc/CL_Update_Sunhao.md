@@ -664,51 +664,53 @@ $$T_{\text{step}} = \max(662, 139) + 20 = 682\text{s}, \quad \text{吞吐} = 5.3
 
 ```mermaid
 gantt
-    title 分离 40+24 单 Step — Deep Research (tool exec 4.5s/turn)
+    title Disaggregated 40+24 Single Step - Deep Research
     dateFormat X
     axisFormat %s
 
-    section 推理组 (40卡, 5×TP8)
-    Turn 1: LLM gen batch       :a1, 0, 51
-    Turn 1: CPU tool exec       :crit, a2, 51, 56
-    Turn 2: LLM gen batch       :a3, 56, 107
-    Turn 2: CPU tool exec       :crit, a4, 107, 111
-    Turn 3: LLM gen batch       :a5, 111, 162
-    Turn 3: CPU tool exec       :crit, a6, 162, 167
-    Turn 4: LLM gen batch       :a7, 167, 218
-    Turn 4: CPU tool exec       :crit, a8, 218, 222
-    Turn 5: LLM gen batch       :a9, 222, 278
+    section Inference 40GPU
+    Turn1 LLM gen          :a1, 0, 51
+    Turn1 CPU tool exec    :crit, a2, 51, 56
+    Turn2 LLM gen          :a3, 56, 107
+    Turn2 CPU tool exec    :crit, a4, 107, 111
+    Turn3 LLM gen          :a5, 111, 162
+    Turn3 CPU tool exec    :crit, a6, 162, 167
+    Turn4 LLM gen          :a7, 167, 218
+    Turn4 CPU tool exec    :crit, a8, 218, 222
+    Turn5 LLM gen          :a9, 222, 278
 
-    section 训练组 (24卡, FSDP)
-    Actor fwd+bwd                :t1, 0, 222
-    Ref fwd                      :t2, 222, 278
-    Replay fwd + Sync            :t3, 278, 321
-    ⬜ 等推理完成               :crit, t4, 321, 341
+    section Training 24GPU
+    Actor fwd+bwd          :t1, 0, 222
+    Ref fwd                :t2, 222, 278
+    Replay fwd + Sync      :t3, 278, 321
+    Wait for inference     :crit, t4, 321, 341
 ```
 
 #### Colocate vs 分离对比（2 Step）
 
 ```mermaid
 gantt
-    title Colocate 64 vs 分离 40+24 — 2 Step 对比
+    title Colocate 64 vs Disaggregated 40+24 - 2 Steps
     dateFormat X
     axisFormat %s
 
-    section Colocate (64卡)
-    Rollout 1 (GPU+CPU)  :c1r, 0, 182
-    Reshard               :c1x, 182, 197
-    Train 1               :c1t, 197, 324
-    Reshard               :c1y, 324, 339
-    Rollout 2             :c2r, 339, 521
-    Reshard               :c2x, 521, 536
-    Train 2               :c2t, 536, 663
+    section Colocate 64GPU
+    Rollout1 GPU+CPU  :c1r, 0, 182
+    Reshard           :c1x, 182, 197
+    Train1            :c1t, 197, 324
+    Reshard           :c1y, 324, 339
+    Rollout2          :c2r, 339, 521
+    Reshard           :c2x, 521, 536
+    Train2            :c2t, 536, 663
 
-    section 分离 40+24
-    推理: Rollout 1       :d1r, 0, 278
-    训练: Train 1         :d1t, 0, 321
-    训练: 等推理          :crit, d1w, 321, 341
-    推理: Rollout 2       :d2r, 278, 556
-    训练: Train 2         :d2t, 341, 662
+    section Disagg Inference 40GPU
+    Rollout1          :d1r, 0, 278
+    Rollout2          :d2r, 278, 556
+
+    section Disagg Training 24GPU
+    Train1            :d1t, 0, 321
+    Wait              :crit, d1w, 321, 341
+    Train2            :d2t, 341, 662
 ```
 
 ### 显存估算
