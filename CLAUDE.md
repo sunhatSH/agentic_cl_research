@@ -82,9 +82,13 @@ Phase 1 (B1) → Phase 2 (K1-K5, K2-R) ──┐
 
 共 20 个独立训练，单实验 ~16 GPU-day (8×H100, ~100 step)。
 
+### GPU 部署
+
+**分离 40+24（Deep Research 推荐）**：推理组 40 卡 (5×TP8 vLLM) + 训练组 24 卡 FSDP，流水线化后吞吐 ~10.6 step/hr。Deep Research 中 WebSearch/WebFetch 占交互时间 ~80%，分离模式训练组可利用 CPU 交互空转。比 Colocate 快 3–7%。Colocate 64 为后备（tool exec <2s/turn 时切回）。详见 `doc/CL_Update_Sunhao.md` § GPU 资源分配与训练流水线。
+
 ### $L_{replay}$ 权重公式
 
-$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \big(\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}\big),\; q_5,\; q_{95}\big)\Big)$$
+$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac{\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}}{2},\; q_5,\; q_{95}\big)\Big)$$
 
 两维度：Priority（trajectory 级）× **U 形块权重**（首尾两端高、中间低；起步 $\gamma=\delta=0.88$）。块按**动作块**（`<think>` / `<toolcall>` / `<observation>` / `<final_answer>` 等结构标签）划分，$K_i$ 因 trajectory 而异——具体标签集合与切分规则待数据到位后定，代码 fallback 用等长 $K=20$。Phase 3 对照 W0（均权）vs W2（主方案）。
 

@@ -34,6 +34,8 @@
 
 **在 RL verl 架构上修改，支持 Continual Learning。**
 
+> **GPU 资源分配与训练流水线设计**（48 训练 + 16 推理、$L_{replay}$ 计算频率、agent 执行与推理分离分析、时空图）详见 [`CL_Update_Sunhao.md` § GPU 资源分配与训练流水线](CL_Update_Sunhao.md#gpu-资源分配与训练流水线)。
+
 **Rollout 策略调整：**
 - 正常：rollout 32×8
 - 调整为：1024×2 或 4096×2
@@ -181,7 +183,7 @@ $$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket
 
 简版（截至 2026-06-08）：
 
-$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \big(\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}\big),\; q_5,\; q_{95}\big)\Big)$$
+$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac{\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}}{2},\; q_5,\; q_{95}\big)\Big)$$
 
 两维度：Priority（trajectory 级，4 信号融合）× **U 形块权重**（首尾两端高、中间低；起步 $\gamma=\delta=0.88$）。块按**动作块**（`<think>` / `<toolcall>` / `<observation>` / `<final_answer>` 等结构标签）划分，$K_i$ 因 trajectory 而异——具体标签集合与切分规则待数据到位后定，代码 fallback 用等长 $K=20$。Phase 3 对照 W0（均权）vs W2（主方案）。
 

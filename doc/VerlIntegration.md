@@ -206,7 +206,7 @@ agentic_cl_research/
 │   ├── priority.py                      # 4 信号 priority 融合（forgetting/rarity/diversity/difficulty）
 │   ├── eviction.py                      # 桶内淘汰策略（hard floor + soft target）
 │   ├── sampler.py                       # 两级采样（采桶混合 quota+均匀，桶内 priority 加权）
-│   ├── weighting.py                     # token-level w（priority × U 形块权重 γ^block + δ^(K_i-block) + clip + normalize；按动作块切分，K_i 待数据）
+│   ├── weighting.py                     # token-level w（priority × U 形块权重 (γ^block + δ^(K_i-block))/2 + clip + normalize；按动作块切分，K_i 待数据）
 │   └── store.py                         # 主存储 + 索引（内存 dict / SQLite / LMDB 选其一）
 ├── trainer/
 │   ├── __init__.py

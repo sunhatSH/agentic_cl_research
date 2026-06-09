@@ -4,7 +4,7 @@ Layout:
     test_buckets.py     -- 7-bucket allocation, quota math, eviction rules
     test_priority.py    -- 4-signal priority fusion, anti-reward-monotonicity check
     test_sampler.py     -- two-level sampling distribution, starvation_boost
-    test_weighting.py   -- W2 token weight: U-shaped (gamma^block + delta^(K_i-block)),
+    test_weighting.py   -- W2 token weight: U-shaped ((gamma^block + delta^(K_i-block))/2),
                            clip+normalize. Action-block segmenter test is
                            pending real data -- equal-length K=20 fallback
                            is testable now.

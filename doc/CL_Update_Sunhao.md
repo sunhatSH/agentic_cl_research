@@ -9,6 +9,7 @@
 - [$L_{replay}$ 权重 $w$ 计算规则](#l_replay-权重-w-计算规则)
 - [实验参数组合设计](#实验参数组合设计)
 - [评测指标体系](#评测指标体系)
+- [GPU 资源分配与训练流水线](#gpu-资源分配与训练流水线)
 - [待解决问题](#待解决问题)
 - [参考文献](#参考文献)
 
@@ -167,7 +168,7 @@ $$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket
 
 #### 最终公式
 
-$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \big(\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}\big),\; q_5,\; q_{95}\big)\Big)$$
+$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac{\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}}{2},\; q_5,\; q_{95}\big)\Big)$$
 
 **作用域：仅 response tokens（模型生成部分）**。用户请求（prompt）不参与 loss 计算，也不参与块切分与权重分配——$t$ 从 response 首 token 开始计数，block(t) 的定义域 = response 内的动作块序列。与 verl 的 `response_mask` 作用域一致。
 
@@ -176,7 +177,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \big(
 | 维度 | 作用对象 | 公式 | 起步超参 |
 |---|---|---|---|
 | **A. Priority（trajectory 级）** | 每条轨迹一个值 | 4 信号融合（forgetting_risk / rarity / diversity / difficulty） | $\alpha_1$=0.4, $\alpha_2$=$\alpha_3$=$\alpha_4$=0.2 |
-| **B. U 形块位置权重（token 级，粗粒度）** | 轨迹按**动作块**划分为 $K_i$ 块（每条轨迹的 $K_i$ 不同），块内等权；首尾两端高、中间低 | $\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}$ | $\gamma = \delta$ = 0.88；$K_i$ 由数据决定（详见下方"块的定义"） |
+| **B. U 形块位置权重（token 级，粗粒度）** | 轨迹按**动作块**划分为 $K_i$ 块（每条轨迹的 $K_i$ 不同），块内等权；首尾两端高、中间低 | $\frac{\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}}{2}$ | $\gamma = \delta$ = 0.88；$K_i$ 由数据决定（详见下方"块的定义"） |
 
 最后做 **clip 到 [5%, 95%] 分位数 → normalize**（保证 batch 内 $\sum w$ 归一）。
 
@@ -209,7 +210,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \big(
 
 | 编号 | 方案 | 公式 | 角色 |
 |---|---|---|---|
-| **W0** | Baseline 均分 | $w_t^{(i)} = \frac{1}{N \cdot \|\tau_i\|}$（轨迹等权 + 内 token 平均） | 等权对照 |
+| **W0** | 均权（$\gamma=\delta=1$） | $w_t^{(i)} = \text{normalize}(\text{clip}(\text{priority}_i \cdot 1,\; q_5,\; q_{95}))$ — 同公式，$\gamma=\delta=1$ | 等权对照，与 W2 同公式仅超参不同 |
 | **W2** | Priority × U 形块权重 + clip | 上面最终公式 | 主方案，**替换原 R4-w 实验** |
 
 > 中间版本 W1（不带 clip）已合并入 W2，实验阶段直接对比 W0 vs W2。如 W2 表现差，再 ablation 去掉某个组件定位原因。
@@ -223,7 +224,20 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \big(
 | 合成端点权重 | $\gamma^0 + \delta^{K_i} \approx 1.0 + \text{small}$ | 首尾对称；中间最低点 $\approx 2 \cdot \gamma^{K_i / 2}$；$K_i=20$ 下端点/中点比 ≈ 1.93× |
 | $K_i$（每条轨迹的块数） | **由动作块切分决定** | 不固定，详见上方"块的定义"。代码 fallback 用等长 $K=20$ |
 | Priority 4 信号融合权重 $\alpha$ | (0.4, 0.2, 0.2, 0.2) | forgetting_risk 占主导 |
+| 除数 2 | **固定** | 使 $\gamma=\delta=1$ 时 $w=1$（均权），见下方等价关系 |
 | Clip 分位数 | (5%, 95%) | 防极端值，对 outlier 鲁棒 |
+
+##### $\gamma=\delta=1$ 的等价关系
+
+当 $\gamma = \delta = 1$ 时，对任意 block 位置 $b$：
+
+$$\frac{1^b + 1^{K_i - b}}{2} = \frac{1 + 1}{2} = 1 \quad \forall\, b$$
+
+即**所有块权重恒等于 1**，U 形退化为水平线 = 等权（与 W0 等价）。这使得 $\gamma=\delta=1$ 成为 W2 方案的**内置均权基线**——无需切换 scheme，只需将两个参数设为 1 即可回到 W0。因此：
+
+- **W0 不再需要单独的 scheme**——设 `gamma: 1, delta: 1` 即可
+- **实验对照更干净**：W0 vs W2 的唯一变量是 $\gamma, \delta$ 的值（1 vs 0.88），不涉及公式形式差异
+- **超参连续可调**：$\gamma=\delta$ 从 1.0 逐渐降低到 0.88 → 0.80 → ...，U 形从"无"到"温和"到"激进"连续变化，方便 ablation 扫描
 
 > **超参选取注记**：$\gamma=\delta=0.97$（原单调衰减起步值）下端点/中点比仅 1.06×，U 形效果近乎无；调到 0.88 后端点/中点比 ~1.93×（按 $K_i=20$ 估），与原"首块/末块比 1.78×"在量级上对齐。**$K_i$ 越小（短轨迹），同 $\gamma$ 下端点/中点比越小**——例如 $K_i=4$ 时 $\gamma^2=0.774$，端点/中点 = $(1+0.774^2) / (2 \cdot 0.774) \approx 1.04$，U 形几乎消失。短轨迹场景需用更小的 $\gamma$（如 0.7）才能保留 U 形语义；这一点等数据到位后在 R4-w 中扫描验证。如 Phase 3 R4-w 表现弱，可在 ablation 中扫描 0.85 / 0.92 / 0.97 三档以分离"U 形是否有效"与"超参是否合适"。
 
@@ -449,6 +463,311 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | **梯度范数** | 各 loss 分量的梯度 L2 norm | 检测某一分量是否主导训练 |
 | **Output Entropy** | $H(\pi_{new}(\cdot\|s))$ 在 online rollout 状态上的均值曲线 | **Echo Trap 早期预警；前 100 step 下降 > 50% 即需调大 $\lambda_4$。traj/query=2 场景下为关键监控指标** |
 | **Trajectory Diversity** | 单 query 内 2 条 trajectory 的 distinct-n / self-BLEU | **直接量化 Echo Trap；若同 query 两条轨迹趋同 → advantage 退化 → 该 query 失效** |
+
+---
+
+## GPU 资源分配与训练流水线
+
+### 硬件配置
+
+| 项目 | 规格 |
+|------|------|
+| GPU | 64 × H800 (80 GB, 990 TFLOPS BF16) |
+| 模型 | 70B（具体型号待定，按通用 70B 估算） |
+| RL 算法 | GRPO（无 critic） |
+| 数据长度 | 1000–2000 tokens/条，均值 ~1500 |
+| 交互轮数 | 平均 ~5 轮/query（Deep Research: LLM gen → tool exec 交替） |
+| 训练框架 | verl，支持 Colocate 与分离两种部署模式 |
+| 估算假设 | 训练 MFU=0.40，vLLM 单 TP8 replica 吞吐 ~1500 tok/s，多轮 KV 复用效率 0.80 |
+
+### Deep Research 场景下的一轮交互耗时
+
+#### 工具延迟分析
+
+Deep Research 的核心工具是 **WebSearch** 和 **WebFetch**，延迟远高于本地文件操作：
+
+| 工具 | 典型延迟 | 说明 |
+|------|----------|------|
+| WebSearch | 1–3s | HTTP 搜索引擎 API |
+| WebFetch | 2–8s | HTTP 抓取网页 + 解析，受页面大小影响 |
+| BrowserScreenshot | 3–10s | HTTP + 渲染 |
+| Bash | 0.1–2s | 本地 shell |
+| Read/Write/Grep | <0.1s | 本地文件 |
+| 任务 API | 0.5–3s | 模拟服务 |
+
+#### 典型任务交互模式
+
+**Easy (44% 任务)**：1 次搜索 + 1 次抓取 + 总结 → 2 次 tool call，tool exec ~6s，LLM gen ~1.1s → **工具占 85%**
+
+**Medium (29% 任务)**：2-3 次搜索 + 3-4 次抓取 + 分析 → 6 次 tool call，tool exec ~18s，LLM gen ~2.3s → **工具占 89%**
+
+**Hard (27% 任务)**：4-5 次搜索 + 5-8 次抓取 + 多步推理 → 9 次 tool call，tool exec ~31s，LLM gen ~4.1s → **工具占 88%**
+
+按 ClawEval General split 难度分布加权：**平均 ~5.5 次 tool call，工具占交互时间 ~80%**。
+
+#### Batch 下的 tool exec 时间
+
+1024 queries 并行执行时，每轮 batch 等待时间取决于 P95（最慢的那个 query）：
+
+- WebSearch batch P95 ≈ 3s（API rate limit 可能更慢）
+- WebFetch batch P95 ≈ 6s（网络延迟 + 页面大小）
+- 综合每轮 batch 等待 ≈ **4.5s**（取 WebSearch × WebFetch 混合加权）
+
+5 轮 × 4.5s = **CPU 交互总时间 ~22s**（vs 纯 GPU 推理 ~160s）
+
+### Rollout 时间 = GPU 推理 + CPU 交互（串行交替）
+
+```text
+5 轮 Deep Research Rollout:
+[LLM gen batch][等CPU][LLM gen batch][等CPU]...[LLM gen batch]
+|   ~32s       | 4.5s |   ~32s       | 4.5s |  |   ~32s       |
+|← GPU 推理 160s →|← CPU 交互 22s →|
+```
+
+- **GPU 推理时间**：只取决于 LLM 生成的 token（~50% of response tokens ≈ 1.54M tokens）
+- **CPU 交互时间**：每轮等 tool exec 返回，与 GPU 数量无关
+- Colocate 下 CPU 交互时 **64 张 GPU 全部空转**
+
+### Colocate vs 分离：完整计算过程
+
+#### Colocate 64 GPU
+
+**Rollout**：
+
+$$T_{\text{rollout}} = T_{\text{GPU}} + T_{\text{CPU}}$$
+
+$$T_{\text{GPU}} = \frac{\text{LLM\_GEN\_TOKENS}}{N_{\text{replica}} \times \text{TP8\_THROUGHPUT} \times \text{MULTI\_TURN\_EFF}}$$
+
+$$= \frac{1{,}536{,}000}{8 \times 1500 \times 0.80} = \frac{1{,}536{,}000}{9{,}600} = 160\text{s}$$
+
+$$T_{\text{CPU}} = 5 \times 4.5 = 22\text{s}$$
+
+$$T_{\text{rollout}} = 160 + 22 = 182\text{s}$$
+
+**Train**：
+
+$$T_{\text{train}} = T_{\text{actor}} + T_{\text{ref}} + T_{\text{replay}} + T_{\text{sync}}$$
+
+$$T_{\text{actor}} = \frac{3{,}072{,}000 \times 6 \times 70 \times 10^9}{64 \times 990 \times 0.40 \times 10^{12}} \times 1.15 = 78\text{s}$$
+
+$$T_{\text{ref}} = \frac{3{,}072{,}000 \times 2 \times 70 \times 10^9}{64 \times 990 \times 0.40 \times 10^{12}} \times 1.15 = 19\text{s}$$
+
+$$T_{\text{replay}} = \frac{1{,}536{,}000 \times 2 \times 70 \times 10^9}{64 \times 990 \times 0.40 \times 10^{12}} \times 1.15 = 10\text{s}$$
+
+$$T_{\text{sync}} = 10 + 64 \times 0.15 = 20\text{s}$$
+
+$$T_{\text{train}} = 78 + 19 + 10 + 20 = 127\text{s}$$
+
+> 注：以上 $T_{\text{actor}}$ 已含 fwd+bwd，$T_{\text{ref}}$ 和 $T_{\text{replay}}$ 仅为 forward。
+
+**Step**：
+
+$$T_{\text{step}} = T_{\text{rollout}} + T_{\text{train}} + 2 \times T_{\text{reshard}} = 182 + 127 + 30 = 339\text{s}$$
+
+$$\text{吞吐} = \frac{3600}{339} = 10.6 \text{ steps/hr}$$
+
+$$\text{GPU 空转率 (CPU交互)} = \frac{22}{339} = 6.5\%$$
+
+#### 分离 40+24
+
+**推理组 (40 GPU, 5×TP8)**：
+
+$$T_{\text{GPU}} = \frac{1{,}536{,}000}{5 \times 1500 \times 0.80} = \frac{1{,}536{,}000}{6{,}000} = 256\text{s}$$
+
+$$T_{\text{CPU}} = 5 \times 4.5 = 22\text{s (同 Colocate)}$$
+
+$$T_{\text{rollout}} = 256 + 22 = 278\text{s}$$
+
+**训练组 (24 GPU, FSDP)**：
+
+$$T_{\text{actor}} = \frac{3{,}072{,}000 \times 4.2 \times 10^{11}}{24 \times 396 \times 10^{12}} \times 1.3 = 222\text{s}$$
+
+$$T_{\text{ref}} = \frac{3{,}072{,}000 \times 1.4 \times 10^{11}}{24 \times 396 \times 10^{12}} \times 1.3 = 56\text{s}$$
+
+$$T_{\text{replay}} = \frac{1{,}536{,}000 \times 1.4 \times 10^{11}}{24 \times 396 \times 10^{12}} \times 1.3 = 29\text{s}$$
+
+$$T_{\text{sync}} = 10 + 24 \times 0.15 = 14\text{s}$$
+
+$$T_{\text{train}} = 222 + 56 + 29 + 14 = 321\text{s}$$
+
+**流水线化**：
+
+$$T_{\text{step}} = \max(T_{\text{rollout}}, T_{\text{train}}) + T_{\text{sync\_cross}}$$
+
+$$= \max(278, 321) + 20 = 341\text{s}$$
+
+$$\text{吞吐} = \frac{3600}{341} = 10.6 \text{ steps/hr}$$
+
+$$\text{训练组气泡} = \frac{341 - 321 - 20}{341} = 0\% \text{ (训练恰好与 rollout 匹配)}$$
+
+> 训练 321s 略大于 rollout 278s，训练是微弱瓶颈。推理组等训练完成 43s。
+
+#### 分离 48+16
+
+**推理组 (16 GPU, 2×TP8)**：
+
+$$T_{\text{GPU}} = \frac{1{,}536{,}000}{2 \times 1500 \times 0.80} = 640\text{s}, \quad T_{\text{rollout}} = 640 + 22 = 662\text{s}$$
+
+**训练组 (48 GPU)**：
+
+$$T_{\text{train}} = 139\text{s}$$
+
+$$T_{\text{step}} = \max(662, 139) + 20 = 682\text{s}, \quad \text{吞吐} = 5.3\text{/hr}, \quad \text{训练气泡} = 76.6\%$$
+
+### 结果对比
+
+| 模式 | Rollout | Train | Step | 吞吐 | GPU 空转(CPU交互) | 训练气泡 |
+|------|---------|-------|------|------|-------------------|----------|
+| **Colocate 64** | 182s (GPU 160, CPU 22) | 127s | **339s** | **10.6/hr** | 6.5% | 0% |
+| **分离 40+24** | 278s (GPU 256, CPU 22) | 321s | **341s** | **10.6/hr** | 0% (推理组) | ~0% |
+| 分离 48+16 | 662s | 139s | 682s | 5.3/hr | 0% (推理组) | 76.6% |
+
+**Colocate 和分离 40+24 吞吐几乎相同**（差异 <1%），原因：
+
+1. Colocate 64 卡推理吞吐 = 2× 分离 40 卡（8×TP8 vs 5×TP8），但 GPU 空转 22s
+2. 分离 40+24 推理慢但训练与 rollout 并行，总时间接近
+3. 分离 48+16 推理太慢（2×TP8），训练组 77% 时间空等
+
+### 敏感性分析：tool exec 速度
+
+| tool exec/turn | Colocate 64 | 最优分离 | 分离配置 | Colocate 快？ |
+|----------------|-------------|----------|----------|--------------|
+| 2s | 11.7/hr | 12.1/hr | 40+24 | 分离快 3% |
+| 4s | 11.3/hr | 12.1/hr | 40+24 | 分离快 6% |
+| 6s | 11.0/hr | 11.8/hr | 40+24 | 分离快 7% |
+| **8s** | **10.7/hr** | **11.4/hr** | **40+24** | **分离快 7%** |
+| 10s | 10.4/hr | 11.0/hr | 40+24 | 分离快 7% |
+| 15s | 9.7/hr | 10.3/hr | 40+24 | 分离快 6% |
+| 20s | 9.1/hr | 9.6/hr | 40+24 | 分离快 6% |
+
+**在 Deep Research 场景下（tool exec 4–8s/turn），分离 40+24 始终比 Colocate 快 3–7%。**
+
+原因：虽然 CPU 交互仅占 rollout 的 12%，但分离模式下训练与 rollout 并行带来的收益 > Colocate 推理吞吐优势。分离 40+24 恰好让训练和 rollout 时间接近（278s vs 321s），几乎零气泡。
+
+### 推荐：分离 40+24
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 部署模式 | **分离 40+24** | Deep Research 下比 Colocate 快 3–7%，且推理训练可独立调优 |
+| 推理组 | 40 GPU (5×TP8) | 3× Colocate 推理吞吐 vs 5×TP8，训练可并行 |
+| 训练组 | 24 GPU (FSDP) | 与 rollout 时间匹配，气泡 ~0% |
+| $L_{replay}$ 频率 | 每 step 计算 | 29s / 341s step = 8.5% 开销 |
+| Agent 执行分离 | 不分离 | 预执行不可行，observation 一致性无法保证 |
+
+> **如果 tool exec 极快 (<1s/turn，纯本地工具)**，Colocate 反而快 10–20%。但 Deep Research 不属于此场景。
+>
+> **后备**：如果实测发现 tool exec <2s/turn，切回 Colocate。
+
+### 时空图
+
+#### 分离 40+24 单 Step（Deep Research, tool exec 4.5s/turn）
+
+```mermaid
+gantt
+    title 分离 40+24 单 Step — Deep Research (tool exec 4.5s/turn)
+    dateFormat X
+    axisFormat %s
+
+    section 推理组 (40卡, 5×TP8)
+    Turn 1: LLM gen batch       :a1, 0, 51
+    Turn 1: CPU tool exec       :crit, a2, 51, 56
+    Turn 2: LLM gen batch       :a3, 56, 107
+    Turn 2: CPU tool exec       :crit, a4, 107, 111
+    Turn 3: LLM gen batch       :a5, 111, 162
+    Turn 3: CPU tool exec       :crit, a6, 162, 167
+    Turn 4: LLM gen batch       :a7, 167, 218
+    Turn 4: CPU tool exec       :crit, a8, 218, 222
+    Turn 5: LLM gen batch       :a9, 222, 278
+
+    section 训练组 (24卡, FSDP)
+    Actor fwd+bwd                :t1, 0, 222
+    Ref fwd                      :t2, 222, 278
+    Replay fwd + Sync            :t3, 278, 321
+    ⬜ 等推理完成               :crit, t4, 321, 341
+```
+
+#### Colocate vs 分离对比（2 Step）
+
+```mermaid
+gantt
+    title Colocate 64 vs 分离 40+24 — 2 Step 对比
+    dateFormat X
+    axisFormat %s
+
+    section Colocate (64卡)
+    Rollout 1 (GPU+CPU)  :c1r, 0, 182
+    Reshard               :c1x, 182, 197
+    Train 1               :c1t, 197, 324
+    Reshard               :c1y, 324, 339
+    Rollout 2             :c2r, 339, 521
+    Reshard               :c2x, 521, 536
+    Train 2               :c2t, 536, 663
+
+    section 分离 40+24
+    推理: Rollout 1       :d1r, 0, 278
+    训练: Train 1         :d1t, 0, 321
+    训练: 等推理          :crit, d1w, 321, 341
+    推理: Rollout 2       :d2r, 278, 556
+    训练: Train 2         :d2t, 341, 662
+```
+
+### 显存估算
+
+#### 分离 40+24
+
+| 组 | 组件 | 每卡显存 | 合计 |
+|---|------|---------|------|
+| 推理 (40卡, 5×TP8) | 模型 FP16 + KV cache | ~15 GB | 余量 ~65 GB ✓ |
+| 训练 (24卡, FSDP) | 参数 shard + optimizer + grad + act | ~33 GB | 余量 ~47 GB ✓ |
+
+#### Colocate 64
+
+| 组件 | 每卡显存 | 说明 |
+|------|----------|------|
+| 参数 shard | ~1.7 GB | 70B / 64 |
+| Optimizer | ~14.0 GB | Adam (m+v) FP32 |
+| 梯度 + Activations | ~12 GB | |
+| vLLM KV cache | ~5–10 GB | 推理阶段 |
+| **合计** | **~33–38 GB** | **80 GB 可行** |
+
+### $L_{replay}$ 计算频率
+
+#### 推荐：每 step 计算（默认）
+
+| 策略 | 频率 | 额外开销（分离 40+24） | 适用场景 |
+|------|------|------------------------|----------|
+| **每 step 计算** | 1:1 | +29s（8.5% of step） | **默认方案**，CL 信号最稳定 |
+| 隔 step 计算 | 1:2 | 均摊 ~15s | 后期 buffer 稳定后可用 |
+| K step 累积 | 每 K step 一次，batch 放大 K 倍 | 均摊开销，方差更小 | K=2~4，Phase 5 |
+
+**与 $L_{kl}$ 的区别**：$L_{kl}$ 用 ref model 的 log_prob（已在 step 内算好），无额外 forward；$L_{replay}$ 需要对 buffer 数据做一次独立 forward，是 CL 唯一额外开销。
+
+### Phase 5 S2 (4096×2) 的影响
+
+S2 rollout 量翻 4×。各模式预估（tool exec 4.5s/turn）：
+
+| 模式 | Rollout | Train | Step | 吞吐 |
+|------|---------|-------|------|------|
+| Colocate 64 | 648s | 508s | 1178s | 3.1/hr |
+| 分离 40+24 | 1062s | 1241s | 1261s | 2.9/hr |
+
+S2 下训练量也翻 4×，训练开始成为瓶颈，Colocate 微弱反超。但 S2 仅 2 个实验，不影响整体决策。
+
+### Agent 执行与推理：不建议分离
+
+"Agent 执行与推理分离"指在推理阶段内部将 tool exec 预执行，然后用缓存 observation 回放。**不可行**：工具结果依赖 LLM 中间输出（如代码执行依赖 LLM 生成的代码），预执行无法保证 observation 一致性。
+
+> 注意区分："Agent 执行与推理分离"（推理阶段内部，不可行）vs "推理与训练分离"（部署层面，当前推荐方案）。
+
+### 设计决策总结
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 部署模式 | **分离 40+24** | Deep Research (tool exec 4–8s/turn) 下比 Colocate 快 3–7% |
+| $L_{replay}$ 频率 | 每 step 计算 | 29s / 341s = 8.5% 开销 |
+| Agent 执行分离 | 不分离 | 预执行不可行 |
+| 后备方案 | Colocate 64 | 若实测 tool exec <2s/turn 则切回 |
+| 首个实验 | 分离 40+24 | B1 测量实际 tool exec 时间确认 |
 
 ---
 

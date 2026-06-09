@@ -2,12 +2,12 @@
 
 Final formula (W2 main scheme, from ``doc/CL_Update_Sunhao.md``):
 
-    w_t^{(i)} = normalize( clip( priority_i * ( gamma^block(t) + delta^(K_i - block(t)) ),
+    w_t^{(i)} = normalize( clip( priority_i * ( gamma^block(t) + delta^(K_i - block(t)) ) / 2,
                                  q_5, q_95 ) )
 
 Two independent dimensions composed:
 A. Priority (trajectory-level)        -- one value per trajectory
-B. U-shaped block weight (token-level coarse) -- gamma^block(t) + delta^(K_i - block(t))
+B. U-shaped block weight (token-level coarse) -- (gamma^block(t) + delta^(K_i - block(t))) / 2
    - First-end exponential: gamma^block(t)            (early decision points)
    - Last-end exponential:  delta^(K_i - block(t))    (final answer + adjacent blocks)
    - Middle blocks are relatively down-weighted.
@@ -144,7 +144,11 @@ class TokenWeighting:
         raise NotImplementedError
 
     def _u_shaped_block_weights(self, block_ids, K_i):
-        """gamma^block(t) + delta^(K_i - block(t)).
+        """(gamma^block(t) + delta^(K_i - block(t))) / 2.
+
+        Division by 2 ensures gamma=delta=1 yields uniform weight 1.0 for all
+        blocks (flat / equal-weight baseline W0). This makes gamma and delta
+        continuous controls: 1.0 = no U-shape, <1.0 = progressively stronger U.
 
         Symmetric when gamma == delta. Asymmetric U is allowed by setting them
         differently (e.g., delta < gamma to emphasise the tail more).

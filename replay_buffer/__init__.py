@@ -8,7 +8,7 @@ Public surface:
     BucketReplayBuffer  -- top-level buffer object
     Priority            -- per-trajectory priority computation
     TwoLevelSampler     -- bucket-level + intra-bucket sampling
-    TokenWeighting      -- token-level w_t (priority * (gamma^block + delta^(K_i-block)))
+    TokenWeighting      -- token-level w_t (priority * (gamma^block + delta^(K_i-block)) / 2)
 """
 
 from replay_buffer.bucket import BucketReplayBuffer

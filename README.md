@@ -49,7 +49,7 @@ bash scripts/eval.sh ckpts/b1-step-100
 
 - **CL Loss**：$L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_4 L_{ent}$；$\lambda_4=0.001$ 全程开启防 Echo Trap。
 - **7 桶 Buffer**：按能力/领域分桶（不按难度），桶内淘汰禁止跨桶挤出，priority 用抗遗忘信号而非 reward 绝对值。
-- **Token 级 w**：W2 主方案 = priority × U 形块权重 ($\gamma^{\text{block}} + \delta^{K_i - \text{block}}$) + clip + normalize；首尾两端高、中间低（$\gamma=\delta=0.88$）。块按动作块（`<think>` / `<toolcall>` / `<observation>` / `<final_answer>` 等结构标签）划分，$K_i$ 因 trajectory 而异——具体切分规则待数据到位后定，代码 fallback 用等长 $K=20$。
+- **Token 级 w**：W2 主方案 = priority × U 形块权重 $\frac{\gamma^{\text{block}} + \delta^{K_i - \text{block}}}{2}$ + clip + normalize；首尾两端高、中间低（$\gamma=\delta=0.88$）。$\gamma=\delta=1$ 时 U 形退化为均权（W0），超参连续可调。块按动作块切分，$K_i$ 因 trajectory 而异，解析失败或 $K_i=1$ 退化为等长 $K=20$。
 - **训练框架**：[verl](https://github.com/volcengine/verl)，**不 fork**——通过 `actor.set_loss_fn` 注入自定义 loss，Buffer 完全外挂。详见 `doc/VerlIntegration.md`。
 
 ## 实验路线

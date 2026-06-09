@@ -16,7 +16,7 @@ Composition:
 - L_ent     : verl already supports it via config.entropy_coeff (lambda_4=0.001 fixed).
 
 Token weight w_t comes from ``replay_buffer.weighting.TokenWeighting`` (W2 scheme,
-U-shaped block weight: gamma^block + delta^(K_i - block), with K_i derived
+U-shaped block weight: (gamma^block + delta^(K_i - block)) / 2, with K_i derived
 from per-trajectory action-block segmentation -- structural tags like
 <think> / <toolcall> / <observation> / <final_answer>. Action-block segmenter
 is pending real rollout data; equal-length K=20 fallback is in place.
