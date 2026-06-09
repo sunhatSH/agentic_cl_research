@@ -644,19 +644,106 @@ $$T_{\text{step}} = \max(662, 139) + 20 = 682\text{s}, \quad \text{吞吐} = 5.3
 
 原因：虽然 CPU 交互仅占 rollout 的 12%，但分离模式下训练与 rollout 并行带来的收益 > Colocate 推理吞吐优势。分离 40+24 恰好让训练和 rollout 时间接近（278s vs 321s），几乎零气泡。
 
-### 推荐：分离 40+24
+### 推荐：One Step Off Policy 分离 40+24
 
-| 决策 | 选择 | 理由 |
-|------|------|------|
-| 部署模式 | **分离 40+24** | Deep Research 下比 Colocate 快 3–7%，且推理训练可独立调优 |
-| 推理组 | 40 GPU (5×TP8) | 3× Colocate 推理吞吐 vs 5×TP8，训练可并行 |
-| 训练组 | 24 GPU (FSDP) | 与 rollout 时间匹配，气泡 ~0% |
-| $L_{replay}$ 频率 | 每 step 计算 | 29s / 341s step = 8.5% 开销 |
-| Agent 执行分离 | 不分离 | 预执行不可行，observation 一致性无法保证 |
+verl 原生支持 **One Step Off Policy Async Trainer**（`verl.experimental.one_step_off_policy`），核心机制：推理生成 step $t+1$ 的同时，用 step $t$ 的数据训练。推理与训练在不同 GPU 组上并行，权重通过 NCCL 同步（<300ms，可忽略）。
 
-> **如果 tool exec 极快 (<1s/turn，纯本地工具)**，Colocate 反而快 10–20%。但 Deep Research 不属于此场景。
->
-> **后备**：如果实测发现 tool exec <2s/turn，切回 Colocate。
+> 来源：[verl 官方文档](https://github.com/verl-project/verl/blob/main/docs/advance/one_step_off.md)，参考论文 [AReaL](https://arxiv.org/abs/2505.24298)。7B 模型实测比 colocate 同步模式快 23–40%。
+
+#### One Step Off Policy 流水线
+
+```python
+# verl 实现核心逻辑
+continuous_iterator = create_continuous_iterator()
+batch_future = async_gen_next_batch(continuous_iterator)  # 首次：推理组生成数据
+
+while batch_future is not None:
+    batch = batch_future.get()              # 取上一步推理结果
+    batch_future = async_gen_next_batch()   # 立即启动下一步推理（不等训练）
+
+    compute_advantages(batch)               # 训练组并行工作
+    actor.update_actor(batch)
+```
+
+```text
+推理组 (40 GPU):  [Rollout t]  [Rollout t+1]  [Rollout t+2]  ...
+                  |← 278s →|  |← 278s →|    |← 278s →|
+                              ↓sync(<1s)↓    ↓sync↓
+训练组 (24 GPU):        [Train t]     [Train t+1]  ...
+                        |← 321s →|   |← 321s →|
+
+Step 时间 = max(rollout, train) ≈ 321s + sync(<1s) ≈ 321s
+```
+
+#### 重新计算 Step 时间
+
+One Step Off Policy 模式下，step 时间 = max(rollout, train)，而非 rollout + train 串行：
+
+$$T_{\text{step}} = \max(T_{\text{rollout}}, T_{\text{train}}) + T_{\text{sync}}$$
+
+**分离 40+24（One Step Off Policy）**：
+
+$$T_{\text{step}} = \max(278, 321) + 0.3 = 321.3\text{s}$$
+
+$$\text{吞吐} = \frac{3600}{321.3} = 11.2 \text{ steps/hr}$$
+
+**Colocate 64（同步模式，无并行）**：
+
+$$T_{\text{step}} = T_{\text{rollout}} + T_{\text{train}} + 2 \times T_{\text{reshard}} = 182 + 127 + 30 = 339\text{s}$$
+
+$$\text{吞吐} = \frac{3600}{339} = 10.6 \text{ steps/hr}$$
+
+**分离 40+24（普通流水线，无 one-step-off）**：
+
+$$T_{\text{step}} = \max(278, 321) + 20 = 341\text{s}$$
+
+$$\text{吞吐} = \frac{3600}{341} = 10.6 \text{ steps/hr}$$
+
+#### 三种模式对比
+
+| 模式 | Rollout | Train | Step | 吞吐 | 特点 |
+|------|---------|-------|------|------|------|
+| Colocate 64（同步） | 182s | 127s | 339s | 10.6/hr | 串行，推理训练不能并行 |
+| 分离 40+24（普通流水线） | 278s | 321s | 341s | 10.6/hr | 训练等推理完成 20s sync |
+| **分离 40+24（one-step-off）** | **278s** | **321s** | **321s** | **11.2/hr** | **推理‖训练并行，sync <1s** |
+
+One Step Off Policy 比普通分离流水线快 **5.7%**，比 Colocate 快 **5.7%**。核心优势：NCCL 权重同步 <300ms，替代了普通模式的 20s cross-group sync。
+
+#### verl One Step Off Policy 配置
+
+```shell
+python3 -m verl.experimental.one_step_off_policy.async_main_ppo \
+    actor_rollout_ref.hybrid_engine=False \
+    actor_rollout_ref.actor.strategy=fsdp2 \
+    trainer.nnodes=1 trainer.n_gpus_per_node=24 \
+    rollout.nnodes=1 rollout.n_gpus_per_node=40
+```
+
+#### verl 官方 7B 实验数据
+
+| training mode | engine | total time |
+|---|---|---|
+| colocate sync | VLLM+FSDP2 | 19h18m |
+| one-step-overlap async | VLLM+FSDP2 | **15h34m（+23%）** |
+| colocate sync | VLLM+Megatron | 18h21m |
+| one-step-overlap async | VLLM+Megatron | **13h06m（+40%）** |
+
+> 实验：Qwen2.5-Math-7B，2 节点 16×H20，推理 4 GPU + 训练 12 GPU，DAPO 算法。来源：[verl docs](https://github.com/verl-project/verl/blob/main/docs/advance/one_step_off.md)。7B 推理快，训练是瓶颈；70B 推理是瓶颈，加速比不能直接搬用。
+
+#### One Step Off Policy 与 CL Loss 的兼容性
+
+| CL 组件 | 兼容性 | 说明 |
+|---------|--------|------|
+| $L_{rl}$ | ✅ | 直接复用，one-step-off 用 rollout_log_probs 做 importance sampling |
+| $L_{kl}$ | ✅ | ref log_prob 在训练阶段计算，与推理无关 |
+| $L_{ent}$ | ✅ | verl/GRPO 内置 |
+| $L_{replay}$ | ⚠️ 需验证 | replay forward 在训练组做，不影响推理组。但需确认异步模式下 buffer 采样时序是否正确（旧数据 vs 当前策略的 off-policy 偏移） |
+
+> $L_{replay}$ 是 off-policy 的（buffer 里的数据本身就是旧策略生成的），与 one-step-off 的 off-policy 框架天然兼容。但需要确认 verl 的 `async_main_ppo` 是否支持自定义 loss 注入（参考 `doc/VerlIntegration.md` 中 `actor.set_loss_fn()` API），若不支持则需在 `async_main_ppo` 基础上添加 cl_loss 注入点。
+
+#### AgentLoop 支持
+
+One Step Off Policy 已支持 AgentLoop（多轮 tool calling），无需额外适配。
 
 ### 时空图
 

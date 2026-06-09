@@ -84,7 +84,7 @@ Phase 1 (B1) → Phase 2 (K1-K5, K2-R) ──┐
 
 ### GPU 部署
 
-**分离 40+24（Deep Research 推荐）**：推理组 40 卡 (5×TP8 vLLM) + 训练组 24 卡 FSDP，流水线化后吞吐 ~10.6 step/hr。Deep Research 中 WebSearch/WebFetch 占交互时间 ~80%，分离模式训练组可利用 CPU 交互空转。比 Colocate 快 3–7%。Colocate 64 为后备（tool exec <2s/turn 时切回）。详见 `doc/CL_Update_Sunhao.md` § GPU 资源分配与训练流水线。
+**One Step Off Policy 分离 40+24（Deep Research 推荐）**：推理组 40 卡 (5×TP8 vLLM) + 训练组 24 卡 FSDP，推理‖训练并行，NCCL 权重同步 <300ms，吞吐 ~11.2 step/hr。verl 原生支持（`verl.experimental.one_step_off_policy`），7B 实测比 colocate 同步快 23–40%。Colocate 64 为后备。详见 `doc/CL_Update_Sunhao.md` § GPU 资源分配与训练流水线。
 
 ### $L_{replay}$ 权重公式
 
