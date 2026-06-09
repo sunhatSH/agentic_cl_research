@@ -7,9 +7,11 @@
 # See doc/CL_Update_Sunhao.md "实验参数组合设计" for the parameter table.
 
 # Model
+# 基座模型：Qwen3.6-27B (https://huggingface.co/Qwen/Qwen3.6-27B)
+# 实验 yaml 中可以 override 为本地缓存路径（如 /mnt/afs/models/qwen3.6-27b/）。
 model:
-  name: ???                       # set in experiment configs
-  tokenizer: ???
+  name: Qwen/Qwen3.6-27B
+  tokenizer: Qwen/Qwen3.6-27B
 
 # Rollout
 actor_rollout_ref:
@@ -61,18 +63,21 @@ cl:
     scheme: W0                    # W0 uniform; W2 = priority * (gamma^block + delta^(K_i-block)) + clip
     gamma: 0.88                   # first-end decay base; gamma^0=1.0 at block 0
     delta: 0.88                   # last-end decay base;  delta^0=1.0 at block K_i (symmetric U)
-    segmenter: action_block       # primary; falls back to equal_length when parse fails or K_i==1
-    # block_types: structural tags used by the action_block segmenter to split a
-    # trajectory into K_i blocks. Order does NOT matter (only tag presence does);
-    # nesting / fallback rules are pending real data inspection. Override per
-    # experiment if the dataset uses different tags.
-    block_types:
-      - "<think>"
-      - "<toolcall>"
-      - "<observation>"
-      - "<final_answer>"
-    equal_length_K: 20            # fallback K when action_block fails or K_i == 1
-    long_block_threshold: 100     # re-split action blocks exceeding this many tokens
+    segmenter: message_block      # primary: split by OpenAI chat message boundaries
+                                  # fallback: equal_length when K_i==1
+    # Action blocks are OpenAI chat messages, not XML tags. The dataset
+    # (datasets/_stage_prefix_pass.jsonl) is in OpenAI tool-use format:
+    # assistant messages carry `content` + optional structured `tool_calls`;
+    # tool messages carry observations. There are NO <think>/<toolcall>/
+    # <final_answer> XML tags in the rollouts -- confirmed empirically on
+    # 50 records (0/3177 assistant msgs had any of these tags). One action
+    # block = one assistant message OR one tool message. K_i = number of
+    # such response messages in the trajectory.
+    role_boundaries:
+      - assistant                 # assistant turn (content + optional tool_calls)
+      - tool                      # tool result (observation)
+    equal_length_K: 20            # fallback K when K_i == 1
+    long_block_threshold: 100     # re-split blocks exceeding this many tokens
     clip_quantiles: [0.05, 0.95]
 
 # Trainer

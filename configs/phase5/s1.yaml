@@ -1,0 +1,20 @@
+# Phase 5 / S1 — Rollout 规模扩展 (在 Phase 4 最优配置上)
+# 继承 configs/base.yaml
+# 验证目标：增加 rollout 规模是否进一步减缓遗忘
+
+defaults:
+  - ../base
+
+actor_rollout_ref:
+  rollout:
+    n: 4                         # traj/query 从 2 → 4
+
+# 其余 CL 参数待 Phase 4 最优配置确定后填入
+actor:
+  use_kl_loss: ???
+  kl_loss_coef: ???
+
+cl:
+  lambda_replay: ???
+  buffer:
+    enabled: ???

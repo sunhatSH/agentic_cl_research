@@ -1,0 +1,25 @@
+# Phase 3 / R4-w — Reweighted Replay 主方案 (priority × U 形块权重 + clip)
+# 继承 configs/base.yaml
+# 对照轴：priority 用法 (R4 → R4-w), W0 vs W2
+
+defaults:
+  - ../base
+
+actor:
+  use_kl_loss: false
+  kl_loss_coef: 0.0
+
+cl:
+  lambda_replay: 0.5
+  buffer:
+    enabled: true
+    num_buckets: 7
+    total_capacity: 25000
+    q_min: 2000
+  weighting:
+    scheme: W2                   # 主方案：priority × U 形块权重 + clip
+    gamma: 0.88
+    delta: 0.88
+    segmenter: action_block
+    equal_length_K: 20
+    clip_quantiles: [0.05, 0.95]

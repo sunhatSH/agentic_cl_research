@@ -1,22 +1,70 @@
-# Configs for the 20 CL ablation experiments.
-#
-# Layout:
-#   base.yaml       -- shared defaults; do not run directly
-#   b1.yaml         -- Phase 1 baseline (pure RL forgetting lower bound)
-#   k1..k5.yaml,
-#   k2-r.yaml       -- Phase 2 KL ablation (6 runs)
-#   r0,r3,r4,r5,
-#   r4-w,r6,r4-k    -- Phase 3 Replay ablation (7 runs)
-#   c1..c4.yaml     -- Phase 4 KL x Replay grid (4 runs)
-#   s1,s2.yaml      -- Phase 5 rollout scale (2 runs)
-#   x*.yaml         -- Phase 6 on-demand exploration (created when triggered)
-#
-# Each leaf config inherits base.yaml and overrides only the parameters that
-# vary. The parameter table is in doc/CL_Update_Sunhao.md "实验参数组合设计".
+# Configs — 20 个 CL 消融实验
 
-# Skeleton tracking (filled in as configs are created):
-# Phase 1: [ ] b1
-# Phase 2: [ ] k1 [ ] k2 [ ] k3 [ ] k4 [ ] k5 [ ] k2-r
-# Phase 3: [ ] r0 [ ] r3 [ ] r4 [ ] r5 [ ] r4-w [ ] r6 [ ] r4-k
-# Phase 4: [ ] c1 [ ] c2 [ ] c3 [ ] c4
-# Phase 5: [ ] s1 [ ] s2
+按 Phase 分子目录组织，每个 yaml 继承 `base.yaml` 并只 override 变化的字段。
+
+## 结构
+
+```
+configs/
+├── base.yaml              # 共享默认配置，不直接运行
+├── phase1/                # Phase 1：纯 RL 遗忘基线 (1 run)
+│   └── b1.yaml
+├── phase2/                # Phase 2：KL 单独验证 (6 runs)
+│   ├── k1.yaml            #   弱 KL + pi_0
+│   ├── k2.yaml            #   中 KL + pi_0
+│   ├── k3.yaml            #   强 KL + pi_0
+│   ├── k4.yaml            #   中 KL + pi_{t-1}
+│   ├── k5.yaml            #   强 KL + pi_{t-1}
+│   └── k2-r.yaml          #   K2 + replay (与 R4-K 对偶)
+├── phase3/                # Phase 3：Replay 单独验证 (7 runs)
+│   ├── r0.yaml            #   CLEAR baseline (单 buffer 10k)
+│   ├── r3.yaml            #   BucketDesign 基础版
+│   ├── r4.yaml            #   BucketDesign 完整版 (+ priority)
+│   ├── r5.yaml            #   reward-based priority 对照
+│   ├── r4-w.yaml          #   W2 主方案 (priority × U 形块权重)
+│   ├── r6.yaml            #   高 lambda_3 = 0.8
+│   └── r4-k.yaml          #   R4 + KL (与 K2-R 对偶)
+├── phase4/                # Phase 4：KL × Replay 组合 (4 runs)
+│   ├── c1.yaml            #   强 KL + 强 Replay
+│   ├── c2.yaml            #   弱 KL + 强 Replay
+│   ├── c3.yaml            #   强 KL + 弱 Replay
+│   └── c4.yaml            #   弱 KL + 弱 Replay
+├── phase5/                # Phase 5：Rollout 规模扩展 (2 runs)
+│   ├── s1.yaml            #   traj/query = 4
+│   └── s2.yaml            #   traj/query = 8
+└── phase6/                # Phase 6：按需探索 (x*.yaml, 后续创建)
+    └── .gitkeep
+```
+
+## 使用方式
+
+```bash
+# 单实验
+bash scripts/train.sh configs/phase3/r4.yaml
+
+# 整个 phase
+bash scripts/phase3/run.sh
+
+# phase 内单个实验
+bash scripts/phase3/run.sh --only r4
+
+# 恢复训练
+bash scripts/train.sh configs/phase3/r4.yaml --resume-from ckpts/r4-step-50
+```
+
+## 配置继承
+
+所有 phase yaml 通过 `defaults: [../base]` 继承 `base.yaml`。每个 yaml 只写出与 base 不同的字段。
+
+参数来源见 `doc/CL_Update_Sunhao.md` 的「实验参数组合设计」表。
+
+## 进度追踪
+
+- Phase 1: [x] b1
+- Phase 2: [x] k1 [x] k2 [x] k3 [x] k4 [x] k5 [x] k2-r
+- Phase 3: [x] r0 [x] r3 [x] r4 [x] r5 [x] r4-w [x] r6 [x] r4-k
+- Phase 4: [x] c1 [x] c2 [x] c3 [x] c4
+- Phase 5: [x] s1 [x] s2
+- Phase 6: (按需创建)
+
+> [x] = yaml 骨架已创建；参数中的 `???` 待前序 Phase 结果确定后填入。

@@ -1,0 +1,21 @@
+# Phase 3 / R0 — CLEAR baseline (单 buffer + reservoir + 均匀)
+# 继承 configs/base.yaml
+# 对照轴：桶结构 vs CLEAR (R0 → R3)
+
+defaults:
+  - ../base
+
+actor:
+  use_kl_loss: false
+  kl_loss_coef: 0.0              # lambda_2 = 0
+
+cl:
+  lambda_replay: 0.5             # lambda_3 = 0.5
+  replay_batch_size: 32
+  buffer:
+    enabled: true
+    num_buckets: 1               # 单 buffer，无桶结构
+    total_capacity: 10000        # CLEAR 原论文 10k
+    q_min: 10000
+  weighting:
+    scheme: W0                   # 均匀权重

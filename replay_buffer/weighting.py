@@ -22,33 +22,51 @@ Why U-shaped (2026-06-08 reversal):
     final_answer cannot cover the whole tail; the U-shape lifts the entire
     end region continuously. See doc/CL_Update_Sunhao.md L_replay section.
 
-Block segmentation -- action-block PRIMARY, equal-length FALLBACK:
-    PRIMARY: Trajectories are split by structural tags (e.g.  此外...完成,
-    <toolcall>...</toolcall>, <observation>...</observation>,
-    <final_answer>...</final_answer>). K_i is the number of action blocks in
-    trajectory i and DIFFERS across trajectories.
+Block segmentation -- message-block PRIMARY, equal-length FALLBACK:
+    PRIMARY (message_block): The dataset
+    (datasets/_stage_prefix_pass.jsonl) is OpenAI chat format -- each
+    rollout is a list of {role, content, tool_calls?} messages. An action
+    block = one assistant message (content + optional tool_calls) OR one
+    tool message (observation). K_i = number of response messages in the
+    trajectory.
 
-    FALLBACK: When the trajectory cannot be parsed into action blocks (no
-    structural tags, malformed tags) OR parsing yields K_i == 1 (single block
-    = no U-shape possible), the segmenter automatically falls back to
-    equal-length K=20 splits. No error raised, no sample dropped -- any
-    format gets weights.
+    Empirically confirmed on 50 records (3177 assistant msgs): 0 contained
+    any <think>/<toolcall>/<final_answer> XML tag; 78% had structured
+    `tool_calls` field. So tag-based segmentation does not apply here --
+    we segment by message boundaries instead.
 
-    Long-block re-splitting: a single action block exceeding a token threshold
+    FALLBACK (equal_length): When the trajectory cannot be parsed into
+    messages (e.g. flat tokenized response) OR K_i == 1 (single block =
+    no U-shape possible), fall back to equal-length K=20 splits. No error
+    raised, no sample dropped.
+
+    Long-block re-splitting: a single message exceeding a token threshold
     (default 100) is sub-divided into equal-length sub-blocks. Sub-blocks
     inherit the parent block's U-shape weight (no micro-U within a block).
-    This prevents a 500-token  此外 block and a 30-token <toolcall> block
-    from having the same resolution.
-
-    The exact tag set and nesting / fallback rules are TO BE DETERMINED once
-    real rollout data is available. Until then, ``segment_action_blocks``
-    raises NotImplementedError, and the weighting falls back to equal-length
-    K=20 splits.
+    This keeps a 500-token assistant turn from out-weighting a 30-token
+    tool call.
 
 Two scheme variants for Phase 3 ablation:
 - W0: uniform 1/(N * |tau_i|)
 - W2: above formula (replaces R4-w experiment)
 """
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+
+def _percentile(sorted_vals: list[float], q: float) -> float:
+    """Inclusive linear-interpolated percentile on a pre-sorted list. q in [0, 1]."""
+    if not sorted_vals:
+        return 0.0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    idx = q * (len(sorted_vals) - 1)
+    lo = int(idx)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = idx - lo
+    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
 
 
 class TokenWeighting:
@@ -58,14 +76,14 @@ class TokenWeighting:
         scheme: 'W0' (uniform) or 'W2' (priority * U-shaped block weight + clip).
         gamma: first-end exponential base (default 0.88).
         delta: last-end exponential base  (default 0.88, symmetric U).
-        segmenter: 'action_block' (primary, TBD) or 'equal_length'
-                   (fallback, K=20). Default 'equal_length' until data is in.
-        block_types: list of structural tag strings used by the action_block
-                     segmenter, e.g. ['此外', '<toolcall>', '<observation>',
-                     '<final_answer>']. Loaded from configs/base.yaml's
-                     weighting.block_types. Ignored when segmenter='equal_length'.
+        segmenter: 'message_block' (primary, OpenAI chat boundaries) or
+                   'equal_length' (fallback, K=20). Default 'message_block'.
+        role_boundaries: list of chat roles whose messages are treated as
+                         action blocks, e.g. ['assistant', 'tool']. Loaded
+                         from configs/base.yaml's weighting.role_boundaries.
+                         Ignored when segmenter='equal_length'.
         equal_length_K: number of equal-length blocks for the fallback (default 20).
-        long_block_threshold: max tokens per action block before re-splitting
+        long_block_threshold: max tokens per message block before re-splitting
                               (default 100). Sub-blocks inherit parent weight.
         clip_quantiles: (low, high) tuple for clipping (default (0.05, 0.95)).
 
@@ -85,112 +103,268 @@ class TokenWeighting:
         scheme: str = "W2",
         gamma: float = 0.88,
         delta: float = 0.88,
-        segmenter: str = "equal_length",
-        block_types=None,
+        segmenter: str = "message_block",
+        role_boundaries: Sequence[str] | None = None,
         equal_length_K: int = 20,
         long_block_threshold: int = 100,
-        clip_quantiles=(0.05, 0.95),
+        clip_quantiles: tuple[float, float] = (0.05, 0.95),
     ):
-        raise NotImplementedError
+        if scheme not in ("W0", "W2"):
+            raise ValueError(f"unknown scheme {scheme!r}")
+        if segmenter not in ("message_block", "equal_length"):
+            raise ValueError(f"unknown segmenter {segmenter!r}")
+        self.scheme = scheme
+        self.gamma = gamma
+        self.delta = delta
+        self.segmenter = segmenter
+        self.role_boundaries = tuple(role_boundaries or ("assistant", "tool"))
+        self.equal_length_K = equal_length_K
+        self.long_block_threshold = long_block_threshold
+        self.clip_quantiles = clip_quantiles
 
-    def compute(self, replay_batch):
-        """Return a tensor of shape [batch, max_response_len] with per-token weights.
+    def compute(self, replay_batch: Sequence[dict]) -> list[list[float]]:
+        """Return per-token weights for each trajectory in replay_batch.
+
+        Args:
+            replay_batch: list of dicts, each with at least:
+                response_token_ids: list[int] -- response tokens only (prompt excluded).
+                priority: float -- trajectory-level priority.
+                messages (optional): list of OpenAI chat messages for the response,
+                                     each with role, content, token_span: (start, end).
+                                     Required for segmenter='message_block'.
+
+        Returns:
+            List of per-token weight lists, one per trajectory.
+            For W0: uniform 1/(N * |tau_i|) across the batch.
+            For W2: priority * U-shape + clip + normalize.
 
         Scope: response tokens ONLY. The user request (prompt) does not
         participate in L_replay loss and is excluded from block segmentation
         and weight assignment. t=0 is the first response token.
 
-        Pipeline:
-            1. Try segment_action_blocks on each trajectory's RESPONSE.
-               If K_i >= 2, use action-block segmentation.
-               If K_i == 1 or parsing fails, fall back to segment_equal_length.
-            2. For long blocks (> long_block_threshold tokens), re-split into
-               equal-length sub-blocks inheriting the parent's U-shape weight.
-            3. For each response token, compute gamma^block(t) + delta^(K_i - block(t)).
-            4. Multiply by priority_i (broadcast across tokens within trajectory).
-            5. Clip to [q_5, q_95], normalize per batch.
+        Pipeline (W2):
+            1. Segment each response into K_i blocks via message boundaries.
+               Fall back to equal_length when K_i == 1 or parsing fails.
+            2. Re-split blocks longer than long_block_threshold; sub-blocks
+               inherit parent U-shape weight.
+            3. Compute U-shape weight per token via _u_shaped_block_weights.
+            4. Multiply by trajectory priority.
+            5. Clip to [q_5, q_95] across batch, normalize per batch.
         """
-        raise NotImplementedError
+        if self.scheme == "W0":
+            return self._w0(replay_batch)
+        return self._w2(replay_batch)
 
-    def _segment(self, trajectory):
-        """Dispatch to action-block or equal-length segmenter.
+    def _w0(self, replay_batch: Sequence[dict]) -> list[list[float]]:
+        n = len(replay_batch)
+        if n == 0:
+            return []
+        per_traj = []
+        for traj in replay_batch:
+            seq_len = len(traj["response_token_ids"])
+            if seq_len == 0:
+                per_traj.append([])
+                continue
+            w = 1.0 / (n * seq_len)
+            per_traj.append([w] * seq_len)
+        return per_traj
 
-        Tries action-block first; falls back to equal-length when:
-          - no structural tags found (unparseable trajectory)
-          - tags are malformed / incomplete
-          - K_i == 1 (single block = no U-shape possible)
+    def _w2(self, replay_batch: Sequence[dict]) -> list[list[float]]:
+        all_weights: list[list[float]] = []
+        for traj in replay_batch:
+            seq_len = len(traj["response_token_ids"])
+            if seq_len == 0:
+                all_weights.append([])
+                continue
+            block_ids, k_i = self._segment(traj)
+            block_ids, k_i = self._resplit_long_blocks(block_ids, k_i)
+            u = self._u_shaped_block_weights(block_ids, k_i)
+            prio = float(traj.get("priority", 1.0))
+            all_weights.append([prio * wt for wt in u])
+
+        return self._clip_and_normalize(all_weights)
+
+    def _segment(self, trajectory: dict) -> tuple[list[int], int]:
+        """Dispatch to message-block or equal-length segmenter.
 
         Returns:
-            block_ids: int tensor of shape [seq_len], block index per token.
+            block_ids: list[int] of length seq_len, block index per token.
             K_i: total block count for this trajectory.
         """
-        raise NotImplementedError
+        seq_len = len(trajectory["response_token_ids"])
+        if self.segmenter == "message_block":
+            try:
+                block_ids, k_i = segment_message_blocks(trajectory, self.role_boundaries)
+                if k_i >= 2:
+                    return block_ids, k_i
+            except (KeyError, ValueError, TypeError):
+                pass
+        return segment_equal_length(seq_len, self.equal_length_K)
 
-    def _resplit_long_blocks(self, block_ids, token_counts_per_block, K_i):
-        """Re-split blocks exceeding long_block_threshold into equal sub-blocks.
+    def _resplit_long_blocks(
+        self, block_ids: list[int], k_i: int
+    ) -> tuple[list[int], int]:
+        """Re-split blocks longer than long_block_threshold into equal sub-blocks.
 
-        Sub-blocks inherit the parent block's U-shape weight. No micro-U
-        within a block -- the purpose is resolution, not additional weighting.
-
-        Args:
-            block_ids: per-token block assignments.
-            token_counts_per_block: list of token counts for each block.
-            K_i: original block count.
-
-        Returns:
-            new_block_ids: updated per-token block assignments.
-            new_K_i: updated block count after re-splitting.
+        Sub-blocks inherit the parent block's U-shape weight (block index
+        is preserved at the block level via a parent map -- new ids only
+        affect resolution within long messages).
         """
-        raise NotImplementedError
+        if not block_ids:
+            return block_ids, k_i
+        # Count tokens per block
+        counts: dict[int, int] = {}
+        for b in block_ids:
+            counts[b] = counts.get(b, 0) + 1
+        # If no block is long, nothing to do.
+        if all(c <= self.long_block_threshold for c in counts.values()):
+            return block_ids, k_i
 
-    def _u_shaped_block_weights(self, block_ids, K_i):
+        new_ids = []
+        # Parent-map: new sub-block id -> parent block id (for U weighting).
+        parent_map: dict[int, int] = {}
+        next_id = 0
+        # Walk in original order, allocating sub-blocks contiguously.
+        i = 0
+        n = len(block_ids)
+        while i < n:
+            cur = block_ids[i]
+            j = i
+            while j < n and block_ids[j] == cur:
+                j += 1
+            run_len = j - i
+            if run_len <= self.long_block_threshold:
+                new_ids.extend([next_id] * run_len)
+                parent_map[next_id] = cur
+                next_id += 1
+            else:
+                # Split into ceil(run_len / threshold) sub-blocks.
+                n_sub = (run_len + self.long_block_threshold - 1) // self.long_block_threshold
+                base = run_len // n_sub
+                rem = run_len % n_sub
+                for s in range(n_sub):
+                    sub_len = base + (1 if s < rem else 0)
+                    new_ids.extend([next_id] * sub_len)
+                    parent_map[next_id] = cur
+                    next_id += 1
+            i = j
+
+        # New K_i = number of sub-blocks; but each sub-block's U weight is
+        # computed from its PARENT id under the ORIGINAL K_i so the tail/head
+        # emphasis doesn't shift just because a single message got long.
+        self._parent_map = parent_map  # consumed by _u_shaped_block_weights
+        self._orig_k = k_i
+        return new_ids, next_id
+
+    def _u_shaped_block_weights(self, block_ids: Sequence[int], k_i: int) -> list[float]:
         """(gamma^block(t) + delta^(K_i - block(t))) / 2.
 
         Division by 2 ensures gamma=delta=1 yields uniform weight 1.0 for all
         blocks (flat / equal-weight baseline W0). This makes gamma and delta
         continuous controls: 1.0 = no U-shape, <1.0 = progressively stronger U.
 
-        Symmetric when gamma == delta. Asymmetric U is allowed by setting them
-        differently (e.g., delta < gamma to emphasise the tail more).
+        If _resplit_long_blocks has been called, use parent block index to
+        keep U-shape stable across resolution changes.
         """
-        raise NotImplementedError
+        parent_map = getattr(self, "_parent_map", None)
+        orig_k = getattr(self, "_orig_k", k_i)
+        if parent_map is not None:
+            denom = max(orig_k - 1, 1)
+            return [
+                (self.gamma ** parent_map[b] + self.delta ** (orig_k - 1 - parent_map[b])) / 2.0
+                for b in block_ids
+            ]
+        denom = max(k_i - 1, 1)
+        return [
+            (self.gamma ** b + self.delta ** (k_i - 1 - b)) / 2.0
+            for b in block_ids
+        ]
 
-    def _clip_and_normalize(self, w):
-        """Clip to quantile range, then normalize per batch."""
-        raise NotImplementedError
+    def _clip_and_normalize(self, weights: list[list[float]]) -> list[list[float]]:
+        """Clip to quantile range, then normalize per batch so sum = 1."""
+        flat = [w for row in weights for w in row]
+        if not flat:
+            return weights
+        sorted_flat = sorted(flat)
+        q_lo, q_hi = self.clip_quantiles
+        lo = _percentile(sorted_flat, q_lo)
+        hi = _percentile(sorted_flat, q_hi)
+        clipped = [[min(max(w, lo), hi) for w in row] for row in weights]
+        total = sum(w for row in clipped for w in row)
+        if total <= 0:
+            return clipped
+        return [[w / total for w in row] for row in clipped]
 
 
-def segment_action_blocks(trajectory, block_types=None):
-    """Split a trajectory into action blocks by structural tags.
+def segment_message_blocks(
+    trajectory: dict, role_boundaries: Sequence[str] = ("assistant", "tool")
+) -> tuple[list[int], int]:
+    """Split a trajectory into action blocks by OpenAI chat message boundaries.
 
-    Returns K_i >= 2 on success. Caller should fall back to
-    segment_equal_length when this returns K_i == 1 or raises.
-
-    TODO(post-data): implement once real rollout data is in. Open questions:
-    - exact tag set:  此外 / <toolcall> / <observation> / <final_answer> /
-      possibly more (e.g., <plan>, <self_reflection>)
-    - nesting rules: how to handle <toolcall> nested inside  此外 etc.
-    - degenerate cases: trajectories without any structural tags
-    - long-block re-splitting threshold
+    Each message whose role is in ``role_boundaries`` becomes one action
+    block. Assistant turns with both ``content`` and ``tool_calls`` are
+    kept as a single block (one thinking + tool call decision unit).
 
     Args:
-        trajectory: tokenized trajectory with raw text or pre-parsed tag spans.
-        block_types: iterable of recognised tag strings, e.g. ['此外',
-                     '<toolcall>', '<observation>', '<final_answer>']. Default
-                     None means use the project default from
-                     configs/base.yaml (weighting.block_types).
+        trajectory: dict with at least:
+            response_token_ids: list[int]
+            messages: list of {role, token_span: (start, end), ...}, with
+                      token_span indexing into response_token_ids.
 
     Returns:
-        block_ids: int tensor of shape [seq_len], block index per token.
+        block_ids: list[int] of length seq_len, block index per token.
         K_i: total block count (>= 2 on success; == 1 triggers fallback).
+
+    Raises:
+        KeyError if messages or token_span are missing -- caller catches
+        and falls back to equal-length segmentation.
     """
-    raise NotImplementedError("Action-block segmentation pending real rollout data.")
+    messages = trajectory["messages"]  # raise KeyError -> caller falls back
+    seq_len = len(trajectory["response_token_ids"])
+    role_boundaries = set(role_boundaries)
+
+    block_ids = [-1] * seq_len
+    k_i = 0
+    for m in messages:
+        if m.get("role") not in role_boundaries:
+            continue
+        span = m.get("token_span")
+        if span is None:
+            continue
+        start, end = span
+        start = max(0, start)
+        end = min(seq_len, end)
+        if start >= end:
+            continue
+        for t in range(start, end):
+            block_ids[t] = k_i
+        k_i += 1
+
+    # Any token not assigned (gap) inherits the nearest preceding block, or 0 if none.
+    last = 0
+    for t in range(seq_len):
+        if block_ids[t] == -1:
+            block_ids[t] = last
+        else:
+            last = block_ids[t]
+
+    if k_i < 2:
+        raise ValueError("K_i < 2; caller should fall back to equal-length")
+    return block_ids, k_i
 
 
-def segment_equal_length(seq_len: int, K: int = 20):
+def segment_equal_length(seq_len: int, k: int = 20) -> tuple[list[int], int]:
     """Fallback: split a trajectory of seq_len tokens into K equal-length blocks.
 
-    Used when action-block segmentation fails or yields K_i == 1.
-    Returns block_ids and K (== K argument).
+    Used when message-block segmentation fails or yields K_i == 1.
+
+    Returns:
+        block_ids: list[int] of length seq_len, block index per token.
+        K: total block count (== k argument, or seq_len if shorter).
     """
-    raise NotImplementedError
+    if seq_len == 0:
+        return [], 0
+    k_eff = min(k, seq_len)
+    block_size = seq_len / k_eff
+    block_ids = [min(int(t / block_size), k_eff - 1) for t in range(seq_len)]
+    return block_ids, k_eff

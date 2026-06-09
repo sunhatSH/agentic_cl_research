@@ -10,6 +10,7 @@
 - [实验参数组合设计](#实验参数组合设计)
 - [评测指标体系](#评测指标体系)
 - [GPU 资源分配与训练流水线](#gpu-资源分配与训练流水线)
+- [训练精度方案](#训练精度方案)
 - [待解决问题](#待解决问题)
 - [参考文献](#参考文献)
 
@@ -473,12 +474,14 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | 项目 | 规格 |
 |------|------|
 | GPU | 64 × H800 (80 GB, 990 TFLOPS BF16) |
-| 模型 | 70B（具体型号待定，按通用 70B 估算） |
+| 模型 | **Qwen3.6-27B**（HF: `Qwen/Qwen3.6-27B`） |
 | RL 算法 | GRPO（无 critic） |
 | 数据长度 | 1000–2000 tokens/条，均值 ~1500 |
 | 交互轮数 | 平均 ~5 轮/query（Deep Research: LLM gen → tool exec 交替） |
 | 训练框架 | verl，支持 Colocate 与分离两种部署模式 |
 | 估算假设 | 训练 MFU=0.40，vLLM 单 TP8 replica 吞吐 ~1500 tok/s，多轮 KV 复用效率 0.80 |
+
+> **⚠️ 本节及以下"GPU 资源分配 / 训练精度"中所有按 70B 估算的硬数字（显存预算、FSDP shard 大小、参数同步耗时等）需要按 Qwen3.6-27B 重算。**模型确定时间 2026-06-09，重算待办：等拿到模型 config（hidden_size / num_layers / num_kv_heads）后统一更新。在此之前：70B 数字仅作"上界参考"——27B 实际显存与同步耗时显著低于现有数字。
 
 ### Deep Research 场景下的一轮交互耗时
 
@@ -644,106 +647,137 @@ $$T_{\text{step}} = \max(662, 139) + 20 = 682\text{s}, \quad \text{吞吐} = 5.3
 
 原因：虽然 CPU 交互仅占 rollout 的 12%，但分离模式下训练与 rollout 并行带来的收益 > Colocate 推理吞吐优势。分离 40+24 恰好让训练和 rollout 时间接近（278s vs 321s），几乎零气泡。
 
-### 推荐：One Step Off Policy 分离 40+24
+### 推荐：Fully Async Policy 分离 40+24（严格控制异步程度）
 
-verl 原生支持 **One Step Off Policy Async Trainer**（`verl.experimental.one_step_off_policy`），核心机制：推理生成 step $t+1$ 的同时，用 step $t$ 的数据训练。推理与训练在不同 GPU 组上并行，权重通过 NCCL 同步（<300ms，可忽略）。
+**最终方案：Fully Async Policy（`verl.experimental.fully_async_policy`），但通过 `staleness_threshold ≤ 0.5` 严格控制异步程度。** Fully Async 是 verl 在 2026-05 由美团搜索团队贡献的新方案，是 One Step Off Policy 的超集 —— 通过参数可平滑覆盖从 on-policy 到多步异步的全谱：
 
-> 来源：[verl 官方文档](https://github.com/verl-project/verl/blob/main/docs/advance/one_step_off.md)，参考论文 [AReaL](https://arxiv.org/abs/2505.24298)。7B 模型实测比 colocate 同步模式快 23–40%。
+| 模式 | `trigger_parameter_sync_step` | `staleness_threshold` | `partial_rollout` | 等价于 |
+|------|-------------------------------|------------------------|-------------------|--------|
+| On-policy pipeline | 1 | 0 | False | colocate 同步 + 资源隔离 |
+| Stream off-policy pipeline | >1 | 0 | False | 流式同步训练 |
+| **Async stream + stale samples** | ≥1 | **0 < τ ≤ 0.5** | False | 受控异步（**本项目主方案**） |
+| Async stream + partial rollout | ≥1 | >0 | True | 最大吞吐，长尾切断重启 |
+| One Step Off Policy（旧方案） | 1 | 1.0 | False | fully_async 的特例 |
 
-#### One Step Off Policy 流水线
+> 来源：[verl fully_async docs](https://github.com/verl-project/verl/blob/main/docs/advance/fully_async.md)（2026-05-25），参考 [AReaL](https://arxiv.org/abs/2505.24298)、[Magistral](https://arxiv.org/abs/2506.10910)、[StreamRL](https://arxiv.org/abs/2504.15930)、[AsyncFlow](https://arxiv.org/abs/2507.01663)。Qwen2.5-Math-7B 128 卡实测比 colocate 同步快 **2.35–2.67×**，Qwen3-30B-A3B GRPO 快 **1.72–2.01×**，Qwen2.5-7B + ReTool 多轮工具实测快 **1.55–1.60×**。
 
-```python
-# verl 实现核心逻辑
-continuous_iterator = create_continuous_iterator()
-batch_future = async_gen_next_batch(continuous_iterator)  # 首次：推理组生成数据
+#### 为什么选 Fully Async 而非沿用 One Step Off Policy
 
-while batch_future is not None:
-    batch = batch_future.get()              # 取上一步推理结果
-    batch_future = async_gen_next_batch()   # 立即启动下一步推理（不等训练）
+| 维度 | One Step Off Policy | Fully Async |
+|------|---------------------|-------------|
+| 异步程度可调 | 固定 1 step 错位 | `staleness_threshold` 0–N 连续可调 |
+| 长尾切断 | 不支持 | `partial_rollout=True` 可中断未完成的 rollout 立刻同步参数 |
+| 多轮工具支持 | AgentLoop（不可中断） | `AsyncPartialToolAgentLoop`（可中断恢复） |
+| 数据流 | batch 级 | 样本级流式（`require_batches=1` 即 token 级） |
+| 7B 加速比 | 1.23× / 1.40× | 2.35× / 2.67× |
+| 文档状态 | 仍维护 | 主推方向；后续优化都在 fully_async |
 
-    compute_advantages(batch)               # 训练组并行工作
-    actor.update_actor(batch)
+One Step Off Policy 仍是合法配置（`staleness_threshold=1.0, trigger_parameter_sync_step=1`），但 fully_async 给了"严格控制异步"的旋钮。
+
+#### 严格控制异步程度的具体取值
+
+四个核心旋钮的本项目设定：
+
+```yaml
+async_training:
+  staleness_threshold: 0.3        # 最多 30% 样本来自旧策略；起步保守，可调到 0.5
+  trigger_parameter_sync_step: 4  # 训练 4 个 mini-batch 同步一次参数
+  require_batches: 4              # 一次取 4 个 mini-batch 再训练（非纯流式，更稳）
+  partial_rollout: False          # Phase 1–4 关闭，Phase 5 大 rollout 量再开
 ```
 
-```text
-推理组 (40 GPU):  [Rollout t]  [Rollout t+1]  [Rollout t+2]  ...
-                  |← 278s →|  |← 278s →|    |← 278s →|
-                              ↓sync(<1s)↓    ↓sync↓
-训练组 (24 GPU):        [Train t]     [Train t+1]  ...
-                        |← 321s →|   |← 321s →|
+**每个值的依据**：
 
-Step 时间 = max(rollout, train) ≈ 321s + sync(<1s) ≈ 321s
-```
+- **`staleness_threshold=0.3`**：verl 官方 128 卡 ablation 显示 0.1→0.3→0.5 加速比 1.93×→2.35×→2.36×（边际收益在 0.3 附近饱和），但 staleness 越大对训练稳定性威胁越大。本项目 27B + 多轮 + CL replay 已经引入额外 off-policy 偏移，再叠加大 staleness 风险高，起步压到 0.3。
+- **`trigger_parameter_sync_step=4`**：参考 30B GRPO 实验配置（`512/128=4`，`train_batch_size/(require_batches × ppo_mini_batch_size)`）。本项目 `train_batch_size=512`、`ppo_mini_batch_size=32`、`require_batches=4`，恰好 `512/(4×32)=4`。
+- **`require_batches=4`**：verl 的 require_batches ablation 显示 1→2→4 训练时间反而下降（4h25m→3h35m→3h13m），原因是过细粒度流式分发会扰乱采样顺序、拉长 response，故选 4。
+- **`partial_rollout=False`（Phase 1–4）**：partial_rollout 必须配合 `staleness_threshold>0` 才生效，且对 Echo Trap 监控、轨迹完整性追踪都引入额外复杂度；CL 训练的核心信号是完整 trajectory 上的 priority 与块权重，半截轨迹做 replay 数据脏。Phase 5（4096×2 大 rollout）再开。
 
-#### 重新计算 Step 时间
-
-One Step Off Policy 模式下，step 时间 = max(rollout, train)，而非 rollout + train 串行：
-
-$$T_{\text{step}} = \max(T_{\text{rollout}}, T_{\text{train}}) + T_{\text{sync}}$$
-
-**分离 40+24（One Step Off Policy）**：
-
-$$T_{\text{step}} = \max(278, 321) + 0.3 = 321.3\text{s}$$
-
-$$\text{吞吐} = \frac{3600}{321.3} = 11.2 \text{ steps/hr}$$
-
-**Colocate 64（同步模式，无并行）**：
-
-$$T_{\text{step}} = T_{\text{rollout}} + T_{\text{train}} + 2 \times T_{\text{reshard}} = 182 + 127 + 30 = 339\text{s}$$
-
-$$\text{吞吐} = \frac{3600}{339} = 10.6 \text{ steps/hr}$$
-
-**分离 40+24（普通流水线，无 one-step-off）**：
-
-$$T_{\text{step}} = \max(278, 321) + 20 = 341\text{s}$$
-
-$$\text{吞吐} = \frac{3600}{341} = 10.6 \text{ steps/hr}$$
-
-#### 三种模式对比
-
-| 模式 | Rollout | Train | Step | 吞吐 | 特点 |
-|------|---------|-------|------|------|------|
-| Colocate 64（同步） | 182s | 127s | 339s | 10.6/hr | 串行，推理训练不能并行 |
-| 分离 40+24（普通流水线） | 278s | 321s | 341s | 10.6/hr | 训练等推理完成 20s sync |
-| **分离 40+24（one-step-off）** | **278s** | **321s** | **321s** | **11.2/hr** | **推理‖训练并行，sync <1s** |
-
-One Step Off Policy 比普通分离流水线快 **5.7%**，比 Colocate 快 **5.7%**。核心优势：NCCL 权重同步 <300ms，替代了普通模式的 20s cross-group sync。
-
-#### verl One Step Off Policy 配置
-
-```shell
-python3 -m verl.experimental.one_step_off_policy.async_main_ppo \
-    actor_rollout_ref.hybrid_engine=False \
-    actor_rollout_ref.actor.strategy=fsdp2 \
-    trainer.nnodes=1 trainer.n_gpus_per_node=24 \
-    rollout.nnodes=1 rollout.n_gpus_per_node=40
-```
-
-#### verl 官方 7B 实验数据
-
-| training mode | engine | total time |
-|---|---|---|
-| colocate sync | VLLM+FSDP2 | 19h18m |
-| one-step-overlap async | VLLM+FSDP2 | **15h34m（+23%）** |
-| colocate sync | VLLM+Megatron | 18h21m |
-| one-step-overlap async | VLLM+Megatron | **13h06m（+40%）** |
-
-> 实验：Qwen2.5-Math-7B，2 节点 16×H20，推理 4 GPU + 训练 12 GPU，DAPO 算法。来源：[verl docs](https://github.com/verl-project/verl/blob/main/docs/advance/one_step_off.md)。7B 推理快，训练是瓶颈；70B 推理是瓶颈，加速比不能直接搬用。
-
-#### One Step Off Policy 与 CL Loss 的兼容性
+#### Fully Async + CL Loss 兼容性
 
 | CL 组件 | 兼容性 | 说明 |
 |---------|--------|------|
-| $L_{rl}$ | ✅ | 直接复用，one-step-off 用 rollout_log_probs 做 importance sampling |
-| $L_{kl}$ | ✅ | ref log_prob 在训练阶段计算，与推理无关 |
-| $L_{ent}$ | ✅ | verl/GRPO 内置 |
-| $L_{replay}$ | ⚠️ 需验证 | replay forward 在训练组做，不影响推理组。但需确认异步模式下 buffer 采样时序是否正确（旧数据 vs 当前策略的 off-policy 偏移） |
+| $L_{rl}$ | ✅ | `use_rollout_log_probs=True` 默认开，old_log_prob 用 rollout 算的版本，与 Fully Async 强一致 |
+| $L_{kl}$ | ✅ | reverse KL 在训练阶段算，ref model 与推理组无关 |
+| $L_{ent}$ | ✅ | GRPO 内置 |
+| $L_{replay}$ | ✅ | replay forward 在训练组做。Fully Async 本身就是 off-policy 框架，buffer 数据的"旧"程度比 staleness=0.3 远大，与异步训练同源 |
+| Echo Trap 防护 | ⚠️ | 异步引入额外多样性扰动，需监控 `clip_ratio_high` 与 entropy 曲线 |
 
-> $L_{replay}$ 是 off-policy 的（buffer 里的数据本身就是旧策略生成的），与 one-step-off 的 off-policy 框架天然兼容。但需要确认 verl 的 `async_main_ppo` 是否支持自定义 loss 注入（参考 `doc/VerlIntegration.md` 中 `actor.set_loss_fn()` API），若不支持则需在 `async_main_ppo` 基础上添加 cl_loss 注入点。
+> $L_{replay}$ 是 off-policy 的，与 fully_async 天然契合。但 `verl.experimental.fully_async_policy.fully_async_main` 入口与 `actor.set_loss_fn()` API 的对接方式需在 Phase 1 B1 做集成测试，详见 `doc/VerlIntegration.md`。
 
-#### AgentLoop 支持
+#### 重新计算 Step 时间
 
-One Step Off Policy 已支持 AgentLoop（多轮 tool calling），无需额外适配。
+Fully Async 模式下 step 时间 = max(rollout, train),`staleness_threshold > 0` 时还能"借用"未来 rollout 的时间窗:
+
+$$T_{\text{step}} = \max(T_{\text{rollout}}, T_{\text{train}}) + T_{\text{sync}}$$
+
+权重同步基于 NCCL（参考 [checkpoint-engine](https://github.com/MoonshotAI/checkpoint-engine)）。verl 实测同步耗时：
+
+| 模型规模 | trainer rank | rollout rank | checkpoint-engine | 单次同步 |
+|----------|--------------|--------------|-------------------|----------|
+| Qwen2.5-Math-7B | 4 | 4 | True | 0.02s |
+| Qwen3-30B-A3B | 16 | 16 | True | 4.38s |
+| Qwen3-235B-A22B | 64 | 64 | True | 23.70s |
+
+27B 估算 ~4–5s/次（参考 verl 实测 Qwen3-30B-A3B 为 4.38s，27B dense 同量级）；本项目 `trigger_parameter_sync_step=4` 即每 4 mini-batch（约每 step 同步 1 次），同步开销均摊到 step 内。
+
+**分离 40+24（Fully Async, staleness=0.3）**：
+
+$$T_{\text{step}} = \max(278, 321) + 1 = 322\text{s}$$
+
+$$\text{吞吐} = \frac{3600}{322} \approx 11.2 \text{ steps/hr}$$
+
+异步加速主要来自长尾消除（`staleness_threshold>0` 允许 trainer 不必死等最慢的 rollout）。但本项目 traj/query=2、未启用 partial_rollout，长尾不严重，因此实际加速接近 One Step Off Policy 的水平。
+
+#### 三种模式对比
+
+| 模式 | Rollout | Train | Step | 吞吐 | 异步控制 |
+|------|---------|-------|------|------|----------|
+| Colocate 64（同步） | 182s | 127s | 339s | 10.6/hr | N/A |
+| 分离 40+24（One Step Off Policy） | 278s | 321s | 321s | 11.2/hr | 固定 1 step |
+| **分离 40+24（Fully Async, staleness=0.3）** | **278s** | **321s** | **322s** | **11.2/hr** | **可调** |
+
+吞吐数字接近，但 Fully Async 给了"出问题就关掉异步"的退路（`staleness_threshold=0` 即同步），是更稳的工程选择。
+
+#### verl Fully Async 启动配置
+
+```shell
+python -m verl.experimental.fully_async_policy.fully_async_main \
+    actor_rollout_ref.hybrid_engine=False \
+    actor_rollout_ref.actor.strategy=fsdp2 \
+    actor_rollout_ref.actor.use_rollout_log_probs=True \
+    actor_rollout_ref.rollout.mode=async \
+    actor_rollout_ref.rollout.name=vllm \
+    actor_rollout_ref.rollout.multi_turn.enable=True \
+    trainer.nnodes=1 trainer.n_gpus_per_node=24 \
+    rollout.nnodes=1 rollout.n_gpus_per_node=40 \
+    rollout.total_rollout_steps=$((512*100)) \
+    async_training.staleness_threshold=0.3 \
+    async_training.trigger_parameter_sync_step=4 \
+    async_training.require_batches=4 \
+    async_training.partial_rollout=False
+```
+
+> 多轮工具自动启用 `AsyncPartialToolAgentLoop`，参考 `recipe/fully_async_policy/shell/dapo_7b_async_retool.sh`。
+
+#### 监控指标（Fully Async 必看）
+
+| 指标 | 含义 | 报警阈值 |
+|------|------|----------|
+| `trainer/idle_ratio` | trainer 空转比 | >20% → 推理组资源不够 |
+| `rollouter/idle_ratio` | rollouter 空转比 | >20% → 训练组资源不够 |
+| `fully_async/count/stale_samples_processed` | 旧样本累计数 | 占比 > staleness_threshold 即异常 |
+| `fully_async/partial/partial_ratio` | 半截轨迹占比 | partial_rollout=False 时应为 0 |
+
+#### 何时把 staleness 调到 0
+
+如出现以下任一现象,立刻 `staleness_threshold=0` 退化为同步流式（mode 2）:
+
+1. Echo Trap 触发（response length 暴涨 / clip_ratio_high 飙升）
+2. ClawEval Pass³ 与 colocate baseline 差距 > 5%
+3. $L_{replay}$ 与 staleness 样本叠加导致梯度方差异常
+
+
 
 ### 时空图
 
@@ -813,7 +847,7 @@ gantt
 
 | 组件 | 每卡显存 | 说明 |
 |------|----------|------|
-| 参数 shard | ~1.7 GB | 70B / 64 |
+| 参数 shard | ~0.8 GB | 27B / 64 (Colocate 模式下全 64 卡 FSDP) |
 | Optimizer | ~14.0 GB | Adam (m+v) FP32 |
 | 梯度 + Activations | ~12 GB | |
 | vLLM KV cache | ~5–10 GB | 推理阶段 |
@@ -853,10 +887,124 @@ S2 下训练量也翻 4×，训练开始成为瓶颈，Colocate 微弱反超。�
 | 决策 | 选择 | 理由 |
 |------|------|------|
 | 部署模式 | **分离 40+24** | Deep Research (tool exec 4–8s/turn) 下比 Colocate 快 3–7% |
-| $L_{replay}$ 频率 | 每 step 计算 | 29s / 341s = 8.5% 开销 |
+| 异步框架 | **Fully Async（受控）** | verl `fully_async_policy`，`staleness_threshold=0.3, trigger_parameter_sync_step=4, require_batches=4, partial_rollout=False`。30B GRPO 实测 1.72–2.01×；可平滑退化为同步 |
+| $L_{replay}$ 频率 | 每 step 计算 | 29s / 322s = 9.0% 开销 |
 | Agent 执行分离 | 不分离 | 预执行不可行 |
-| 后备方案 | Colocate 64 | 若实测 tool exec <2s/turn 则切回 |
-| 首个实验 | 分离 40+24 | B1 测量实际 tool exec 时间确认 |
+| 训练精度 | **BF16 混合** | 参数/激活 BF16 + FP32 主权重 + FP32 Adam，详见下节 |
+| Rollout 精度 | **BF16（起步）→ FP8 可选** | 27B 上 FP8 rollout 可参考 verl 30B 实测；Phase 1 B1 跑 BF16，若 Token-level TIS 稳定后可在 Phase 5 切 FP8 提速 ~12–35% |
+| 后备方案 | Colocate 64 | 若实测 tool exec <2s/turn 或异步训练崩盘则切回 |
+| 首个实验 | 分离 40+24 + Fully Async | B1 测量实际 tool exec 时间、staleness 实际占比、idle_ratio 后再调参 |
+
+---
+
+## 训练精度方案
+
+### 总体选择：BF16 混合精度（参数/激活）+ FP32 主权重 + FP32 Adam
+
+**当前方案在 Phase 1–4 全部用 BF16 混合精度训练，rollout 也用 BF16，FP8 不进入主路径。** 理由如下。
+
+### 各组件的精度选择
+
+| 组件 | 起步精度 | 显存（27B） | 备选 | 切换条件 |
+|------|----------|-------------|------|----------|
+| **训练参数（compute）** | BF16 | 54 GB | FP8 (E4M3/E5M2 hybrid) | 可选但非必须；27B 显存余量充裕 |
+| **FP32 主权重（master copy）** | FP32 | 280 GB | 不可省 | 必须保留，保证更新数值稳定 |
+| **激活值** | BF16 | ~30 GB / micro-batch | FP8 activation | 同上 |
+| **梯度** | BF16 | 140 GB（all-reduce 时） | FP8 | 同上 |
+| **Adam 一阶动量 m** | FP32 | 280 GB | BF16 / FP8 / 8-bit | 看 CL replay 稳定性 |
+| **Adam 二阶动量 v** | FP32 | 280 GB | BF16 / FP8 / 8-bit | 同上 |
+| **vLLM 推理参数** | BF16 | 140 GB（按 TP 分） | FP8 | Phase 5 提速 |
+| **vLLM KV cache** | BF16 | ~5–10 GB/卡 | FP8 KV | 显存压力大时考虑 |
+
+> 总计训练侧 ~840 GB（参数+主权重+m+v+grad），按 24 卡 FSDP shard 后约 **35 GB/卡**，加 activations + workspace 后约 **45–55 GB/卡**，H100 80GB 显存余量充裕。
+
+### 决策依据
+
+#### 1. 训练计算用 BF16，不用 FP16
+
+- BF16 与 FP32 同量级（指数 8 bit），不需要 loss scaling。FP16 在 RL 训练里几乎肯定会因为 advantage 范围跨度大而 underflow。
+- H100/H20 BF16 算力充足，是 verl/Megatron/FSDP2 的默认推荐。
+- verl `best_practices.rst` 明确：bf16/fp16 每参数 ~2 bytes 是 TP/PP 容量计算的基线假设。
+
+#### 2. 主权重 + Adam 动量用 FP32（不省）
+
+- BF16 mantissa 仅 7 bit。`new = old + lr·(1−β₁)·m + ...` 的更新量在 BF16 下尾数会被吃掉（`old=1.000`、`lr·grad=1e-5` 直接归零），训练就停了。
+- FP32 master weight 是 mixed-precision training 的标准做法,2 字节 BF16 算梯度、4 字节 FP32 累加更新,Megatron-Bridge / FSDP2 / DeepSpeed ZeRO 全都默认这样做。
+- Adam m/v 用 FP32 同理:m 是梯度 EMA，v 是梯度平方 EMA，平方在 BF16 下溢出/下溢都很容易。
+
+> 显存代价：`m + v + master_weight = 12 bytes/param`，70B 共 840GB，FSDP 分片 24 卡后 35GB/卡。若改 8-bit Adam（bitsandbytes）可省 ~67%（4→1.33 bytes/param），但 RL post-training 中 8-bit Adam 在长程任务上的稳定性未充分验证，先不上。
+
+#### 3. 不立即上 FP8 训练（27B + Agent + CL）
+
+verl FP8 E2E 现状（来自 `docs/low_precision/fp8.md`）:
+
+- 已验证模型：Qwen3-8B-Base、Qwen3-30B-A3B-Base
+- 27B + Agent + CL 三重叠加的 FP8 训练稳定性未验证
+- 需要 CUDA 12.9 + Transformer Engine + Megatron-Bridge + `NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1`
+- 多轮工具 + Echo Trap + CL replay 的叠加风险与 FP8 量化误差耦合在一起,出问题难以归因
+
+**结论**：Phase 1–6 全程 BF16 训练。如果 Phase 5 大 rollout 量下吞吐成为瓶颈，可考虑只把 rollout 切 FP8（**FP8 Rollout Only** 模式，训练保持 BF16），verl 7B/30B 实测 rollout 加速 12–35% 且 + Token-level TIS 后准确度不掉。
+
+#### 4. Rollout 起步 BF16，FP8 留作 Phase 5 加速选项
+
+| 选项 | 精度 | 加速 | 风险 | 启用条件 |
+|------|------|------|------|----------|
+| BF16 rollout（默认） | 训 BF16 / 推 BF16 | 1.0× | 低 | Phase 1–4 |
+| FP8 Rollout Only | 训 BF16 / 推 FP8 | 1.12–1.35× | 中（量化 KL 偏移，需 Token-level TIS 兜底） | Phase 5 大 rollout 量 + 充分 ablation |
+| FP8 E2E | 训 FP8 / 推 FP8 | 更高 | 中（27B 可参考 30B 实测） | 非必须，显存余量充裕 |
+
+启用 FP8 Rollout Only 必须同时打开 `actor.use_rollout_log_probs=True` + Token-level TIS（`algorithm.rollout_correction.bypass_mode`），否则准确度明显下掉。
+
+#### 5. KV cache：默认 BF16
+
+- 5×TP8 vLLM 推理组每卡 ~15 GB 模型 + 余量 ~65 GB,KV cache 用 BF16 已够。
+- FP8 KV cache 仅在多轮极长上下文下有显存收益,本项目 max_response_length 起步 8K,先不开。
+
+### 显存复算（分离 40+24 + Fully Async）
+
+#### 训练组（24 卡，FSDP2）
+
+| 组件 | 精度 | 27B 总量 | shard 24 卡 | 备注 |
+|------|------|----------|--------------|------|
+| 训练参数 | BF16 | 140 GB | 5.8 GB/卡 | FSDP shard |
+| 梯度 | BF16 | 140 GB | 5.8 GB/卡 | reduce-scatter 后 shard |
+| FP32 主权重 | FP32 | 280 GB | 11.7 GB/卡 | FSDP shard |
+| Adam m | FP32 | 280 GB | 11.7 GB/卡 | FSDP shard |
+| Adam v | FP32 | 280 GB | 11.7 GB/卡 | FSDP shard |
+| Activations | BF16 | ~30 GB | 1.3 GB/卡 | gradient checkpointing 后 |
+| Workspace + buffer | mixed | ~50 GB | ~2 GB/卡 | NCCL + autograd graph |
+| **合计** | | | **~50 GB/卡** | 80 GB 余 30 GB |
+
+> 对比之前章节"33 GB/卡"的估算：之前没把 FP32 主权重单独算入,补回后准确数字是 ~50 GB/卡。
+
+#### 推理组（40 卡，5×TP8 vLLM）
+
+| 组件 | 精度 | 每卡 | 备注 |
+|------|------|------|------|
+| 模型参数 | BF16 | ~17.5 GB | 70B / 8（TP8）|
+| KV cache | BF16 | ~15 GB | gpu_memory_utilization=0.85 |
+| Workspace | mixed | ~3 GB | |
+| **合计** | | **~35 GB/卡** | 80 GB 余 45 GB |
+
+### 与 Fully Async 的交互
+
+- `use_rollout_log_probs=True`(Fully Async 默认)要求 rollout 与训练用同一精度算 log_prob，否则 importance sampling 会有数值偏差。BF16 训练 + BF16 推理是干净的;BF16 训练 + FP8 推理则**必须**配合 Token-level TIS。
+- 权重同步走 NCCL：BF16 参数 70B 单次同步约 14 GB 数据量，配合 checkpoint-engine 估 ~10–15s/次。
+- staleness_threshold=0.3 引入的"旧参数样本"在 BF16 下数值稳定;若改 FP8 训练，量化误差与 staleness 误差叠加，建议先把 staleness 调到 0.1 再加 FP8。
+
+### 切 FP8 的判定流程（Phase 5 之前都不做）
+
+```
+Phase 1 B1:    BF16 全栈 → 测 rollout/train 真实耗时与显存
+Phase 2-4:     维持 BF16
+Phase 5 启动:  若 rollout 是瓶颈 (rollouter/idle_ratio < trainer/idle_ratio)
+              → 切 FP8 Rollout Only (训仍 BF16)
+              → 必须同时:
+                  algorithm.rollout_correction.bypass_mode=True
+                  Token-level TIS C=2
+              → ClawEval Pass³ 与 BF16 baseline 差 ≤ 2% 才允许保留
+Phase 6:      不动
+```
 
 ---
 
@@ -866,6 +1014,8 @@ S2 下训练量也翻 4×，训练开始成为瓶颈，Colocate 微弱反超。�
 2. replay buffer 的采样单位（整条轨迹 vs token-level segment）与采样比例 → Phase 3 实验回答
 3. 抗遗忘 priority 的 4 个信号（forgetting risk / rarity / diversity / within-bucket difficulty）的具体融合公式与权重 → Phase 3 R4/R5 对比实验回答
 4. 远距离桶 replay 的梯度冲突处理策略（降权 vs 投影 vs 自适应）→ Phase 6 X4 探索
+5. **Fully Async 异步控制**：`staleness_threshold=0.3` 起步是否需要再调（可能根据 rollouter/idle_ratio 与 trainer/idle_ratio 实测调整 0.1–0.5），与 partial_rollout 是否在 Phase 5 启用 → Phase 1 B1 与 Phase 5 验证
+6. **训练精度切换条件**：Phase 5 是否切 FP8 Rollout Only，需 Token-level TIS 在多轮 Agent 场景的稳定性数据 → Phase 5 决策
 
 ## 参考文献
 

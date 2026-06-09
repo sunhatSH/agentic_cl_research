@@ -199,7 +199,6 @@ verl 提供了 `recipe/` 目录用于自定义训练流程；`main_ppo.py` 入�
 
 ```
 agentic_cl_research/
-├── verl/                                # pip 安装，不 fork
 ├── replay_buffer/                       # 自己写，纯 Python，与 verl 解耦
 │   ├── __init__.py
 │   ├── bucket.py                        # 7 桶结构 + quota 分配（保底 + 平方根加权）
@@ -212,15 +211,39 @@ agentic_cl_research/
 │   ├── __init__.py
 │   ├── cl_loss.py                       # 自定义 cl_loss(config, model_output, data, dp_group)
 │   └── cl_main.py                       # 训练入口，组装 RayPPOTrainer + buffer + loss 注入
-├── configs/                             # 20 个实验的 yaml（B1, K1-K5, R0-R6, C1-C4, S1-S2）
+├── configs/                             # 20 个实验的 yaml（按 phase 分子目录）
 │   ├── base.yaml                        # 共享配置（模型、rollout、entropy_coeff=0.001）
-│   ├── b1.yaml                          # Phase 1 baseline
-│   ├── k1.yaml ... k5.yaml, k2-r.yaml   # Phase 2 KL 系列
-│   ├── r0.yaml ... r6.yaml, r4-k.yaml   # Phase 3 Replay 系列
-│   ├── c1.yaml ... c4.yaml              # Phase 4 组合
-│   └── s1.yaml, s2.yaml                 # Phase 5 rollout 规模
-└── eval/                                # 评测脚本（接 ClawEval）
+│   ├── phase1/b1.yaml                   # Phase 1 baseline
+│   ├── phase2/k1..k5.yaml, k2-r.yaml   # Phase 2 KL 系列
+│   ├── phase3/r0..r6.yaml, r4-k.yaml   # Phase 3 Replay 系列
+│   ├── phase4/c1..c4.yaml              # Phase 4 组合
+│   ├── phase5/s1.yaml, s2.yaml         # Phase 5 rollout 规模
+│   └── phase6/                          # Phase 6 按需探索
+├── eval/                                # 评测脚本（接 ClawEval）
+├── scripts/
+│   ├── train.sh                         # 训练启动：bash scripts/train.sh configs/b1.yaml
+│   └── eval.sh                          # 评测启动：bash scripts/eval.sh ckpts/b1-step-100
+├── tests/                               # 单元测试（replay_buffer 可独立测试，不依赖 verl/Ray）
+│
+│ ─── 运行时产物（gitignored，不提交）───
+├── ckpts/                               # 训练 checkpoint 输出
+│   └── <实验名>-step-<N>/              #   如 b1-step-100/、r4-step-50/
+├── buffer_dumps/                        # Replay Buffer 序列化快照（断点恢复用）
+├── logs/                                # 训练日志
+├── wandb/                               # W&B 实验追踪本地缓存
+└── eval/results/                        # 评测输出结果
 ```
+
+### 模型与 checkpoint 路径约定
+
+| 类别 | 存放位置 | 配置字段 |
+|------|----------|----------|
+| 预训练基底模型 | 仓库外（共享 NFS / HuggingFace cache） | `model.name`、`model.tokenizer`。**当前固定为 Qwen3.6-27B**（HF: `Qwen/Qwen3.6-27B`，已在 `configs/base.yaml` 中默认） |
+| 参考策略 $\pi_{ref}$ | 仓库外或 `ckpts/` | `actor_rollout_ref.ref.path`（$\pi_0$ → 基底路径，$\pi_{t-1}$ → 上阶段 ckpt） |
+| 训练 checkpoint | `ckpts/<实验名>-step-<N>/` | trainer 按 `save_freq` 自动写入 |
+| Buffer 快照 | `buffer_dumps/` | 可选持久化，训练中断后恢复 buffer 状态 |
+
+> verl 通过 pip 安装（`pip install verl`），不在仓库目录内、不 fork。
 
 ### 3.1 `cl_main.py` 骨架示例
 
