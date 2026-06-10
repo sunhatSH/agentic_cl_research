@@ -20,7 +20,10 @@ Backend choices: in-memory dict (default), SQLite, or LMDB.
 from __future__ import annotations
 
 import heapq
+import pickle
+import sqlite3
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
 
@@ -33,9 +36,15 @@ class TrajectoryStore:
     are O(1) for exact lookup, O(B) for bucket scan, O(B log B) for
     top-k priority (B = bucket size).
 
+    Persistence: the LIVE backend is always in-memory (fast indexes). On-disk
+    durability is provided by ``save_sqlite`` / ``load_sqlite`` SNAPSHOTS (and
+    ``BucketReplayBuffer.dump`` / ``load`` which also persist buffer counters),
+    not by a DB-backed live store.
+
     Args:
-        backend: 'memory' (default) / 'sqlite' / 'lmdb' (latter two not
-                 implemented in v1; raise NotImplementedError).
+        backend: 'memory' (default). 'sqlite' / 'lmdb' live backends are not
+                 implemented in v1 (raise NotImplementedError) -- use the
+                 SQLite snapshot API instead.
         path: storage path for persistent backends (ignored for memory).
     """
 
@@ -161,3 +170,68 @@ class TrajectoryStore:
 
     def all_ids(self) -> list[str]:
         return list(self._store.keys())
+
+    # ------------------------------------------------------------------ #
+    # SQLite snapshot persistence                                         #
+    # ------------------------------------------------------------------ #
+    # The live store stays in-memory (fast indexes). SQLite is used purely
+    # as an on-disk SNAPSHOT format so a long run can resume after a crash
+    # (doc/Progress.md "Buffer 持久化"). The trajectory payload + metadata are
+    # stored as pickle blobs (arbitrary message-list content); bucket and
+    # priority are kept as plain columns for ad-hoc inspection / queries.
+
+    _SCHEMA = (
+        "CREATE TABLE IF NOT EXISTS trajectories ("
+        " trajectory_id TEXT PRIMARY KEY,"
+        " bucket TEXT,"
+        " priority REAL,"
+        " traj BLOB,"
+        " meta BLOB)"
+    )
+
+    def save_sqlite(self, path: str | Path) -> None:
+        """Write the entire store to a SQLite snapshot at ``path`` (overwrite)."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            path.unlink()
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute(self._SCHEMA)
+            conn.executemany(
+                "INSERT OR REPLACE INTO trajectories VALUES (?, ?, ?, ?, ?)",
+                [
+                    (
+                        tid,
+                        meta.get("bucket"),
+                        float(meta.get("priority", 0.0)),
+                        pickle.dumps(traj, protocol=pickle.HIGHEST_PROTOCOL),
+                        pickle.dumps(meta, protocol=pickle.HIGHEST_PROTOCOL),
+                    )
+                    for tid, (traj, meta) in self._store.items()
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def load_sqlite(self, path: str | Path) -> None:
+        """Replace the store contents with a SQLite snapshot from ``path``.
+
+        Rebuilds all in-memory indexes (bucket / pattern) from the loaded rows.
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(path)
+        conn = sqlite3.connect(str(path))
+        try:
+            rows = conn.execute("SELECT trajectory_id, traj, meta FROM trajectories").fetchall()
+        finally:
+            conn.close()
+        self._store.clear()
+        self._by_bucket.clear()
+        self._by_pattern.clear()
+        for tid, traj_blob, meta_blob in rows:
+            traj = pickle.loads(traj_blob)
+            meta = pickle.loads(meta_blob)
+            self.put(tid, traj, meta)

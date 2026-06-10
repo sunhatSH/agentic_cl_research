@@ -407,6 +407,6 @@ verl 的 `engine.train_batch` 一次只接一个 batch。要在同一个 step �
 | `actor.kl_loss_coef` | $\lambda_2$ | Phase 2 扫描 0.01 / 0.05 / 0.10 |
 | `actor.kl_loss_type` | KL 类型 | reverse |
 | `actor_rollout_ref.ref.*` | $\pi_{ref}$ ckpt | $\pi_0$ 或 $\pi_{t-1}$ 路径 |
-| `actor_rollout_ref.rollout.n` | traj/query | 2 |
+| `actor_rollout_ref.rollout.n` | traj/query | 8 |
 | `data.train_batch_size`, `data.gen_batch_size` | batch 配置 | 1024 (S1) / 4096 (S2) |
 | `algorithm.adv_estimator` | advantage 估计 | grpo |

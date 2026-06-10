@@ -5,9 +5,10 @@
 defaults:
   - ../base
 
-actor:
-  use_kl_loss: false
-  kl_loss_coef: 0.0              # lambda_2 = 0
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0            # lambda_2 = 0
 
 cl:
   lambda_replay: 0.0             # lambda_3 = 0

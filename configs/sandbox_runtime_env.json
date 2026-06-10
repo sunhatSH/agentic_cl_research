@@ -1,0 +1,31 @@
+{
+  "_comment": "沙箱 Instance 内环境变量清单（起实例时经 envVars 注入）。值为空表示待填；机密填 docker/sandbox/runtime.env（gitignore）。",
+  "_doc": "见 rollout/sandbox_env.py::load_sandbox_runtime_env()",
+  "env": {
+    "PYTHONUNBUFFERED": "",
+    "PYTHONDONTWRITEBYTECODE": "",
+    "TZ": "",
+    "LANG": "",
+    "AGENTIC_CL_WORKSPACE": "",
+    "AGENTIC_CL_DATA_DIR": "",
+    "AGENTIC_CL_CACHE_DIR": "",
+    "AGENTIC_CL_LOG_LEVEL": "",
+    "PIP_INDEX_URL": "",
+    "PIP_TRUSTED_HOST": "",
+    "HTTP_PROXY": "",
+    "HTTPS_PROXY": "",
+    "NO_PROXY": "",
+    "WEB_SEARCH_API_URL": "",
+    "WEB_SEARCH_API_KEY": "",
+    "WEB_FETCH_PROXY": "",
+    "WEB_FETCH_USER_AGENT": "",
+    "TASK_MOCK_API_BASE_URL": "",
+    "TASK_MOCK_API_KEY": "",
+    "OPENAI_API_BASE": "",
+    "OPENAI_API_KEY": "",
+    "HF_TOKEN": "",
+    "AWS_ACCESS_KEY_ID": "",
+    "AWS_SECRET_ACCESS_KEY": "",
+    "AWS_DEFAULT_REGION": ""
+  }
+}

@@ -60,6 +60,8 @@ class TwoLevelSampler:
         starvation_boost: extra weight added to buckets whose last sampled
                           step is far in the past. 0.1 (default).
         starvation_window: steps before a bucket is considered starved.
+        within_bucket_sampling: 'priority' (default) priority-weighted random;
+                          'uniform' ignores priority (R0 / R3 baselines).
         rng: optional random.Random for reproducibility.
     """
 
@@ -69,12 +71,18 @@ class TwoLevelSampler:
         bucket_mix_ratio: float = 0.7,
         starvation_boost: float = 0.1,
         starvation_window: int = 50,
+        within_bucket_sampling: str = "priority",
         rng: random.Random | None = None,
     ):
+        if within_bucket_sampling not in ("priority", "uniform"):
+            raise ValueError(
+                f"unknown within_bucket_sampling {within_bucket_sampling!r}"
+            )
         self.buffer = buffer
         self.bucket_mix_ratio = bucket_mix_ratio
         self.starvation_boost = starvation_boost
         self.starvation_window = starvation_window
+        self.within_bucket_sampling = within_bucket_sampling
         self.rng = rng or random.Random()
         self._last_bucket_sample_step: dict[str, int] = {}
 
@@ -132,10 +140,16 @@ class TwoLevelSampler:
         return self.rng.choices(names, weights=weights, k=n)
 
     def _sample_one_within_bucket(self, bucket: str) -> str | None:
-        """Pick one trajectory_id from bucket via priority-weighted random sampling."""
+        """Pick one trajectory_id from bucket.
+
+        priority-weighted random sampling by default; uniform random when
+        ``within_bucket_sampling == 'uniform'`` (R0 / R3 baselines).
+        """
         ids = self.buffer.store.list_by_bucket(bucket)
         if not ids:
             return None
+        if self.within_bucket_sampling == "uniform":
+            return self.rng.choice(ids)
         priorities = [
             max(self.buffer.store.get_metadata(tid)["priority"], 1e-9)
             for tid in ids

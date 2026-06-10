@@ -34,12 +34,12 @@
 
 **在 RL verl 架构上修改，支持 Continual Learning。**
 
-> **GPU 资源分配与训练流水线设计**（48 训练 + 16 推理、$L_{replay}$ 计算频率、agent 执行与推理分离分析、时空图）详见 [`CL_Update_Sunhao.md` § GPU 资源分配与训练流水线](CL_Update_Sunhao.md#gpu-资源分配与训练流水线)。
+> **GPU 资源分配与训练流水线设计**（推荐 **分离 40 推理 + 24 训练**（Fully Async Policy, `staleness_threshold=0.3`），Colocate 64 为后备；$L_{replay}$ 计算频率、agent 执行与推理分离分析、时空图）详见 [`CL_Update_Sunhao.md` § GPU 资源分配与训练流水线](CL_Update_Sunhao.md#gpu-资源分配与训练流水线)。
 
-**Rollout 策略调整：**
-- 正常：rollout 32×8
-- 调整为：1024×2 或 4096×2
-- 效果：query 多样性提高，单 query rollout 下降，一个 step 更久，一个 step 存一次
+**Rollout 策略：**
+- 每 query **8 条轨迹**（`actor_rollout_ref.rollout.n=8`，GRPO 组大小）
+- 每 step **1024 或 4096 条 query**（`data.train_batch_size`）→ 规模 **1024×8** 或 **4096×8**
+- 相对早期 32×8：query 多样性提高，单 step 轨迹总量更大
 
 # @孙豪 调研思路
 
@@ -84,7 +84,7 @@ $$ L_{reg} = ||\theta - \theta_{prev}||^2 \quad \text{（弃用，权重 0）} $
 
 > **为什么 $L_{ent}$ 默认开启（直接进 B1 配置，不放 Phase 6 探索）：**
 >
-> - **traj/query=2 失去方差兜底**：rollout 调整为 1024×2 / 4096×2，若某 query 上 $\pi_{new}$ entropy 塌，两条轨迹大概率走同一路径 → GRPO 的 $A \approx 0$ → 该 query 梯度信号消失。$L_{ent}$ 是唯一直接抬 entropy 的反向力量。
+> - **traj/query=8**：rollout 规模为 1024×8 / 4096×8；组内 8 条轨迹提供 GRPO 方差。若 $\pi_{new}$ entropy 塌，组内轨迹仍可能趋同 → $A \approx 0$。$L_{ent}$ 仍是防 Echo Trap 的关键力量。
 > - **$L_{rl}$/$L_{replay}$/$L_{kl}$ 都不能替代**：前两者 mode-seeking，加速 entropy 下降；KL 只保形状接近 $\pi_{ref}$，不保 entropy 不塌。详见 B4（Echo Trap）。
 > - **成本 0**：verl/GRPO 标配 entropy bonus，无额外工程。
 >
@@ -155,7 +155,7 @@ $$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket
 |------|------|
 | **Forgetting Risk** | 当前模型在该轨迹上性能回退程度 |
 | **Rarity** | 桶内低频模式/模板，防热门模板占满 |
-| **Diversity/Redundancy** | 与桶内已有轨迹的重复度（每 query 仅 2 条轨迹，去重尤其重要） |
+| **Diversity/Redundancy** | 与桶内已有轨迹的重复度（每 query 8 条轨迹，组内与桶内去重都重要） |
 | **Within-bucket Difficulty** | 桶内相对难度，覆盖边界/复杂场景 |
 
 > 高 priority = 代表旧能力 + 已出现退化 + 稀有 + 不重复 + 覆盖边界。**Priority 反映的是"这条轨迹对防止遗忘有多重要"，而非"这条轨迹当时取得了多高 reward"。** 随训练推进 reward 整体上升，若按 reward 绝对值排优先级，旧轨迹会系统性被淘汰，buffer 退化为滑动窗口，失去 CL 意义。
@@ -247,7 +247,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 |---|---|---|---|---|---|
 | B1 | 0 | 0 | 0.001 | $\lambda_1=1.0$，纯 RL + entropy bonus | 遗忘下界 |
 
-> **B1 必须开 $\lambda_4 = 0.001$**：traj/query=2 下关闭 entropy 会让 B1 直接训练崩盘，得到的 FM 不是真实"无 CL 手段"的遗忘量，而是"崩盘后退化"。所有 Phase 用同样的 $\lambda_4$ 保证可比性。
+> **B1 必须开 $\lambda_4 = 0.001$**：关闭 entropy 会导致 Echo Trap、B1 训练崩盘，得到的 FM 不是真实"无 CL 手段"的遗忘量，而是"崩盘后退化"。所有 Phase 用同样的 $\lambda_4$ 保证可比性。
 
 ---
 
@@ -347,8 +347,8 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 | 编号 | Query × Traj | 总轨迹 | CL 配置 | 角色 |
 |---|---|---|---|---|
-| S1 | 1024 × 2 | 2048 | Phase 4 最优 | 小规模 rollout |
-| S2 | 4096 × 2 | 8192 | Phase 4 最优 | 大规模 rollout |
+| S1 | 1024 × 8 | 8192 | Phase 4 最优 | 小规模 rollout |
+| S2 | 4096 × 8 | 32768 | Phase 4 最优 | 大规模 rollout |
 
 ---
 
@@ -375,8 +375,8 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | **Replay/Online Loss 比值** | $L_{replay} / L_{rl}$ 的变化趋势 | 判断 replay 与在线学习的平衡性 |
 | **Advantage 分布** | 新旧任务 rollout 的 advantage 均值与方差 | 诊断梯度信号是否稳定 |
 | **梯度范数** | 各 loss 分量的梯度 L2 norm | 检测某一分量是否主导训练 |
-| **Output Entropy** | $H(\pi_{new}(\cdot\|s))$ 在 online rollout 状态上的均值曲线 | **Echo Trap 早期预警；前 100 step 下降 > 50% 即需调大 $\lambda_4$。traj/query=2 场景下为关键监控指标** |
-| **Trajectory Diversity** | 单 query 内 2 条 trajectory 的 distinct-n / self-BLEU | **直接量化 Echo Trap；若同 query 两条轨迹趋同 → advantage 退化 → 该 query 失效** |
+| **Output Entropy** | $H(\pi_{new}(\cdot\|s))$ 在 online rollout 状态上的均值曲线 | **Echo Trap 早期预警；前 100 step 下降 > 50% 即需调大 $\lambda_4$** |
+| **Trajectory Diversity** | 单 query 内 8 条 trajectory 的 distinct-n / self-BLEU | **直接量化 Echo Trap；若同 query 组内轨迹趋同 → advantage 退化 → 该 query 失效** |
 
 ---
 

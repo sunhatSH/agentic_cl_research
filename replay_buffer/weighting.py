@@ -47,8 +47,16 @@ Block segmentation -- message-block PRIMARY, equal-length FALLBACK:
     tool call.
 
 Two scheme variants for Phase 3 ablation:
-- W0: uniform 1/(N * |tau_i|)
-- W2: above formula (replaces R4-w experiment)
+- W0: the SAME formula with gamma = delta = 1 (the U-shape degenerates to a
+      flat line, so only priority + clip + normalize remain). W0 is therefore
+      just W2 with the U-shape turned off -- it still keeps the trajectory
+      priority dimension. See doc/CL_Update_Sunhao.md "gamma=delta=1 的等价关系".
+- W2: above formula with gamma, delta < 1 (active U-shape).
+
+There is no separate uniform code path: ``scheme='W0'`` simply pins
+gamma = delta = 1 and runs the W2 pipeline. To get a TRULY priority-free
+uniform replay weight, set the buffer's ``priority_type: uniform`` (R3), which
+makes every priority 1.0 so W0 collapses to a flat 1/total weight.
 """
 
 from __future__ import annotations
@@ -114,6 +122,10 @@ class TokenWeighting:
         if segmenter not in ("message_block", "equal_length"):
             raise ValueError(f"unknown segmenter {segmenter!r}")
         self.scheme = scheme
+        # W0 == W2 with the U-shape disabled (gamma=delta=1). One code path.
+        if scheme == "W0":
+            gamma = 1.0
+            delta = 1.0
         self.gamma = gamma
         self.delta = delta
         self.segmenter = segmenter
@@ -135,50 +147,35 @@ class TokenWeighting:
 
         Returns:
             List of per-token weight lists, one per trajectory.
-            For W0: uniform 1/(N * |tau_i|) across the batch.
-            For W2: priority * U-shape + clip + normalize.
+            W0 and W2 share ONE pipeline; W0 just pins gamma=delta=1 so the
+            U-shape is flat and only priority + clip + normalize remain.
 
         Scope: response tokens ONLY. The user request (prompt) does not
         participate in L_replay loss and is excluded from block segmentation
         and weight assignment. t=0 is the first response token.
 
-        Pipeline (W2):
+        Pipeline:
             1. Segment each response into K_i blocks via message boundaries.
                Fall back to equal_length when K_i == 1 or parsing fails.
             2. Re-split blocks longer than long_block_threshold; sub-blocks
                inherit parent U-shape weight.
             3. Compute U-shape weight per token via _u_shaped_block_weights.
+               (W0: gamma=delta=1 -> all blocks weight 1.0.)
             4. Multiply by trajectory priority.
             5. Clip to [q_5, q_95] across batch, normalize per batch.
         """
-        if self.scheme == "W0":
-            return self._w0(replay_batch)
         return self._w2(replay_batch)
-
-    def _w0(self, replay_batch: Sequence[dict]) -> list[list[float]]:
-        n = len(replay_batch)
-        if n == 0:
-            return []
-        per_traj = []
-        for traj in replay_batch:
-            seq_len = len(traj["response_token_ids"])
-            if seq_len == 0:
-                per_traj.append([])
-                continue
-            w = 1.0 / (n * seq_len)
-            per_traj.append([w] * seq_len)
-        return per_traj
 
     def _w2(self, replay_batch: Sequence[dict]) -> list[list[float]]:
         all_weights: list[list[float]] = []
         for traj in replay_batch:
-            seq_len = len(traj["response_token_ids"])
+            seq_len = len(traj.get("response_token_ids") or [])
             if seq_len == 0:
                 all_weights.append([])
                 continue
             block_ids, k_i = self._segment(traj)
-            block_ids, k_i = self._resplit_long_blocks(block_ids, k_i)
-            u = self._u_shaped_block_weights(block_ids, k_i)
+            block_ids, eff_k, parent_map, orig_k = self._resplit_long_blocks(block_ids, k_i)
+            u = self._u_shaped_block_weights(block_ids, eff_k, parent_map, orig_k)
             prio = float(traj.get("priority", 1.0))
             all_weights.append([prio * wt for wt in u])
 
@@ -203,22 +200,31 @@ class TokenWeighting:
 
     def _resplit_long_blocks(
         self, block_ids: list[int], k_i: int
-    ) -> tuple[list[int], int]:
+    ) -> tuple[list[int], int, dict[int, int] | None, int]:
         """Re-split blocks longer than long_block_threshold into equal sub-blocks.
 
         Sub-blocks inherit the parent block's U-shape weight (block index
         is preserved at the block level via a parent map -- new ids only
         affect resolution within long messages).
+
+        Returns a 4-tuple ``(block_ids, eff_k, parent_map, orig_k)``:
+            - block_ids: per-token block index (possibly re-split).
+            - eff_k: effective block count after re-splitting.
+            - parent_map: new sub-block id -> parent block id, or None when no
+              re-split happened. Passed explicitly to ``_u_shaped_block_weights``
+              so NO state leaks across trajectories in the same batch (bug A1).
+            - orig_k: the pre-resplit block count, used to keep the U-shape
+              stable regardless of resolution changes.
         """
         if not block_ids:
-            return block_ids, k_i
+            return block_ids, k_i, None, k_i
         # Count tokens per block
         counts: dict[int, int] = {}
         for b in block_ids:
             counts[b] = counts.get(b, 0) + 1
         # If no block is long, nothing to do.
         if all(c <= self.long_block_threshold for c in counts.values()):
-            return block_ids, k_i
+            return block_ids, k_i, None, k_i
 
         new_ids = []
         # Parent-map: new sub-block id -> parent block id (for U weighting).
@@ -249,32 +255,34 @@ class TokenWeighting:
                     next_id += 1
             i = j
 
-        # New K_i = number of sub-blocks; but each sub-block's U weight is
+        # New eff_k = number of sub-blocks; but each sub-block's U weight is
         # computed from its PARENT id under the ORIGINAL K_i so the tail/head
         # emphasis doesn't shift just because a single message got long.
-        self._parent_map = parent_map  # consumed by _u_shaped_block_weights
-        self._orig_k = k_i
-        return new_ids, next_id
+        return new_ids, next_id, parent_map, k_i
 
-    def _u_shaped_block_weights(self, block_ids: Sequence[int], k_i: int) -> list[float]:
+    def _u_shaped_block_weights(
+        self,
+        block_ids: Sequence[int],
+        k_i: int,
+        parent_map: dict[int, int] | None = None,
+        orig_k: int | None = None,
+    ) -> list[float]:
         """(gamma^block(t) + delta^(K_i - block(t))) / 2.
 
         Division by 2 ensures gamma=delta=1 yields uniform weight 1.0 for all
         blocks (flat / equal-weight baseline W0). This makes gamma and delta
         continuous controls: 1.0 = no U-shape, <1.0 = progressively stronger U.
 
-        If _resplit_long_blocks has been called, use parent block index to
-        keep U-shape stable across resolution changes.
+        ``parent_map`` / ``orig_k`` are passed explicitly (never read from
+        instance state) so re-split bookkeeping cannot leak across
+        trajectories in the same batch (bug A1).
         """
-        parent_map = getattr(self, "_parent_map", None)
-        orig_k = getattr(self, "_orig_k", k_i)
         if parent_map is not None:
-            denom = max(orig_k - 1, 1)
+            ok = orig_k if orig_k is not None else k_i
             return [
-                (self.gamma ** parent_map[b] + self.delta ** (orig_k - 1 - parent_map[b])) / 2.0
+                (self.gamma ** parent_map[b] + self.delta ** (ok - 1 - parent_map[b])) / 2.0
                 for b in block_ids
             ]
-        denom = max(k_i - 1, 1)
         return [
             (self.gamma ** b + self.delta ** (k_i - 1 - b)) / 2.0
             for b in block_ids

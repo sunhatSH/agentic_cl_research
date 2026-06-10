@@ -5,9 +5,10 @@
 defaults:
   - ../base
 
-actor:
-  use_kl_loss: false
-  kl_loss_coef: 0.0
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0
 
 cl:
   lambda_replay: 0.5
@@ -20,6 +21,8 @@ cl:
     scheme: W2                   # 主方案：priority × U 形块权重 + clip
     gamma: 0.88
     delta: 0.88
-    segmenter: action_block
-    equal_length_K: 20
+    segmenter: message_block     # 按 OpenAI chat message 边界切块（无 XML tag）
+    role_boundaries: [assistant, tool]
+    equal_length_K: 20           # fallback：K_i==1 时退化为等长切分
+    long_block_threshold: 100
     clip_quantiles: [0.05, 0.95]

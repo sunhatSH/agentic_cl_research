@@ -30,8 +30,8 @@ configs/
 │   ├── c3.yaml            #   强 KL + 弱 Replay
 │   └── c4.yaml            #   弱 KL + 弱 Replay
 ├── phase5/                # Phase 5：Rollout 规模扩展 (2 runs)
-│   ├── s1.yaml            #   traj/query = 4
-│   └── s2.yaml            #   traj/query = 8
+│   ├── s1.yaml            #   1024 queries × 8 traj
+│   └── s2.yaml            #   4096 queries × 8 traj
 └── phase6/                # Phase 6：按需探索 (x*.yaml, 后续创建)
     └── .gitkeep
 ```

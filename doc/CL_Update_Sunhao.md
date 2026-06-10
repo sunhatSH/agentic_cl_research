@@ -62,7 +62,7 @@ $$ L_{reg} = ||\theta - \theta_{prev}||^2 \quad \text{（弃用，权重 0）} $
 
 > **为什么 $L_{ent}$ 默认开启（直接进 B1 配置，不放 Phase 6 探索）：**
 >
-> - **traj/query=2 失去方差兜底**：rollout 调整为 1024×2 / 4096×2，若某 query 上 $\pi_{new}$ entropy 塌，两条轨迹大概率走同一路径 → GRPO 的 $A \approx 0$ → 该 query 梯度信号消失。$L_{ent}$ 是唯一直接抬 entropy 的反向力量。
+> - **traj/query=8（GRPO 组大小）**：rollout 规模为 1024×8 / 4096×8（query 数 × 每 query 轨迹数）。组内 8 条轨迹提供 GRPO advantage 方差；若 $\pi_{new}$ entropy 仍塌，组内轨迹仍可能趋同 → $A \approx 0$。$L_{ent}$ 仍是防 Echo Trap、维持组内多样性的关键力量。
 > - **$L_{rl}$/$L_{replay}$/$L_{kl}$ 都不能替代**：前两者 mode-seeking，加速 entropy 下降；KL 只保形状接近 $\pi_{ref}$，不保 entropy 不塌。详见 B4（Echo Trap）。
 > - **成本 0**：verl/GRPO 标配 entropy bonus，无额外工程。
 >
@@ -139,7 +139,7 @@ $$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket
 |------|------|
 | **Forgetting Risk** | 当前模型在该轨迹上性能回退程度 |
 | **Rarity** | 桶内低频模式/模板，防热门模板占满 |
-| **Diversity/Redundancy** | 与桶内已有轨迹的重复度（每 query 仅 2 条轨迹，去重尤其重要） |
+| **Diversity/Redundancy** | 与桶内已有轨迹的重复度（每 query 8 条轨迹，组内与桶内去重都重要） |
 | **Within-bucket Difficulty** | 桶内相对难度，覆盖边界/复杂场景 |
 
 > 高 priority = 代表旧能力 + 已出现退化 + 稀有 + 不重复 + 覆盖边界。**Priority 反映的是"这条轨迹对防止遗忘有多重要"，而非"这条轨迹当时取得了多高 reward"。** 随训练推进 reward 整体上升，若按 reward 绝对值排优先级，旧轨迹会系统性被淘汰，buffer 退化为滑动窗口，失去 CL 意义。
@@ -169,7 +169,9 @@ $$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket
 
 #### 最终公式
 
-$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac{\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}}{2},\; q_5,\; q_{95}\big)\Big)$$
+$$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac{\gamma^{\text{block}(t)} + \delta^{K_i - 1 - \text{block}(t)}}{2},\; q_5,\; q_{95}\big)\Big)$$
+
+> **块索引约定（与代码一致）**：$\text{block}(t) \in \{0, 1, \dots, K_i - 1\}$（0 起始）。末端项用 $\delta^{K_i - 1 - \text{block}(t)}$ 而非 $\delta^{K_i - \text{block}(t)}$，这样末块（$\text{block}=K_i-1$）得 $\delta^0 = 1$、首块得 $\gamma^0 = 1$，U 形严格对称。代码实现见 `replay_buffer/weighting.py::_u_shaped_block_weights`。
 
 **作用域：仅 response tokens（模型生成部分）**。用户请求（prompt）不参与 loss 计算，也不参与块切分与权重分配——$t$ 从 response 首 token 开始计数，block(t) 的定义域 = response 内的动作块序列。与 verl 的 `response_mask` 作用域一致。
 
@@ -178,7 +180,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 | 维度 | 作用对象 | 公式 | 起步超参 |
 |---|---|---|---|
 | **A. Priority（trajectory 级）** | 每条轨迹一个值 | 4 信号融合（forgetting_risk / rarity / diversity / difficulty） | $\alpha_1$=0.4, $\alpha_2$=$\alpha_3$=$\alpha_4$=0.2 |
-| **B. U 形块位置权重（token 级，粗粒度）** | 轨迹按**动作块**划分为 $K_i$ 块（每条轨迹的 $K_i$ 不同），块内等权；首尾两端高、中间低 | $\frac{\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}}{2}$ | $\gamma = \delta$ = 0.88；$K_i$ 由数据决定（详见下方"块的定义"） |
+| **B. U 形块位置权重（token 级，粗粒度）** | 轨迹按**动作块**划分为 $K_i$ 块（每条轨迹的 $K_i$ 不同，$\text{block}(t)$ 0 起始），块内等权；首尾两端高、中间低 | $\frac{\gamma^{\text{block}(t)} + \delta^{K_i - 1 - \text{block}(t)}}{2}$ | $\gamma = \delta$ = 0.88；$K_i$ 由数据决定（详见下方"块的定义"） |
 
 最后做 **clip 到 [5%, 95%] 分位数 → normalize**（保证 batch 内 $\sum w$ 归一）。
 
@@ -222,7 +224,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 |---|---|---|
 | $\gamma$（首端衰减底数） | **0.88** | 首块 $\gamma^0 = 1.0$；以 $K_i=20$ 估算，中间块 $\gamma^{10} \approx 0.279$，末块 $\gamma^{20} \approx 0.078$ |
 | $\delta$（末端衰减底数） | **0.88** | 与 $\gamma$ 对称；末块 $\delta^0 = 1.0$；以 $K_i=20$ 估算，中间 $\delta^{10} \approx 0.279$，首块 $\delta^{20} \approx 0.078$ |
-| 合成端点权重 | $\gamma^0 + \delta^{K_i} \approx 1.0 + \text{small}$ | 首尾对称；中间最低点 $\approx 2 \cdot \gamma^{K_i / 2}$；$K_i=20$ 下端点/中点比 ≈ 1.93× |
+| 合成端点权重 | $\gamma^0 + \delta^{K_i-1} \approx 1.0 + \text{small}$ | 首尾对称；中间最低点 $\approx 2 \cdot \gamma^{(K_i-1) / 2}$；$K_i=20$ 下端点/中点比 ≈ 1.93× |
 | $K_i$（每条轨迹的块数） | **由动作块切分决定** | 不固定，详见上方"块的定义"。代码 fallback 用等长 $K=20$ |
 | Priority 4 信号融合权重 $\alpha$ | (0.4, 0.2, 0.2, 0.2) | forgetting_risk 占主导 |
 | 除数 2 | **固定** | 使 $\gamma=\delta=1$ 时 $w=1$（均权），见下方等价关系 |
@@ -232,11 +234,11 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 
 当 $\gamma = \delta = 1$ 时，对任意 block 位置 $b$：
 
-$$\frac{1^b + 1^{K_i - b}}{2} = \frac{1 + 1}{2} = 1 \quad \forall\, b$$
+$$\frac{1^b + 1^{K_i - 1 - b}}{2} = \frac{1 + 1}{2} = 1 \quad \forall\, b$$
 
 即**所有块权重恒等于 1**，U 形退化为水平线 = 等权（与 W0 等价）。这使得 $\gamma=\delta=1$ 成为 W2 方案的**内置均权基线**——无需切换 scheme，只需将两个参数设为 1 即可回到 W0。因此：
 
-- **W0 不再需要单独的 scheme**——设 `gamma: 1, delta: 1` 即可
+- **W0 不再需要单独的 scheme**——设 `gamma: 1, delta: 1` 即可（代码已删除独立的 `_w0` 分支，`scheme: W0` 内部即 `gamma=delta=1`；真正"无 priority"的均权用 buffer 的 `priority_type: uniform` 表达，见 R3）
 - **实验对照更干净**：W0 vs W2 的唯一变量是 $\gamma, \delta$ 的值（1 vs 0.88），不涉及公式形式差异
 - **超参连续可调**：$\gamma=\delta$ 从 1.0 逐渐降低到 0.88 → 0.80 → ...，U 形从"无"到"温和"到"激进"连续变化，方便 ablation 扫描
 
@@ -268,11 +270,11 @@ $$\frac{1^b + 1^{K_i - b}}{2} = \frac{1 + 1}{2} = 1 \quad \forall\, b$$
 
 #### 与 advantage 信号的关系
 
-注意 GRPO 的真实训练强度 = $w \cdot A$。本方案 traj/query=2 下 advantage 量级压缩到 ±0.15 左右（vs traj/query=8 时 ±0.4），weight 设计在弱信号下作用更突出：
+注意 GRPO 的真实训练强度 = $w \cdot A$。本方案 traj/query=8 下 advantage 量级约 ±0.4，weight 与 advantage 同量级配合：
 
 - **weight 整体差异控制在 2~3×** 范围（避免 weight 过度主导 advantage）：U 形端点/中点比 ~1.93× 处于此区间；
 - **末端连续多块（含 final_answer）通过 $\delta^{K-\text{block}(t)}$ 项整体抬升**，比单点 boost 更鲁棒；
-- **不靠激进衰减**（$\gamma$ / $\delta$ 过小会让中段完全学不到，配合弱 advantage 双重削弱）。
+- **不靠激进衰减**（$\gamma$ / $\delta$ 过小会让中段完全学不到）。
 
 监控指标见"评测指标体系"段，重点关注首块/末块/中段三段的 token loss、final_answer 准确率、trajectory 末段 entropy。
 
@@ -324,6 +326,8 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 - 核心 ablation：20 × 16 = **320 GPU-day**
 - 8 机并行：**~5 天**；16 机并行：**~2.5 天**
 
+> **⚠️ 待重算（C2）**：上述 16 GPU-day / 320 GPU-day 是按 **70B 基座 + 8 卡** 的旧估算。实际部署为 **Qwen3.6-27B + 64 卡（40 推理 + 24 训练）**：单卡算力相同但模型更小（27B vs 70B，前向/反向约 0.4×）、卡数更多（64 vs 8）。等拿到 27B 模型 config（hidden_size / num_layers / num_kv_heads）后，按本节 § GPU 资源分配（1024×8，约 3.1 steps/hr）重算单实验 wall-clock 与 GPU-day。在此之前这些数字仅作上界参考。
+
 ---
 
 ### Phase 1：Baseline
@@ -334,7 +338,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 |---|---|---|---|---|---|
 | B1 | 0 | 0 | 0.001 | $\lambda_1=1.0$，纯 RL + entropy bonus | 遗忘下界 |
 
-> **B1 必须开 $\lambda_4 = 0.001$**：traj/query=2 下关闭 entropy 会让 B1 直接训练崩盘，得到的 FM 不是真实"无 CL 手段"的遗忘量，而是"崩盘后退化"。所有 Phase 用同样的 $\lambda_4$ 保证可比性。
+> **B1 必须开 $\lambda_4 = 0.001$**：关闭 entropy 会导致 Echo Trap、B1 训练崩盘，得到的 FM 不是真实"无 CL 手段"的遗忘量，而是"崩盘后退化"。所有 Phase 用同样的 $\lambda_4$ 保证可比性。
 
 ---
 
@@ -434,8 +438,8 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 | 编号 | Query × Traj | 总轨迹 | CL 配置 | 角色 |
 |---|---|---|---|---|
-| S1 | 1024 × 2 | 2048 | Phase 4 最优 | 小规模 rollout |
-| S2 | 4096 × 2 | 8192 | Phase 4 最优 | 大规模 rollout |
+| S1 | 1024 × 8 | 8192 | Phase 4 最优 | 小规模 rollout |
+| S2 | 4096 × 8 | 32768 | Phase 4 最优 | 大规模 rollout |
 
 ---
 
@@ -462,8 +466,8 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | **Replay/Online Loss 比值** | $L_{replay} / L_{rl}$ 的变化趋势 | 判断 replay 与在线学习的平衡性 |
 | **Advantage 分布** | 新旧任务 rollout 的 advantage 均值与方差 | 诊断梯度信号是否稳定 |
 | **梯度范数** | 各 loss 分量的梯度 L2 norm | 检测某一分量是否主导训练 |
-| **Output Entropy** | $H(\pi_{new}(\cdot\|s))$ 在 online rollout 状态上的均值曲线 | **Echo Trap 早期预警；前 100 step 下降 > 50% 即需调大 $\lambda_4$。traj/query=2 场景下为关键监控指标** |
-| **Trajectory Diversity** | 单 query 内 2 条 trajectory 的 distinct-n / self-BLEU | **直接量化 Echo Trap；若同 query 两条轨迹趋同 → advantage 退化 → 该 query 失效** |
+| **Output Entropy** | $H(\pi_{new}(\cdot\|s))$ 在 online rollout 状态上的均值曲线 | **Echo Trap 早期预警；前 100 step 下降 > 50% 即需调大 $\lambda_4$** |
+| **Trajectory Diversity** | 单 query 内 8 条 trajectory 的 distinct-n / self-BLEU | **直接量化 Echo Trap；若同 query 组内轨迹趋同 → advantage 退化 → 该 query 失效** |
 
 ---
 
@@ -480,6 +484,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | 交互轮数 | 平均 ~5 轮/query（Deep Research: LLM gen → tool exec 交替） |
 | 训练框架 | verl，支持 Colocate 与分离两种部署模式 |
 | 估算假设 | 训练 MFU=0.40，vLLM 单 TP8 replica 吞吐 ~1500 tok/s，多轮 KV 复用效率 0.80 |
+| Rollout 规模 | **`actor_rollout_ref.rollout.n=8`**，`train_batch_size=1024` → **8192 轨迹/step**（1024×8）；Phase 5 S2 为 4096×8 |
 
 > **⚠️ 本节及以下"GPU 资源分配 / 训练精度"中所有按 70B 估算的硬数字（显存预算、FSDP shard 大小、参数同步耗时等）需要按 Qwen3.6-27B 重算。**模型确定时间 2026-06-09，重算待办：等拿到模型 config（hidden_size / num_layers / num_kv_heads）后统一更新。在此之前：70B 数字仅作"上界参考"——27B 实际显存与同步耗时显著低于现有数字。
 
@@ -541,91 +546,91 @@ $$T_{\text{rollout}} = T_{\text{GPU}} + T_{\text{CPU}}$$
 
 $$T_{\text{GPU}} = \frac{\text{LLM\_GEN\_TOKENS}}{N_{\text{replica}} \times \text{TP8\_THROUGHPUT} \times \text{MULTI\_TURN\_EFF}}$$
 
-$$= \frac{1{,}536{,}000}{8 \times 1500 \times 0.80} = \frac{1{,}536{,}000}{9{,}600} = 160\text{s}$$
+$$= \frac{6{,}144{,}000}{8 \times 1500 \times 0.80} = \frac{6{,}144{,}000}{9{,}600} = 640\text{s}$$
 
 $$T_{\text{CPU}} = 5 \times 4.5 = 22\text{s}$$
 
-$$T_{\text{rollout}} = 160 + 22 = 182\text{s}$$
+$$T_{\text{rollout}} = 640 + 22 = 662\text{s}$$
 
 **Train**：
 
 $$T_{\text{train}} = T_{\text{actor}} + T_{\text{ref}} + T_{\text{replay}} + T_{\text{sync}}$$
 
-$$T_{\text{actor}} = \frac{3{,}072{,}000 \times 6 \times 70 \times 10^9}{64 \times 990 \times 0.40 \times 10^{12}} \times 1.15 = 78\text{s}$$
+$$T_{\text{actor}} = \frac{12{,}288{,}000 \times 6 \times 70 \times 10^9}{64 \times 990 \times 0.40 \times 10^{12}} \times 1.15 = 312\text{s}$$
 
-$$T_{\text{ref}} = \frac{3{,}072{,}000 \times 2 \times 70 \times 10^9}{64 \times 990 \times 0.40 \times 10^{12}} \times 1.15 = 19\text{s}$$
+$$T_{\text{ref}} = \frac{12{,}288{,}000 \times 2 \times 70 \times 10^9}{64 \times 990 \times 0.40 \times 10^{12}} \times 1.15 = 76\text{s}$$
 
 $$T_{\text{replay}} = \frac{1{,}536{,}000 \times 2 \times 70 \times 10^9}{64 \times 990 \times 0.40 \times 10^{12}} \times 1.15 = 10\text{s}$$
 
 $$T_{\text{sync}} = 10 + 64 \times 0.15 = 20\text{s}$$
 
-$$T_{\text{train}} = 78 + 19 + 10 + 20 = 127\text{s}$$
+$$T_{\text{train}} = 312 + 76 + 10 + 20 = 418\text{s}$$
 
-> 注：以上 $T_{\text{actor}}$ 已含 fwd+bwd，$T_{\text{ref}}$ 和 $T_{\text{replay}}$ 仅为 forward。
+> 注：以上 $T_{\text{actor}}$ 已含 fwd+bwd，$T_{\text{ref}}$ 和 $T_{\text{replay}}$ 仅为 forward。$T_{\text{replay}}$ 来自 buffer 采样，与 online traj/query 无关，故未随 $M=8$ 放大。
 
 **Step**：
 
-$$T_{\text{step}} = T_{\text{rollout}} + T_{\text{train}} + 2 \times T_{\text{reshard}} = 182 + 127 + 30 = 339\text{s}$$
+$$T_{\text{step}} = T_{\text{rollout}} + T_{\text{train}} + 2 \times T_{\text{reshard}} = 662 + 418 + 30 = 1110\text{s}$$
 
-$$\text{吞吐} = \frac{3600}{339} = 10.6 \text{ steps/hr}$$
+$$\text{吞吐} = \frac{3600}{1110} = 3.2 \text{ steps/hr}$$
 
-$$\text{GPU 空转率 (CPU交互)} = \frac{22}{339} = 6.5\%$$
+$$\text{GPU 空转率 (CPU交互)} = \frac{22}{1110} = 2.0\%$$
 
 #### 分离 40+24
 
 **推理组 (40 GPU, 5×TP8)**：
 
-$$T_{\text{GPU}} = \frac{1{,}536{,}000}{5 \times 1500 \times 0.80} = \frac{1{,}536{,}000}{6{,}000} = 256\text{s}$$
+$$T_{\text{GPU}} = \frac{6{,}144{,}000}{5 \times 1500 \times 0.80} = \frac{6{,}144{,}000}{6{,}000} = 1024\text{s}$$
 
 $$T_{\text{CPU}} = 5 \times 4.5 = 22\text{s (同 Colocate)}$$
 
-$$T_{\text{rollout}} = 256 + 22 = 278\text{s}$$
+$$T_{\text{rollout}} = 1024 + 22 = 1046\text{s}$$
 
 **训练组 (24 GPU, FSDP)**：
 
-$$T_{\text{actor}} = \frac{3{,}072{,}000 \times 4.2 \times 10^{11}}{24 \times 396 \times 10^{12}} \times 1.3 = 222\text{s}$$
+$$T_{\text{actor}} = \frac{12{,}288{,}000 \times 4.2 \times 10^{11}}{24 \times 396 \times 10^{12}} \times 1.3 = 888\text{s}$$
 
-$$T_{\text{ref}} = \frac{3{,}072{,}000 \times 1.4 \times 10^{11}}{24 \times 396 \times 10^{12}} \times 1.3 = 56\text{s}$$
+$$T_{\text{ref}} = \frac{12{,}288{,}000 \times 1.4 \times 10^{11}}{24 \times 396 \times 10^{12}} \times 1.3 = 224\text{s}$$
 
 $$T_{\text{replay}} = \frac{1{,}536{,}000 \times 1.4 \times 10^{11}}{24 \times 396 \times 10^{12}} \times 1.3 = 29\text{s}$$
 
 $$T_{\text{sync}} = 10 + 24 \times 0.15 = 14\text{s}$$
 
-$$T_{\text{train}} = 222 + 56 + 29 + 14 = 321\text{s}$$
+$$T_{\text{train}} = 888 + 224 + 29 + 14 = 1155\text{s}$$
 
 **流水线化**：
 
 $$T_{\text{step}} = \max(T_{\text{rollout}}, T_{\text{train}}) + T_{\text{sync\_cross}}$$
 
-$$= \max(278, 321) + 20 = 341\text{s}$$
+$$= \max(1046, 1155) + 20 = 1175\text{s}$$
 
-$$\text{吞吐} = \frac{3600}{341} = 10.6 \text{ steps/hr}$$
+$$\text{吞吐} = \frac{3600}{1175} = 3.1 \text{ steps/hr}$$
 
-$$\text{训练组气泡} = \frac{341 - 321 - 20}{341} = 0\% \text{ (训练恰好与 rollout 匹配)}$$
+$$\text{训练组气泡} = \frac{1175 - 1155 - 20}{1175} = 0\% \text{ (训练略大于 rollout)}$$
 
-> 训练 321s 略大于 rollout 278s，训练是微弱瓶颈。推理组等训练完成 43s。
+> 训练 1155s 略大于 rollout 1046s，训练是微弱瓶颈。推理组等训练完成约 109s。
 
 #### 分离 48+16
 
 **推理组 (16 GPU, 2×TP8)**：
 
-$$T_{\text{GPU}} = \frac{1{,}536{,}000}{2 \times 1500 \times 0.80} = 640\text{s}, \quad T_{\text{rollout}} = 640 + 22 = 662\text{s}$$
+$$T_{\text{GPU}} = \frac{6{,}144{,}000}{2 \times 1500 \times 0.80} = 2560\text{s}, \quad T_{\text{rollout}} = 2560 + 22 = 2582\text{s}$$
 
 **训练组 (48 GPU)**：
 
 $$T_{\text{train}} = 139\text{s}$$
 
-$$T_{\text{step}} = \max(662, 139) + 20 = 682\text{s}, \quad \text{吞吐} = 5.3\text{/hr}, \quad \text{训练气泡} = 76.6\%$$
+$$T_{\text{step}} = \max(2582, 139) + 20 = 2602\text{s}, \quad \text{吞吐} = 1.4\text{/hr}, \quad \text{训练气泡} = 94.7\%$$
 
 ### 结果对比
 
 | 模式 | Rollout | Train | Step | 吞吐 | GPU 空转(CPU交互) | 训练气泡 |
 |------|---------|-------|------|------|-------------------|----------|
-| **Colocate 64** | 182s (GPU 160, CPU 22) | 127s | **339s** | **10.6/hr** | 6.5% | 0% |
-| **分离 40+24** | 278s (GPU 256, CPU 22) | 321s | **341s** | **10.6/hr** | 0% (推理组) | ~0% |
-| 分离 48+16 | 662s | 139s | 682s | 5.3/hr | 0% (推理组) | 76.6% |
+| **Colocate 64** | 662s (GPU 640, CPU 22) | 418s | **1110s** | **3.2/hr** | 2.0% | 0% |
+| **分离 40+24** | 1046s (GPU 1024, CPU 22) | 1155s | **1175s** | **3.1/hr** | 0% (推理组) | ~0% |
+| 分离 48+16 | 2582s | 139s | 2602s | 1.4/hr | 0% (推理组) | 94.7% |
 
-**Colocate 和分离 40+24 吞吐几乎相同**（差异 <1%），原因：
+**Colocate 和分离 40+24 吞吐接近**（约 3.1–3.2 steps/hr），原因：
 
 1. Colocate 64 卡推理吞吐 = 2× 分离 40 卡（8×TP8 vs 5×TP8），但 GPU 空转 22s
 2. 分离 40+24 推理慢但训练与 rollout 并行，总时间接近
@@ -691,7 +696,7 @@ async_training:
 - **`staleness_threshold=0.3`**：verl 官方 128 卡 ablation 显示 0.1→0.3→0.5 加速比 1.93×→2.35×→2.36×（边际收益在 0.3 附近饱和），但 staleness 越大对训练稳定性威胁越大。本项目 27B + 多轮 + CL replay 已经引入额外 off-policy 偏移，再叠加大 staleness 风险高，起步压到 0.3。
 - **`trigger_parameter_sync_step=4`**：参考 30B GRPO 实验配置（`512/128=4`，`train_batch_size/(require_batches × ppo_mini_batch_size)`）。本项目 `train_batch_size=512`、`ppo_mini_batch_size=32`、`require_batches=4`，恰好 `512/(4×32)=4`。
 - **`require_batches=4`**：verl 的 require_batches ablation 显示 1→2→4 训练时间反而下降（4h25m→3h35m→3h13m），原因是过细粒度流式分发会扰乱采样顺序、拉长 response，故选 4。
-- **`partial_rollout=False`（Phase 1–4）**：partial_rollout 必须配合 `staleness_threshold>0` 才生效，且对 Echo Trap 监控、轨迹完整性追踪都引入额外复杂度；CL 训练的核心信号是完整 trajectory 上的 priority 与块权重，半截轨迹做 replay 数据脏。Phase 5（4096×2 大 rollout）再开。
+- **`partial_rollout=False`（Phase 1–4）**：partial_rollout 必须配合 `staleness_threshold>0` 才生效，且对 Echo Trap 监控、轨迹完整性追踪都引入额外复杂度；CL 训练的核心信号是完整 trajectory 上的 priority 与块权重，半截轨迹做 replay 数据脏。Phase 5（4096×8 大 rollout）再评估是否开启。
 
 #### Fully Async + CL Loss 兼容性
 
@@ -723,19 +728,19 @@ $$T_{\text{step}} = \max(T_{\text{rollout}}, T_{\text{train}}) + T_{\text{sync}}
 
 **分离 40+24（Fully Async, staleness=0.3）**：
 
-$$T_{\text{step}} = \max(278, 321) + 1 = 322\text{s}$$
+$$T_{\text{step}} = \max(1046, 1155) + 1 = 1156\text{s}$$
 
-$$\text{吞吐} = \frac{3600}{322} \approx 11.2 \text{ steps/hr}$$
+$$\text{吞吐} = \frac{3600}{1156} \approx 3.1 \text{ steps/hr}$$
 
-异步加速主要来自长尾消除（`staleness_threshold>0` 允许 trainer 不必死等最慢的 rollout）。但本项目 traj/query=2、未启用 partial_rollout，长尾不严重，因此实际加速接近 One Step Off Policy 的水平。
+异步加速主要来自长尾消除（`staleness_threshold>0` 允许 trainer 不必死等最慢的 rollout）。traj/query=8 下单 query 组内 rollout 更重，长尾与 `partial_rollout` 在 Phase 5 更值得评估。
 
 #### 三种模式对比
 
 | 模式 | Rollout | Train | Step | 吞吐 | 异步控制 |
 |------|---------|-------|------|------|----------|
-| Colocate 64（同步） | 182s | 127s | 339s | 10.6/hr | N/A |
-| 分离 40+24（One Step Off Policy） | 278s | 321s | 321s | 11.2/hr | 固定 1 step |
-| **分离 40+24（Fully Async, staleness=0.3）** | **278s** | **321s** | **322s** | **11.2/hr** | **可调** |
+| Colocate 64（同步） | 662s | 418s | 1110s | 3.2/hr | N/A |
+| 分离 40+24（One Step Off Policy） | 1046s | 1155s | 1175s | 3.1/hr | 固定 1 step |
+| **分离 40+24（Fully Async, staleness=0.3）** | **1046s** | **1155s** | **1156s** | **3.1/hr** | **可调** |
 
 吞吐数字接近，但 Fully Async 给了"出问题就关掉异步"的退路（`staleness_threshold=0` 即同步），是更稳的工程选择。
 
@@ -865,16 +870,16 @@ gantt
 
 **与 $L_{kl}$ 的区别**：$L_{kl}$ 用 ref model 的 log_prob（已在 step 内算好），无额外 forward；$L_{replay}$ 需要对 buffer 数据做一次独立 forward，是 CL 唯一额外开销。
 
-### Phase 5 S2 (4096×2) 的影响
+### Phase 5 S2 (4096×8) 的影响
 
-S2 rollout 量翻 4×。各模式预估（tool exec 4.5s/turn）：
+S2 相对默认（1024×8）query 数翻 4×。各模式预估（tool exec 4.5s/turn，在线 token 量同比 ×4）：
 
 | 模式 | Rollout | Train | Step | 吞吐 |
 |------|---------|-------|------|------|
-| Colocate 64 | 648s | 508s | 1178s | 3.1/hr |
-| 分离 40+24 | 1062s | 1241s | 1261s | 2.9/hr |
+| Colocate 64 | 2648s | 1672s | 4710s | 0.8/hr |
+| 分离 40+24 | 4184s | 4620s | 4660s | 0.8/hr |
 
-S2 下训练量也翻 4×，训练开始成为瓶颈，Colocate 微弱反超。但 S2 仅 2 个实验，不影响整体决策。
+S2 下训练与 rollout 均显著放大；S2 仅 2 个实验，不影响 Phase 1–4 部署决策。
 
 ### Agent 执行与推理：不建议分离
 
@@ -888,7 +893,7 @@ S2 下训练量也翻 4×，训练开始成为瓶颈，Colocate 微弱反超。�
 |------|------|------|
 | 部署模式 | **分离 40+24** | Deep Research (tool exec 4–8s/turn) 下比 Colocate 快 3–7% |
 | 异步框架 | **Fully Async（受控）** | verl `fully_async_policy`，`staleness_threshold=0.3, trigger_parameter_sync_step=4, require_batches=4, partial_rollout=False`。30B GRPO 实测 1.72–2.01×；可平滑退化为同步 |
-| $L_{replay}$ 频率 | 每 step 计算 | 29s / 322s = 9.0% 开销 |
+| $L_{replay}$ 频率 | 每 step 计算 | 29s / 1156s ≈ 2.5% 开销 |
 | Agent 执行分离 | 不分离 | 预执行不可行 |
 | 训练精度 | **BF16 混合** | 参数/激活 BF16 + FP32 主权重 + FP32 Adam，详见下节 |
 | Rollout 精度 | **BF16（起步）→ FP8 可选** | 27B 上 FP8 rollout 可参考 verl 30B 实测；Phase 1 B1 跑 BF16，若 Token-level TIS 稳定后可在 Phase 5 切 FP8 提速 ~12–35% |

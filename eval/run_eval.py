@@ -33,14 +33,55 @@ def parse_args():
     parser.add_argument("--output-dir", type=str, default="eval/results")
     parser.add_argument("--num-runs", type=int, default=3, help="Pass^N standard.")
     parser.add_argument("--tasks-file", type=str, default=None,
-                        help="ClawEval task manifest (defaults to bundled 195-task text subset).")
+                        help="ClawEval task manifest (JSON list; see load_tasks docstring).")
+    parser.add_argument("--include-multimodal", action="store_true",
+                        help="Include multimodal tasks (default: text-only 195 subset).")
     return parser.parse_args()
 
 
-def load_tasks(tasks_file: str | None) -> list[dict]:
-    """Load ClawEval task manifest.
+# --------------------------------------------------------------------------- #
+# ClawEval task manifest interface (frozen ahead of the @杨益博 data drop)      #
+# --------------------------------------------------------------------------- #
+# A manifest is a JSON list of task records. Required / optional fields:
+#
+#   task_id   (str, REQUIRED)  unique task identifier, used for Pass^N + forgetting join
+#   split     (str, REQUIRED)  "General" | "Multimodal" | "Multi-turn"
+#   modality  (str, REQUIRED)  "text" | "multimodal"  -- only "text" is evaluated (195 subset)
+#   bucket    (str, optional)  one of the 7 capability buckets; if absent, falls back to `category`
+#   category  (str, optional)  ClawEval category label (used to derive bucket downstream)
+#   prompt / messages (optional) task input; consumed by rollout_one_task on the cluster
+#
+# A record is "text-evaluable" iff modality == "text". The 7 buckets are the
+# project's capability buckets (see CLAUDE.md / doc/BucketDesign.md).
+REQUIRED_MANIFEST_FIELDS = ("task_id", "split", "modality")
+VALID_SPLITS = ("General", "Multimodal", "Multi-turn")
+VALID_MODALITIES = ("text", "multimodal")
 
-    Pending wiring to the actual ClawEval data drop (owner: @杨益博).
+
+def validate_task_record(rec: dict, index: int = -1) -> None:
+    """Raise ValueError if a manifest record is malformed."""
+    where = f"manifest[{index}]" if index >= 0 else "manifest record"
+    if not isinstance(rec, dict):
+        raise ValueError(f"{where} must be an object, got {type(rec).__name__}")
+    for field in REQUIRED_MANIFEST_FIELDS:
+        if field not in rec:
+            raise ValueError(f"{where} missing required field {field!r}")
+    if rec["split"] not in VALID_SPLITS:
+        raise ValueError(f"{where}: split {rec['split']!r} not in {VALID_SPLITS}")
+    if rec["modality"] not in VALID_MODALITIES:
+        raise ValueError(f"{where}: modality {rec['modality']!r} not in {VALID_MODALITIES}")
+
+
+def load_tasks(tasks_file: str | None, text_only: bool = True) -> list[dict]:
+    """Load + validate a ClawEval task manifest.
+
+    Args:
+        tasks_file: path to the JSON manifest. ``None`` raises (no bundled
+            manifest yet -- pending the @杨益博 data drop).
+        text_only: keep only ``modality == "text"`` records (the 195-task
+            text subset the project currently trains/evaluates on).
+
+    Returns the (optionally filtered) list of validated task records.
     """
     if tasks_file is None:
         raise NotImplementedError(
@@ -48,7 +89,14 @@ def load_tasks(tasks_file: str | None) -> list[dict]:
             "wait for ClawEval integration (see doc/ClawEval_Metadata.md)."
         )
     with open(tasks_file) as f:
-        return json.load(f)
+        records = json.load(f)
+    if not isinstance(records, list):
+        raise ValueError("manifest must be a JSON list of task records")
+    for i, rec in enumerate(records):
+        validate_task_record(rec, index=i)
+    if text_only:
+        records = [r for r in records if r["modality"] == "text"]
+    return records
 
 
 def rollout_one_task(ckpt_path: str, task: dict) -> dict:
@@ -119,7 +167,7 @@ def aggregate(
 
 def main():
     args = parse_args()
-    tasks = load_tasks(args.tasks_file)
+    tasks = load_tasks(args.tasks_file, text_only=not args.include_multimodal)
 
     current = evaluate(args.ckpt, tasks, args.num_runs)
     baseline = evaluate(args.baseline_ckpt, tasks, args.num_runs) if args.baseline_ckpt else None

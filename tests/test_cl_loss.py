@@ -12,8 +12,11 @@ import pytest
 from trainer.cl_loss import compute_replay_loss, make_cl_loss
 from trainer.replay_forward import (
     IS_REPLAY_KEY,
+    REPLAY_MASK_KEY,
     REPLAY_WEIGHTS_KEY,
     align_token_weights,
+    build_replay_rows,
+    pad_rows_to_seq_len,
     select_replay_rows,
 )
 
@@ -84,10 +87,11 @@ def test_align_token_weights_pads_and_tail_aligns():
 
 def test_select_replay_rows_is_differentiable_and_weighted():
     log_probs = torch.tensor([[0.0, 0.0], [-1.0, -2.0]], requires_grad=True)
-    response_mask = torch.tensor([[True, True], [True, True]])
+    # replay_response_mask: real span of the replay rows.
+    replay_mask = torch.tensor([[True, True], [True, True]])
     weights = torch.tensor([[0.0, 0.0], [2.0, 1.0]])
     is_replay = torch.tensor([False, True])
-    loss = select_replay_rows(log_probs, response_mask, weights, is_replay)
+    loss = select_replay_rows(log_probs, replay_mask, weights, is_replay)
     # -(-1)*2 + -(-2)*1 = 2 + 2 = 4, mean over 2 tokens = 2
     assert loss.item() == pytest.approx(2.0)
     loss.backward()
@@ -96,16 +100,83 @@ def test_select_replay_rows_is_differentiable_and_weighted():
     assert log_probs.grad[1].abs().sum().item() > 0.0
 
 
+def test_select_replay_rows_respects_real_span_mask():
+    # replay row 1 has a real span of only its first token (mask [1, 0]).
+    log_probs = torch.tensor([[0.0, 0.0], [-1.0, -5.0]], requires_grad=True)
+    replay_mask = torch.tensor([[0, 0], [1, 0]])
+    weights = torch.tensor([[0.0, 0.0], [1.0, 1.0]])
+    is_replay = torch.tensor([False, True])
+    loss = select_replay_rows(log_probs, replay_mask, weights, is_replay)
+    # Only token 0 of the replay row counts: -(-1)*1 / 1 = 1.0 (the -5 is masked).
+    assert loss.item() == pytest.approx(1.0)
+
+
 def test_compute_replay_loss_reads_model_output_and_data():
     _ensure_verl_losses_mock()
     model_output = {"log_probs": torch.tensor([[0.0, 0.0], [-1.0, -1.0]])}
     data = {
         IS_REPLAY_KEY: torch.tensor([False, True]),
-        "response_mask": torch.tensor([[True, True], [True, True]]),
+        # PPO mask is 0 for the replay row; L_replay must NOT read this.
+        "response_mask": torch.tensor([[1, 1], [0, 0]]),
+        REPLAY_MASK_KEY: torch.tensor([[0, 0], [1, 1]]),
         REPLAY_WEIGHTS_KEY: torch.tensor([[0.0, 0.0], [1.0, 1.0]]),
     }
     loss = compute_replay_loss(model_output, data)
     assert loss.item() == pytest.approx(1.0)
+
+
+def test_pad_rows_to_seq_len_right_pads_2d_only():
+    rows = {
+        "input_ids": torch.ones(2, 3, dtype=torch.long),
+        IS_REPLAY_KEY: torch.ones(2, dtype=torch.bool),
+    }
+    out = pad_rows_to_seq_len(rows, target_seq_len=5)
+    assert out["input_ids"].shape == (2, 5)
+    assert out["input_ids"][:, 3:].sum().item() == 0  # zero padded
+    assert out[IS_REPLAY_KEY].shape == (2,)  # 1D untouched
+
+
+class _FakeTokenizer:
+    pad_token_id = 0
+
+    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=False):
+        # one token per message char count, deterministic
+        return list(range(1, 1 + sum(len(m.get("content", "")) for m in messages)))
+
+
+def test_build_replay_rows_two_mask_layout():
+    samples = [
+        ("t1", None, {"messages": [{"role": "assistant", "content": "abc"}]}),
+        ("t2", None, {"messages": [{"role": "assistant", "content": "de"}]}),
+    ]
+    rows = build_replay_rows(samples, token_weights=None, tokenizer=_FakeTokenizer())
+    n = rows["is_replay"].shape[0]
+    assert n == 2
+    # PPO response_mask is all zeros -> ppo_loss ignores replay rows (B8).
+    assert rows["response_mask"].sum().item() == 0
+    # The real span lives in replay_response_mask.
+    assert rows[REPLAY_MASK_KEY].sum().item() > 0
+    # Placeholders present (B10).
+    assert "old_log_probs" in rows and "ref_log_prob" in rows
+    assert bool(rows["is_replay"].all())
+    # Trajectory-id sidecar aligned with built rows (for forgetting backfill).
+    from trainer.replay_forward import REPLAY_TIDS_KEY
+
+    assert rows[REPLAY_TIDS_KEY] == ["t1", "t2"]
+
+
+def test_build_replay_rows_tids_skip_empty_messages():
+    # Rows with empty messages are skipped; tids stay aligned with built rows.
+    samples = [
+        ("t1", None, {"messages": [{"role": "assistant", "content": "abc"}]}),
+        ("t2", None, {"messages": []}),
+        ("t3", None, {"messages": [{"role": "assistant", "content": "de"}]}),
+    ]
+    rows = build_replay_rows(samples, token_weights=None, tokenizer=_FakeTokenizer())
+    from trainer.replay_forward import REPLAY_TIDS_KEY
+
+    assert rows[REPLAY_TIDS_KEY] == ["t1", "t3"]
+    assert rows["is_replay"].shape[0] == 2
 
 
 def test_cl_loss_with_replay_adds_weighted_term():

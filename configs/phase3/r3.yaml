@@ -5,9 +5,10 @@
 defaults:
   - ../base
 
-actor:
-  use_kl_loss: false
-  kl_loss_coef: 0.0
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0
 
 cl:
   lambda_replay: 0.5
@@ -16,5 +17,8 @@ cl:
     num_buckets: 7
     total_capacity: 25000
     q_min: 2000
+    priority_type: uniform       # 无 priority：淘汰/采样均退化为桶内均匀
   weighting:
-    scheme: W0                   # 桶内均匀，无 priority 加权
+    scheme: W2                   # gamma=delta=1 即均权（token 权重不引入 priority 维度）
+    gamma: 1.0
+    delta: 1.0

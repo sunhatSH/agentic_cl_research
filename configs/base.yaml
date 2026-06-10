@@ -1,37 +1,53 @@
 # Base configuration shared by all 20 experiments.
 #
 # Each experiment yaml inherits from this file and overrides only the fields
-# that vary in its ablation row. Inheritance is handled in trainer/cl_main.py
-# (e.g. via OmegaConf.merge or hydra defaults).
+# that vary in its ablation row. Inheritance is resolved in trainer/cl_main.py
+# (load_config -> OmegaConf.merge over `defaults: [../base]`).
+#
+# IMPORTANT (verl Hydra compatibility):
+# This file is a CL-specific OVERLAY, not a complete verl config. Every field
+# below lives under verl's canonical key path (actor_rollout_ref.model.path,
+# actor_rollout_ref.actor.*, data.*, algorithm.*, trainer.*) so it takes effect
+# when merged on top of verl's `ppo_trainer` defaults. On the training cluster
+# the full verl defaults are composed first (Hydra `defaults: [ppo_trainer]`
+# or `--config-name`), then this overlay + the experiment yaml are merged in.
+# The `cl:` / `weighting:` sections are our own and are read only by
+# trainer/cl_main.py + trainer/cl_loss.py (verl ignores them).
 #
 # See doc/CL_Update_Sunhao.md "实验参数组合设计" for the parameter table.
 
-# Model
-# 基座模型：Qwen3.6-27B (https://huggingface.co/Qwen/Qwen3.6-27B)
-# 实验 yaml 中可以 override 为本地缓存路径（如 /mnt/afs/models/qwen3.6-27b/）。
-model:
-  name: Qwen/Qwen3.6-27B
-  tokenizer: Qwen/Qwen3.6-27B
-
-# Rollout
+# config for actor, rollout and reference model (verl: actor_rollout_ref)
 actor_rollout_ref:
-  rollout:
-    n: 2                          # traj/query, fixed at 2 (see doc/CL_Update_Sunhao.md)
-    temperature: 1.0
-  ref:
-    path: ???                     # pi_ref ckpt -- pi_0 or pi_{t-1}, set per experiment
 
-# Actor
-actor:
-  entropy_coeff: 0.001            # lambda_4, FIXED across all phases (anti Echo Trap)
-  use_kl_loss: false              # toggled per experiment
-  kl_loss_coef: 0.0               # lambda_2, set per experiment
-  kl_loss_type: low_var_kl        # reverse-KL family in verl
-  policy_loss:
-    loss_mode: cl_grpo            # custom loss registered via register_policy_loss
+  # Base model -- Qwen3.6-27B (https://huggingface.co/Qwen/Qwen3.6-27B).
+  # Override `path` to a local cache (e.g. /mnt/afs/models/qwen3.6-27b/).
+  model:
+    path: Qwen/Qwen3.6-27B
+
+  # Rollout (generation) config
+  rollout:
+    n: 8                          # traj/query (GRPO group size M)
+    temperature: 1.0
+
+  # Reference policy pi_ref -- pi_0 (initial) or pi_{t-1} (prev stage ckpt).
+  ref:
+    path: ???                     # set per experiment
+
+  # Actor (policy optimization) config
+  actor:
+    entropy_coeff: 0.001          # lambda_4, FIXED across all phases (anti Echo Trap)
+    use_kl_loss: false            # toggled per experiment
+    kl_loss_coef: 0.0             # lambda_2, set per experiment
+    kl_loss_type: low_var_kl      # reverse-KL family in verl
+    # NOTE: no custom policy_loss.loss_mode here. The CL loss is injected at
+    # runtime via actor.set_loss_fn (trainer/verl_runner.inject_cl_loss), so we
+    # leave verl's default loss_mode ("vanilla") untouched. The previous
+    # `loss_mode: cl_grpo` was dead config -- nothing registered that name.
 
 # Data
 data:
+  train_files: ???                # set per experiment / on cluster
+  val_files: ???
   train_batch_size: 1024
   gen_batch_size: 1024
   dataloader_num_workers: 4
@@ -44,6 +60,11 @@ algorithm:
 cl:
   lambda_replay: 0.0              # lambda_3, set per experiment
   replay_batch_size: 32
+  replay_warmup_size: 0           # >0: linearly ramp replay batch while buffer
+                                  # fills (cold-start); 0 = full batch immediately
+  # Paper-evidence cadences (steps; 0 disables). See trainer/replay_metrics.py.
+  buffer_stats_log_freq: 1        # log buffer.stats() -> wandb + logs/buffer_stats/*.jsonl
+  forgetting_update_freq: 1       # recompute current-policy logprobs -> activate forgetting_risk
   buffer:
     enabled: false                # B1 / K* phases keep this false
     num_buckets: 7
@@ -60,7 +81,9 @@ cl:
       - OfficeQA
     bucket_task_counts: [54, 52, 38, 18, 12, 11, 10]
   weighting:
-    scheme: W0                    # W0 uniform; W2 = priority * (gamma^block + delta^(K_i-block)) + clip
+    scheme: W0                    # W0 = same formula with gamma=delta=1 (flat U,
+                                  # priority retained); W2 = active U-shape.
+                                  # For truly priority-free weights use buffer.priority_type: uniform.
     gamma: 0.88                   # first-end decay base; gamma^0=1.0 at block 0
     delta: 0.88                   # last-end decay base;  delta^0=1.0 at block K_i (symmetric U)
     segmenter: message_block      # primary: split by OpenAI chat message boundaries
@@ -80,10 +103,10 @@ cl:
     long_block_threshold: 100     # re-split blocks exceeding this many tokens
     clip_quantiles: [0.05, 0.95]
 
-# Trainer
+# Trainer (verl key paths)
 trainer:
   total_epochs: 1
-  total_steps: 100
+  total_training_steps: 100       # verl: total_training_steps (was total_steps)
   save_freq: 25
   test_freq: 25
   logger: ['console', 'wandb']

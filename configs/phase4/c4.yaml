@@ -5,12 +5,11 @@
 defaults:
   - ../base
 
-actor:
-  use_kl_loss: true
-  kl_loss_coef: ???              # K-best2 的 lambda_2
-  kl_loss_type: low_var_kl
-
 actor_rollout_ref:
+  actor:
+    use_kl_loss: true
+    kl_loss_coef: ???            # K-best2 的 lambda_2
+    kl_loss_type: low_var_kl
   ref:
     path: ???
 

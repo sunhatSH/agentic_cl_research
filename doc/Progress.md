@@ -2,7 +2,7 @@
 
 > 本文件是**交付状态**的单一来源。协作流程与分工见 [`ContinualLearning.md`](ContinualLearning.md)；技术设计见 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)。
 
-**最后更新：** 2026-06-09  
+**最后更新：** 2026-06-10  
 **当前分支：** `dev_train`  
 **verl pin：** `0.8.0`（见 `pyproject.toml`）
 
@@ -13,9 +13,9 @@
 | ID | 里程碑 | 状态 | 说明 |
 |----|--------|------|------|
 | M0 | 设计文档 | Done | Loss、7 桶、GPU 调度、实验路线、verl 集成路径 |
-| M1 | Replay Buffer v1 | Done | 内存 backend，与 verl 解耦，52+ 单测 |
-| M2 | verl 训练集成 | **Done (code)** | `CLTaskRunner` / `inject_cl_loss` / buffer hooks；GPU smoke pending |
-| M3 | B1 基线训练 | Blocked | 依赖 GPU 集群 + 完整 verl Hydra 配置 + 模型路径 |
+| M1 | Replay Buffer v1 | Done | 内存 backend + SQLite 快照持久化，与 verl 解耦，单测 100+ |
+| M2 | verl 训练集成 | **Done (code)** | `CLTaskRunner` / `inject_cl_loss` / buffer hooks + fully-async runner scaffold；replay 路径 CUDA smoke 通过，全栈 smoke pending |
+| M3 | B1 基线训练 | Blocked | 依赖 GPU 集群（多卡）+ 真实 27B 权重 + 数据；`base.yaml` 已对齐 verl key path |
 | M4 | Phase 2–5 消融 | Blocked | 依赖 M3 |
 | M5 | ClawEval 评测闭环 | Blocked | 依赖 checkpoint + @杨益博 manifest |
 
@@ -25,16 +25,18 @@
 
 | 模块 | 进度 | 状态 |
 |------|------|------|
-| `replay_buffer/` | 100% | Done |
-| `trainer/cl_loss.py` | 100% | Done — `make_cl_loss` + `compute_replay_loss` (TensorDict 预计算) |
-| `trainer/cl_main.py` | 100% | Done — 入口 `run_cl_ppo` |
-| `trainer/verl_runner.py` | 100% | Done — `CLTaskRunner`, hooks, `build_trainer` |
-| `trainer/trajectory_adapter.py` | 100% | Done |
-| `trainer/replay_batch.py` | 100% | Done |
+| `replay_buffer/` | 100% | Done — 含 reservoir/uniform 开关、单桶塌缩、持久 sampler、SQLite 快照 |
+| `trainer/cl_loss.py` | 100% | Done — `make_cl_loss` 按 `is_replay` 分流（replay 行不污染 PPO 分母） |
+| `trainer/cl_main.py` | 100% | Done — 入口 `run_cl_ppo`；`build_buffer` 支持 reward/uniform/anti_forgetting |
+| `trainer/verl_runner.py` | 100% | Done — `CLTaskRunner`, hooks, `build_trainer`；replay 行双 mask + 跨长度 pad |
+| `trainer/verl_async_runner.py` | 100% | Done — Fully Async Policy 对接 scaffold（导入级 + 纯逻辑单测） |
+| `trainer/trajectory_adapter.py` | 100% | Done — 回填 `original_logprobs`/`success_rate`，未标注 bucket 跳过 |
+| `trainer/replay_batch.py` | 100% | Done — 含 replay warmup 爬升 |
+| `trainer/replay_metrics.py` | 100% | Done — buffer 动态日志 + forgetting_risk 回填 + 周期快照（论文证据钩子） |
 | `eval/metrics.py` | 100% | Done |
-| `eval/run_eval.py` | 40% | 框架有，rollout / manifest 未接 |
-| `configs/` (20 yaml) | 100% | Done |
-| `tests/` | ~95% | 63 用例（含 cl_loss / adapter / verl smoke skip） |
+| `eval/run_eval.py` | 40% | 框架有，rollout / manifest 未接（manifest 接口待 P2.4 定形） |
+| `configs/` (20 yaml) | 100% | Done — 已重构为 verl Hydra key path，删除死配置 `cl_grpo` |
+| `tests/` | ~95% | 144 passed / 1 skipped（新增 replay_metrics 论文证据钩子 7 项） |
 
 ---
 
@@ -62,11 +64,16 @@
 | 全部引用符号校验 | Done | `main_ppo` / `ray_trainer` / `tensordict_utils` 等 9 模块 ALL-OK |
 | `make_cl_loss` no-replay 分支 | Done | `tests/test_cl_loss.py` |
 | `compute_replay_loss` 梯度正确 | Done | 改为从 `model_output["log_probs"]` 取 replay 行（带梯度），非 detached 预计算 |
-| replay 行拼接 (`_append_replay_rows`) | Done | `DataProto.concat`，`is_replay` mask + 零 advantage |
+| replay 行拼接 (`_append_replay_rows`) | Done | `DataProto.concat`；双 mask（PPO `response_mask`=0 / `replay_response_mask` 真实 span）+ 跨长度 pad |
+| replay 行不污染 PPO loss | Done | replay 行 `response_mask`=0 → `ppo_loss` 自然忽略；L_replay 独占 `replay_response_mask`（B8）|
 | buffer 不进 loss 闭包 | Done | 闭包 freevars 仅 `lambda_replay`，cloudpickle 1.2KB |
 | `CLTaskRunner` + `set_loss_fn` | Done | `trainer/verl_runner.py` |
+| Fully Async Policy 对接 | Done (scaffold) | `trainer/verl_async_runner.py`：CL mixin 子类化 `FullyAsyncTrainer` 底层类后重新 `@ray.remote`；hook `_fit_update_actor` |
 | `install_buffer_hooks` | Done | patch `_update_actor`，无全局 monkey-patch |
-| GPU 1–2 step smoke | **Pending** | `pytest -m gpu`；replay 行的 tokenize/DataProto 形态需 GPU 联调 |
+| replay 路径 CUDA smoke | Done | `pytest -m gpu`：`build_replay_rows`→`select_replay_rows` 在真实 H800 上反向，grad>0 |
+| buffer 动态日志 + 周期快照 | Done | `flatten_buffer_stats` 注入 metrics + JSONL；`save_freq` 触发 `buffer.dump`（纯逻辑单测覆盖） |
+| forgetting_risk 当前 logprob 前向 | Done (code) / GPU pending | `compute_replay_current_logprobs` 走 verl `compute_log_prob`；off-GPU/假 trainer 优雅降级为 no-op，集群验证 DataProto schema |
+| 全栈 1–2 step smoke | **Blocked** | 需多卡集群 + 真实 27B 权重 + 数据集；`scripts/train.sh configs/phase1/b1.yaml ...` 手动跑 |
 
 ---
 
@@ -74,7 +81,7 @@
 
 | 依赖 | 负责人 | 阻塞项 |
 |------|--------|--------|
-| 完整 verl Hydra 配置 | @孙豪 | `configs/base.yaml` 需与 verl `ppo_trainer` defaults merge |
+| 完整 verl Hydra 配置 | @孙豪 | `base.yaml` 已对齐 key path；集群上仍需与 verl `ppo_trainer` defaults 组合补全 fsdp/optim/rollout engine 等字段 |
 | ClawEval 195 任务 manifest | @杨益博 | `eval/run_eval.py` |
 | 沙盒 rollout 环境 | @郑乃榕 | 真实 trajectory |
 | 用户 query / workspace | @吴健 | 训练数据源 |
@@ -90,6 +97,8 @@
 | 2026-06-09 | `e29fd06` — Replay Buffer 核心、20 实验配置、52 单测 |
 | 2026-06-09 | M2 verl 集成代码：`CLTaskRunner`, buffer hooks, `doc/Progress.md` |
 | 2026-06-09 | verl 0.8.0 装入 `.venv` (py3.10)；修复 replay 梯度(P0)/buffer 序列化(P1)/全局 patch(P2)/权重对齐(P4)；64 passed |
+| 2026-06-10 | 系统整理与修复一轮（P0 本地修复 + P1 基线打通 + P2 工程补全）：<br>• weighting 残留状态(A1)、R0 单桶+reservoir/uniform(A2/B5)、持久 sampler(A4)、淘汰 off-by-one(A5)<br>• W0=W2(γ=δ=1) 统一(B1)、R3=`priority_type uniform`、rarity 归一(B3)、S1/S2 固定 `n=2`(B4)<br>• priority 信号回填 `original_logprobs`/`success_rate`(D2)、diversity v1 显式禁用、未标注 bucket 跳过(B12)、replay warmup(B11)<br>• `base.yaml` 重构为 verl key path + 删 `cl_grpo`(B6/B7)、20 yaml 全量校验测试<br>• cl_loss 按 `is_replay` 分流 + replay 行双 mask/跨长度 pad/占位(B8/B9/B10)<br>• Buffer SQLite 快照持久化、Fully Async runner scaffold<br>• 文档修订：U 公式 `δ^(K_i−1−block)`(B2)、GPU 40+24(C1)、成本待重算(C2)、ClawEval General 证据缺口(C4)<br>• 130 passed / 1 skipped；replay 路径在 H800 上通过 CUDA smoke |
+| 2026-06-10 | 论文证据钩子（`trainer/replay_metrics.py`）：<br>• buffer 动态日志：每步 `flatten_buffer_stats` 注入 verl/wandb metrics + sidecar `logs/buffer_stats/<exp>.jsonl`（各桶 size/fill_ratio/淘汰/reservoir 拒绝/信号权重）<br>• 激活 `forgetting_risk`：replay 行经 `compute_log_prob` 取当前策略 logprob → `per_row_masked_mean` → `backfill_forgetting` 写回 `current_logprobs` 重算优先级（R4-vs-R5 核心证据）<br>• 按 `trainer.save_freq` 自动 `buffer.dump` → `buffer_dumps/<exp>-step-<N>.sqlite`<br>• `build_replay_rows` 新增 `_replay_tids` 对齐 sidecar；`base.yaml` 增 `buffer_stats_log_freq`/`forgetting_update_freq`<br>• +7 单测，144 passed / 1 skipped |
 
 ---
 
@@ -97,8 +106,8 @@
 
 | 优先级 | 行动 | 负责人 |
 |--------|------|--------|
-| P0 | GPU smoke：B1 跑 1–2 step，验证 FSDP + replay sidecar | @孙豪 |
-| P0 | merge verl 完整 Hydra defaults 到实验 yaml | @孙豪 |
-| P1 | `compute_log_prob` 联调，补全 replay 前向 | @孙豪 |
-| P1 | ClawEval manifest 接入 | @杨益博 |
-| P2 | Buffer 持久化 (SQLite/LMDB) | @孙豪 |
+| P0 | 全栈 GPU smoke：集群上 B1/R4 跑 1–2 step（多卡 + 真实 27B + 数据） | @孙豪 |
+| P0 | 集群上 merge verl 完整 Hydra defaults（fsdp/optim/rollout engine） | @孙豪 |
+| P1 | ClawEval manifest 接入（接口已在 `eval/run_eval.py` 定形 + fake 单测） | @杨益博 |
+| P1 | 沙盒 rollout 提供带 `bucket`/`messages`/`success_rate` 的真实轨迹 | @郑乃榕 |
+| P2 | 27B/64 卡 成本与显存重算（C2）；fully-async 全栈联调 | @孙豪 |

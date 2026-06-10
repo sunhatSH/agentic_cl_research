@@ -16,8 +16,12 @@ Quota formula (sub-linear weighting):
 
 from __future__ import annotations
 
+import pickle
+import random
+import sqlite3
 import uuid
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from replay_buffer.eviction import Eviction
@@ -75,6 +79,15 @@ class BucketReplayBuffer:
         bucket_task_counts: list of n_i, used for quota allocation.
         alpha: sub-linear weighting exponent in quota formula (default 0.5).
         priority: Priority instance (anti-forgetting); pass RewardPriority for R5.
+        eviction_type: 'priority' (default) or 'reservoir' (R0 CLEAR baseline).
+        within_bucket_sampling: 'priority' (default) or 'uniform' (R0 / R3).
+        seed: optional RNG seed for reproducible reservoir / sampling.
+
+    Single-bucket mode (R0 CLEAR baseline): pass ``num_buckets=1``. When the
+    default 7 ``bucket_names`` / ``bucket_task_counts`` are inherited from a
+    multi-bucket config, they are automatically collapsed to one ``"All"``
+    bucket whose task count is the sum -- so ``configs/phase3/r0.yaml`` can set
+    only ``num_buckets: 1`` without redefining the name/count lists (bug A2).
     """
 
     def __init__(
@@ -86,6 +99,9 @@ class BucketReplayBuffer:
         bucket_task_counts: Sequence[int] | None = None,
         alpha: float = 0.5,
         priority: Priority | None = None,
+        eviction_type: str = "priority",
+        within_bucket_sampling: str = "priority",
+        seed: int | None = None,
     ):
         if bucket_names is None:
             bucket_names = [
@@ -94,6 +110,13 @@ class BucketReplayBuffer:
             ]
         if bucket_task_counts is None:
             bucket_task_counts = [54, 52, 38, 18, 12, 11, 10]
+
+        # Single-bucket collapse: tolerate inheriting multi-bucket name/count
+        # lists when num_buckets == 1 (R0 CLEAR baseline).
+        if num_buckets == 1 and (len(bucket_names) != 1 or len(bucket_task_counts) != 1):
+            bucket_names = ["All"]
+            bucket_task_counts = [sum(bucket_task_counts)]
+
         if len(bucket_names) != num_buckets or len(bucket_task_counts) != num_buckets:
             raise ValueError(
                 "bucket_names and bucket_task_counts must each have length num_buckets"
@@ -105,16 +128,35 @@ class BucketReplayBuffer:
         self.bucket_names = list(bucket_names)
         self.bucket_task_counts = list(bucket_task_counts)
         self.alpha = alpha
+        self.eviction_type = eviction_type
+        self.within_bucket_sampling = within_bucket_sampling
 
         targets = allocate_quota(total_capacity, q_min, bucket_task_counts, alpha)
         self.soft_target = dict(zip(self.bucket_names, targets))
 
+        self._rng = random.Random(seed)
         self.store = TrajectoryStore(backend="memory")
         self.priority_fn = priority or Priority()
-        self.eviction = Eviction(q_min=q_min, soft_target=self.soft_target)
+        self.eviction = Eviction(
+            q_min=q_min,
+            soft_target=self.soft_target,
+            eviction_type=eviction_type,
+            rng=self._rng,
+        )
+        # Persistent sampler so starvation / last-sample state survives across
+        # sample() calls (bug A4 -- previously a fresh sampler was built each call).
+        from replay_buffer.sampler import TwoLevelSampler
+
+        self._sampler = TwoLevelSampler(
+            self,
+            within_bucket_sampling=within_bucket_sampling,
+            rng=self._rng,
+        )
 
         self._step = 0
+        self._seen_counts: dict[str, int] = {b: 0 for b in self.bucket_names}
         self._eviction_counts: dict[str, int] = {b: 0 for b in self.bucket_names}
+        self._rejected_counts: dict[str, int] = {b: 0 for b in self.bucket_names}
 
     def set_step(self, step: int) -> None:
         """Trainer calls this each step so insert/replay step counters stay in sync."""
@@ -159,8 +201,17 @@ class BucketReplayBuffer:
         tid = meta.get("trajectory_id") or f"traj_{uuid.uuid4().hex[:12]}"
         meta["trajectory_id"] = tid
 
-        # In-bucket eviction BEFORE insert when bucket is over soft target.
-        while self.eviction.should_evict(self.store, bucket):
+        self._seen_counts[bucket] += 1
+
+        if self.eviction_type == "reservoir":
+            return self._reservoir_add(tid, trajectory, meta, bucket)
+
+        # Priority eviction: evict the lowest-priority in-bucket trajectory
+        # FIRST when the bucket is at/over its soft target, then insert, so the
+        # steady-state bucket size never exceeds soft_target (bug A5).
+        while self.store.bucket_size(bucket) >= self.soft_target[bucket]:
+            if self.store.bucket_size(bucket) <= self.q_min:
+                break
             victim = self.eviction.select_victim(self.store, bucket)
             if victim is None:
                 break
@@ -170,15 +221,45 @@ class BucketReplayBuffer:
         self.store.put(tid, trajectory, meta)
         return tid
 
+    def _reservoir_add(self, tid: str, trajectory: Any, meta: dict, bucket: str) -> str:
+        """Classic reservoir sampling acceptance (R0 CLEAR baseline).
+
+        While the bucket has room, accept directly. Once full, accept the new
+        trajectory with probability ``cap / n_seen`` and evict a uniformly
+        random existing trajectory; otherwise reject the new one. This gives
+        each streamed trajectory an equal long-run retention probability --
+        the "random discard" behaviour CLEAR relies on.
+        """
+        cap = self.soft_target[bucket]
+        size = self.store.bucket_size(bucket)
+        if size < cap:
+            self.store.put(tid, trajectory, meta)
+            return tid
+        n_seen = self._seen_counts[bucket]
+        if self._rng.random() < cap / max(n_seen, 1):
+            # Reservoir manages capacity itself; the q_min hard floor (a
+            # bucketed-mode concept) must NOT block the random replacement,
+            # so pick the victim directly rather than via Eviction.select_victim.
+            ids = self.store.list_by_bucket(bucket)
+            if ids:
+                self.store.delete(self._rng.choice(ids))
+                self._eviction_counts[bucket] += 1
+            self.store.put(tid, trajectory, meta)
+            return tid
+        self._rejected_counts[bucket] += 1
+        return tid
+
     def add_trajectories(self, batch) -> list[str]:
         """Bulk add. Each item is (trajectory, bucket, metadata)."""
         return [self.add_trajectory(t, b, m) for t, b, m in batch]
 
     def sample(self, batch_size: int):
-        """Two-level sampling -- delegates to TwoLevelSampler."""
-        from replay_buffer.sampler import TwoLevelSampler
-        sampler = TwoLevelSampler(self)
-        return sampler.sample(batch_size)
+        """Two-level sampling -- delegates to the persistent TwoLevelSampler.
+
+        The sampler is created once in ``__init__`` so starvation_boost and
+        last-sample bookkeeping persist across calls (bug A4).
+        """
+        return self._sampler.sample(batch_size)
 
     def update_priority(self, trajectory_id: str, **signal_updates) -> None:
         """Recompute priority after new signals (e.g. updated current_logprobs)."""
@@ -213,9 +294,60 @@ class BucketReplayBuffer:
                 "fill_ratio": size / target if target else 0.0,
                 "evictions": self._eviction_counts[name],
             }
+        active_signals = (
+            self.priority_fn.active_signals()
+            if hasattr(self.priority_fn, "active_signals")
+            else {}
+        )
         return {
             "total_size": len(self.store),
             "total_capacity": self.total_capacity,
             "per_bucket": per_bucket,
             "step": self._step,
+            "eviction_type": self.eviction_type,
+            "within_bucket_sampling": self.within_bucket_sampling,
+            "priority_active_signals": active_signals,
+            "reservoir_rejected": dict(self._rejected_counts),
         }
+
+    # ------------------------------------------------------------------ #
+    # Persistence (SQLite snapshot)                                       #
+    # ------------------------------------------------------------------ #
+    _STATE_KEYS = ("_step", "_seen_counts", "_eviction_counts", "_rejected_counts")
+
+    def dump(self, path: str | Path) -> None:
+        """Snapshot the whole buffer (trajectories + counters) to ``path``.
+
+        Trajectories go through ``TrajectoryStore.save_sqlite``; the buffer's
+        own counters (step / seen / eviction / rejected) are stored in a
+        sidecar ``buffer_state`` table inside the SAME SQLite file, so a single
+        file fully restores the buffer (doc/Progress.md "Buffer 持久化").
+        """
+        path = Path(path)
+        self.store.save_sqlite(path)
+        state = {k: getattr(self, k) for k in self._STATE_KEYS}
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS buffer_state (state BLOB)")
+            conn.execute("DELETE FROM buffer_state")
+            conn.execute(
+                "INSERT INTO buffer_state VALUES (?)",
+                (pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def load(self, path: str | Path) -> None:
+        """Restore buffer trajectories + counters from a ``dump`` snapshot."""
+        path = Path(path)
+        self.store.load_sqlite(path)
+        conn = sqlite3.connect(str(path))
+        try:
+            row = conn.execute("SELECT state FROM buffer_state").fetchone()
+        finally:
+            conn.close()
+        if row is not None:
+            state = pickle.loads(row[0])
+            for k, v in state.items():
+                setattr(self, k, v)

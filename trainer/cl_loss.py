@@ -21,7 +21,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from trainer.replay_forward import IS_REPLAY_KEY, REPLAY_WEIGHTS_KEY, select_replay_rows
+from trainer.replay_forward import (
+    IS_REPLAY_KEY,
+    REPLAY_MASK_KEY,
+    REPLAY_WEIGHTS_KEY,
+    select_replay_rows,
+)
 
 
 def _get_non_tensor(data, key: str, default=None):
@@ -47,14 +52,16 @@ def compute_replay_loss(model_output, data):
     """Differentiable replay loss over appended replay rows.
 
     Pulls ``log_probs`` from ``model_output`` (gradient-carrying), and
-    ``response_mask`` / ``replay_token_weights`` / ``is_replay`` from ``data``.
-    Returns a scalar tensor (0 when there are no replay rows).
+    ``replay_response_mask`` / ``replay_token_weights`` / ``is_replay`` from
+    ``data``. The replay term uses ``replay_response_mask`` (the real span),
+    NOT the PPO ``response_mask`` -- the latter is 0 for replay rows so verl's
+    ppo_loss skips them (bug B8). Returns a scalar (0 when no replay rows).
     """
     log_probs = model_output["log_probs"] if isinstance(model_output, dict) else model_output.get("log_probs")
     is_replay = _data_get(data, IS_REPLAY_KEY)
-    response_mask = _data_get(data, "response_mask")
+    replay_mask = _data_get(data, REPLAY_MASK_KEY)
     token_weights = _data_get(data, REPLAY_WEIGHTS_KEY)
-    return select_replay_rows(log_probs, response_mask, token_weights, is_replay)
+    return select_replay_rows(log_probs, replay_mask, token_weights, is_replay)
 
 
 def _replay_is_empty(data) -> bool:

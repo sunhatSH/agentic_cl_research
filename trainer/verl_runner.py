@@ -6,6 +6,7 @@ same Ray actor as the trainer driver (buffer is not serialized across Ray).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from omegaconf import OmegaConf
@@ -65,6 +66,13 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
     cl = cfg.get("cl", {}) or {}
     lambda_replay = float(cl.get("lambda_replay", 0.0))
     replay_batch_size = int(cl.get("replay_batch_size", 32))
+    replay_warmup_size = int(cl.get("replay_warmup_size", 0))
+    # Paper-evidence cadences (0 disables). See doc/Progress.md / replay_metrics.
+    stats_log_freq = int(cl.get("buffer_stats_log_freq", 1))
+    forgetting_update_freq = int(cl.get("forgetting_update_freq", 1))
+    trainer_cfg = cfg.get("trainer", {}) or {}
+    save_freq = int(trainer_cfg.get("save_freq", 0))
+    exp_name = trainer_cfg.get("experiment_name", "cl")
     weighting = None
     if lambda_replay > 0:
         from trainer.cl_loss import build_weighting_from_cfg
@@ -72,26 +80,74 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
         weighting = build_weighting_from_cfg(cl)
 
     from trainer.replay_batch import prepare_replay_rows
+    from trainer.replay_forward import REPLAY_TIDS_KEY
+    from trainer.replay_metrics import (
+        BufferStatsLogger,
+        backfill_forgetting,
+        compute_replay_current_logprobs,
+        flatten_buffer_stats,
+    )
     from trainer.trajectory_adapter import extract_trajectories_from_batch
 
+    stats_logger = BufferStatsLogger(f"logs/buffer_stats/{exp_name}.jsonl")
     tokenizer = getattr(trainer, "tokenizer", None)
     original_update = trainer._update_actor
 
+    def _merge_buffer_metrics(result, stats) -> None:
+        """Surface flattened buffer stats into verl's logged metrics (wandb)."""
+        meta = getattr(result, "meta_info", None)
+        if isinstance(meta, dict) and isinstance(meta.get("metrics"), dict):
+            meta["metrics"].update(flatten_buffer_stats(stats))
+
     def patched_update(batch):
+        # Keep a handle to the ORIGINAL rollout batch: the post-append batch
+        # also contains replay rows (is_replay=True) which must NOT be ingested
+        # back into the buffer as if they were fresh trajectories.
+        rl_batch = batch
         # 1. Pre: append gradient-carrying replay rows to the actor batch.
+        replay_rows: dict = {}
         if lambda_replay > 0:
             replay_rows = prepare_replay_rows(
-                buffer, weighting, tokenizer, replay_batch_size
+                buffer, weighting, tokenizer, replay_batch_size,
+                warmup_size=replay_warmup_size,
             )
             if replay_rows:
                 batch = _append_replay_rows(batch, replay_rows)
 
         result = original_update(batch)
 
-        # 2. Post: ingest the step's new trajectories into the buffer.
-        buffer.set_step(getattr(trainer, "global_steps", buffer._step))
-        for trajectory, bucket, meta in extract_trajectories_from_batch(batch):
+        step = getattr(trainer, "global_steps", buffer._step)
+        buffer.set_step(step)
+
+        # 2. Post: activate forgetting_risk -- recompute current-policy log-probs
+        #    for the just-replayed trajectories and backfill their priority.
+        tids = replay_rows.get(REPLAY_TIDS_KEY) if replay_rows else None
+        if tids and forgetting_update_freq > 0 and step % forgetting_update_freq == 0:
+            means = compute_replay_current_logprobs(trainer, replay_rows)
+            if means is not None:
+                backfill_forgetting(buffer, tids, means)
+
+        # 3. Post: ingest the step's new trajectories into the buffer.
+        #    Use rl_batch (pre-append) so replay rows are not re-ingested.
+        #    valid_buckets lets the adapter recover LLM-emitted <task_domain>
+        #    labels when no explicit bucket field is present (domain_tagging).
+        for trajectory, bucket, meta in extract_trajectories_from_batch(
+            rl_batch, valid_buckets=getattr(buffer, "bucket_names", None)
+        ):
             buffer.add_trajectory(trajectory, bucket, meta)
+
+        # 4. Post: buffer-dynamics evidence (wandb metrics + sidecar JSONL).
+        if stats_log_freq > 0 and step % stats_log_freq == 0:
+            stats = buffer.stats()
+            _merge_buffer_metrics(result, stats)
+            stats_logger.log(step, stats)
+
+        # 5. Post: periodic full buffer snapshot for reproducibility / analysis.
+        if save_freq > 0 and step > 0 and step % save_freq == 0:
+            snap = Path(f"buffer_dumps/{exp_name}-step-{step}.sqlite")
+            snap.parent.mkdir(parents=True, exist_ok=True)
+            buffer.dump(snap)
+
         return result
 
     trainer._update_actor = patched_update
@@ -100,12 +156,15 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
 def _append_replay_rows(batch: Any, replay_rows: dict[str, Any]) -> Any:
     """Concatenate replay row tensors onto a verl DataProto batch.
 
-    Replay rows carry ``is_replay=True``, zeroed advantages, and per-token
-    ``replay_token_weights``. Non-replay rows are back-filled with ``is_replay=False``
-    and zero weights so the concatenated batch is rectangular.
+    Replay rows carry ``is_replay=True``, a real ``replay_response_mask`` (with
+    ``response_mask`` = 0 so ppo_loss ignores them, bug B8), zeroed advantages,
+    and per-token ``replay_token_weights``. RL rows are back-filled with the
+    mirror-image zero fields so the two row sets are rectangular and never
+    contaminate each other.
 
-    GPU-cluster validation point: the exact DataProto concat helper / padding mode
-    depends on the configured engine (see doc/Progress.md verl checklist).
+    Both sides are right-padded to a common sequence length (bug B9) before
+    DataProto.concat. The exact concat/padding mode for the configured engine
+    is validated on the GPU cluster (see doc/Progress.md verl checklist).
     """
     try:
         import torch
@@ -113,16 +172,52 @@ def _append_replay_rows(batch: Any, replay_rows: dict[str, Any]) -> Any:
     except ImportError:
         return batch
 
-    from trainer.replay_forward import IS_REPLAY_KEY, REPLAY_WEIGHTS_KEY
+    from trainer.replay_forward import (
+        IS_REPLAY_KEY,
+        REPLAY_MASK_KEY,
+        REPLAY_TIDS_KEY,
+        REPLAY_WEIGHTS_KEY,
+        pad_rows_to_seq_len,
+    )
+
+    # Non-tensor sidecar (trajectory ids) never enters the TensorDict.
+    replay_rows = {k: v for k, v in replay_rows.items() if k != REPLAY_TIDS_KEY}
 
     n_rl = len(batch.batch["responses"]) if "responses" in batch.batch else len(batch.batch)
-    seq_len = replay_rows["responses"].shape[-1]
+    rl_seq_len = batch.batch["responses"].shape[-1] if "responses" in batch.batch else 0
+    replay_seq_len = replay_rows["responses"].shape[-1]
+    target_seq_len = max(rl_seq_len, replay_seq_len)
 
-    # Mark existing RL rows as non-replay with zero weights.
+    # Pad replay rows up to the common seq_len, then pad the RL batch tensors too.
+    replay_rows = pad_rows_to_seq_len(replay_rows, target_seq_len)
+    if rl_seq_len < target_seq_len:
+        for k, v in list(batch.batch.items()):
+            if hasattr(v, "dim") and v.dim() == 2 and v.shape[-1] < target_seq_len:
+                import torch.nn.functional as F
+
+                batch.batch[k] = F.pad(v, (0, target_seq_len - v.shape[-1]), value=0)
+
+    # Back-fill RL rows with the mirror-image replay fields.
     batch.batch[IS_REPLAY_KEY] = torch.zeros(n_rl, dtype=torch.bool)
-    batch.batch[REPLAY_WEIGHTS_KEY] = torch.zeros((n_rl, seq_len), dtype=torch.float32)
+    batch.batch[REPLAY_WEIGHTS_KEY] = torch.zeros((n_rl, target_seq_len), dtype=torch.float32)
+    batch.batch[REPLAY_MASK_KEY] = torch.zeros((n_rl, target_seq_len), dtype=torch.long)
 
     replay_dp = DataProto.from_single_dict(replay_rows)
+
+    # DataProto.concat requires both sides to share non_tensor_batch keys with a
+    # length == batch size. Replay rows carry no rollout non-tensor columns
+    # (messages/bucket/...), so back-fill placeholder columns of length n_replay.
+    # These placeholders are never read: replay rows are excluded from buffer
+    # ingest (patched_update uses the pre-append rl_batch).
+    rl_non_tensor = getattr(batch, "non_tensor_batch", {}) or {}
+    if rl_non_tensor:
+        import numpy as np
+
+        n_replay = len(replay_dp)
+        for k, arr in rl_non_tensor.items():
+            trailing = getattr(arr, "shape", (0,))[1:]
+            replay_dp.non_tensor_batch[k] = np.full((n_replay, *trailing), None, dtype=object)
+
     return DataProto.concat([batch, replay_dp])
 
 

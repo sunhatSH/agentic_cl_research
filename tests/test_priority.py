@@ -37,6 +37,17 @@ def test_rarity_inverse_log_frequency():
     assert rare > common > 0
 
 
+def test_rarity_normalized_within_unit_interval():
+    # Bug B3: rarity must stay in [0, 1]; count=0 yields exactly 1.0.
+    p = Priority(alpha=(0.0, 1.0, 0.0, 0.0))
+    for count in (0, 1, 10, 1000):
+        r = p.compute({"pattern_id": "p"}, {"pattern_counts": {"p": count}})
+        assert 0.0 <= r <= 1.0
+    assert math.isclose(
+        p.compute({"pattern_id": "p"}, {"pattern_counts": {"p": 0}}), 1.0, abs_tol=1e-9
+    )
+
+
 def test_zero_alpha_short_circuits_signal():
     """If a weight is 0, the corresponding signal is not even read.
 

@@ -34,7 +34,7 @@ GRPO 在同 query 的 M 条 trajectory 内归一化 reward 得到 advantage。�
 | 概念 | 定义 |
 |---|---|
 | **batch** | 一次 rollout 同时处理 B 个 query（默认 8） |
-| **group** | 同 query 的 M 个沙盒（CL 主方案 M=2，下文示意按 M=8） |
+| **group** | 同 query 的 M 个沙盒（CL 主方案 **M=8**，`actor_rollout_ref.rollout.n=8`） |
 | **总并发** | B × M |
 | **环境链** | 每个 query 维护一份不断演化的环境状态（具体载体见 §4） |
 
@@ -106,7 +106,7 @@ from e2b_code_interpreter import Sandbox
 
 # 环境变量
 # E2B_API_KEY=...
-# E2B_DOMAIN=ap-guangzhou.tencentags.com
+# E2B_DOMAIN=ap-beijing.tencentags.com
 
 # 1. 派生 M 个沙盒（同一 Tool 模板）
 tool_id = query_tool_map[query.id]
@@ -157,6 +157,7 @@ verl rollout step
 | `original_logprobs` | 该次 rollout 时 policy 的 logprob |
 | `pattern_id` | query 模板或 tool 调用序列哈希 |
 | `success_rate` | 同 query 组内 `mean(passed_i)` |
+| `bucket`（7 桶领域） | **LLM 在处理任务时顺带输出**：rollout 系统 prompt 追加 `trainer.domain_tagging.build_domain_instruction()`，agent 末尾输出 `<task_domain>NAME</task_domain>`，由 `parse_domain()` 解析。无显式 bucket 字段时 `trajectory_adapter` 自动从轨迹文本回收；无法解析则跳过不入桶（B12） |
 
 ### 5.4 关键设计取舍
 
@@ -164,6 +165,19 @@ verl rollout step
 2. **状态不"统一字段"**：母版是不透明的，复制就行——不比较或合并内容。
 3. **母版不可变**：写出来不再改。若固化失败，旧母版保留，本轮 trajectory 仍入 buffer，环境不演化。
 4. **B 个 query 完全独立并行**：每个 query 一条自己的环境链，互不影响。
+
+### 5.5 领域 / 入桶粒度 = per-query（契约）
+
+trajectory 与入桶的最小单元是 **query**，不是 session：一个 query（带其会话上下文）跑出一条（组）trajectory，路由进它自己的 7 桶领域。**同一 session 的不同 query 进不同桶是正常的**——session 只是多轮上下文来源，本身不是入桶单元，因此不需要"一会话一领域"假设。
+
+**对 rollout 的硬性要求**：
+
+- 每个 query 单独产出 trajectory；**不要把整段会话合成一条 trajectory**。
+- agent 在**该 query 的 response 末尾** emit `<task_domain>NAME</task_domain>`（指令来自 `trainer.domain_tagging.build_domain_instruction()`，注入系统 prompt）。
+- 标签由模型在**看到完整上下文后**给出，因此 context-dependent 的追问（如"怎么样了"）也能被正确标成当前进行中任务的领域。
+- `parse_domain()` 按条解析；无显式 `bucket` 字段时 `trajectory_adapter` 自动从轨迹文本回收，无法解析则跳过不入桶（B12）。
+
+> `datasets/queries.jsonl` 仍按 session 分行存 `queries:[...]`（保留会话分组以便上下文回放），但**消费单元是其中的单个 query**。
 
 ## 6. PoC 待验证
 

@@ -158,7 +158,7 @@ agentic_cl_research/
 $$L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_4 L_{ent}$$
 
 - $L_{reg}$（参数 L2 正则）**弃用**，权重为 0，槽位让给 $L_{ent}$
-- $\lambda_4 = 0.001$ **所有 Phase 固定开启**，防 Echo Trap（traj/query=2 下关闭 entropy 会训练崩盘），不参与 ablation
+- $\lambda_4 = 0.001$ **所有 Phase 固定开启**，防 Echo Trap，不参与 ablation
 - $L_{kl}$ 用 reverse KL：$D_{KL}(\pi_{new} \| \pi_{ref})$
 
 ### Replay Buffer 7 桶结构
@@ -208,7 +208,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 |------|------|
 | CL | Continual Learning |
 | Echo Trap | 多轮 agent RL 中因策略坍缩导致训练崩溃的现象（参考文献 B4） |
-| traj/query | 每 query 的 rollout 轨迹数，当前方案为 2（原 8） |
+| traj/query | 每 query 的 rollout 轨迹数，当前方案为 8 |
 | CLEAR | Rolnick et al. 2019 的 experience replay 基线方法（参考文献 A2） |
 | verl | 使用的 RL 训练框架 |
 | GRPO | 使用的 RL 算法 |

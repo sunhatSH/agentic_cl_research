@@ -9,13 +9,18 @@ priority_i = alpha_1 * forgetting_risk
            + alpha_3 * diversity
            + alpha_4 * within_bucket_difficulty
 
-Default fusion weights: (0.4, 0.2, 0.2, 0.2) -- forgetting_risk dominates.
+Default fusion weights (v1): (0.5, 0.25, 0.0, 0.25). The diversity signal is
+DISABLED in v1 (weight 0.0) because there is no trajectory-embedding pipeline
+yet -- ``bucket_view['peer_embeddings']`` is always empty, so a non-zero
+diversity weight would silently contribute 0 and dilute the other signals
+(bug D2). The remaining three weights renormalize the doc's (0.4, 0.2, 0.2)
+to sum 1.0, keeping forgetting_risk dominant. Re-enable diversity by passing a
+4-tuple with a non-zero third entry once embeddings are wired.
 
-Each component is normalized to roughly [0, 1] so the weighted sum is
-interpretable and the weights are comparable. None of the components
-depends on reward absolute value (R5 reward-based priority is implemented
-as a separate ``RewardPriority`` class for ablation, not via the weight
-tuple).
+Each component is normalized to [0, 1] so the weighted sum is interpretable
+and the weights are comparable. None of the components depends on reward
+absolute value (R5 reward-based priority is implemented as a separate
+``RewardPriority`` class for ablation, not via the weight tuple).
 """
 
 from __future__ import annotations
@@ -30,15 +35,26 @@ class Priority:
     Args:
         alpha: 4-tuple of fusion weights (forgetting, rarity, diversity, difficulty).
                Must sum to 1.0 (enforced; raises ValueError otherwise).
+               Default (0.5, 0.25, 0.0, 0.25) disables diversity in v1 (see
+               module docstring -- no embedding pipeline yet).
     """
 
-    def __init__(self, alpha: Sequence[float] = (0.4, 0.2, 0.2, 0.2)):
+    def __init__(self, alpha: Sequence[float] = (0.5, 0.25, 0.0, 0.25)):
         if len(alpha) != 4:
             raise ValueError(f"alpha must be a 4-tuple, got {alpha!r}")
         s = sum(alpha)
         if not math.isclose(s, 1.0, abs_tol=1e-6):
             raise ValueError(f"alpha must sum to 1.0, got {s}")
         self.alpha = tuple(alpha)
+
+    _SIGNAL_NAMES = ("forgetting_risk", "rarity", "diversity", "within_bucket_difficulty")
+
+    def active_signals(self) -> dict[str, float]:
+        """Map of signal name -> weight for signals with non-zero weight.
+
+        Surfaced via ``BucketReplayBuffer.stats()`` so a disabled signal (e.g.
+        diversity in v1) is observable rather than silently contributing 0."""
+        return {n: w for n, w in zip(self._SIGNAL_NAMES, self.alpha) if w > 0}
 
     def compute(self, trajectory, bucket_view) -> float:
         """Composite priority for a trajectory in its bucket.
@@ -84,16 +100,21 @@ class Priority:
         return max(0.0, min(1.0, drift))
 
     def rarity(self, trajectory, bucket_view) -> float:
-        """Inverse frequency of pattern_id within bucket.
+        """Inverse frequency of pattern_id within bucket, normalized to (0, 1].
 
-        rarity = 1 / log(1 + count_of_this_pattern_in_bucket)
+        rarity = 1 / (1 + log(1 + count_of_this_pattern_in_bucket))
+
+        count = 0 (never-seen pattern) -> 1.0; the value decays toward 0 as the
+        pattern becomes more common. The ``1 +`` in the denominator keeps the
+        signal inside [0, 1] so the 4-signal weighted sum stays interpretable
+        (bug B3 -- the previous ``1/log(2+count)`` returned 1.44 at count=0).
         """
         pid = trajectory.get("pattern_id")
         if pid is None:
             return 0.0
         counts = bucket_view.get("pattern_counts", {})
         count = counts.get(pid, 0)
-        return 1.0 / math.log(2.0 + count)
+        return 1.0 / (1.0 + math.log(1.0 + count))
 
     def diversity(self, trajectory, bucket_view) -> float:
         """Mean cosine distance to peer embeddings in bucket.
@@ -138,3 +159,18 @@ class RewardPriority:
 
     def compute(self, trajectory, bucket_view) -> float:
         return float(trajectory.get("reward", 0.0))
+
+
+class UniformPriority:
+    """Constant priority for the R3 ablation ("no priority").
+
+    Every trajectory gets the same value (1.0). With equal priorities,
+    priority-based eviction becomes arbitrary-within-bucket and
+    priority-weighted sampling becomes uniform -- exactly the "two-level
+    sampling, bucket-internal uniform, no priority" behaviour R3 needs to
+    contrast against R4 (see doc/CL_Update_Sunhao.md Phase 3 R3 row). One knob
+    flips both eviction and sampling to uniform without extra modes.
+    """
+
+    def compute(self, trajectory, bucket_view) -> float:
+        return 1.0

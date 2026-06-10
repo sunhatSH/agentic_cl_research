@@ -43,3 +43,11 @@ buffer_dumps/
 *.lmdb
 *.sqlite
 *.sqlite-journal
+
+# Datasets (raw sessions + generated queries; large, regenerated, not source)
+datasets/
+
+# Tencent / CCR local credentials (never commit)
+docker/sandbox/tencent.env
+docker/sandbox/image.env
+docker/sandbox/runtime.env

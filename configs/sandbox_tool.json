@@ -1,0 +1,42 @@
+{
+  "_comment": "Agent Runtime custom sandbox TOOL template. Fill placeholders after image push + CAM role. API ref: doc/Sandbox_Image_Onboarding.md",
+  "ToolName": "agentic-cl-sandbox",
+  "ToolType": "custom",
+  "Description": "Agentic CL GRPO rollout — code-interpreter + project deps (pandas/aiohttp/...)",
+  "DefaultTimeout": "30m",
+  "NetworkConfiguration": {
+    "NetworkMode": "PUBLIC"
+  },
+  "RoleArn": "qcs::cam::uin/100048510516:roleName/REPLACE_ROLE_NAME",
+  "CustomConfiguration": {
+    "Image": "ccr.ccs.tencentyun.com/REPLACE_NAMESPACE/agentic-cl-sandbox:v1",
+    "ImageRegistryType": "personal",
+    "Ports": [
+      {
+        "Name": "run-code",
+        "Port": 49999,
+        "Protocol": "TCP"
+      },
+      {
+        "Name": "envd",
+        "Port": 49983,
+        "Protocol": "TCP"
+      }
+    ],
+    "Resources": {
+      "CPU": "2",
+      "Memory": "2Gi"
+    },
+    "Probe": {
+      "HttpGet": {
+        "Path": "/health",
+        "Port": 49999
+      },
+      "ReadyTimeoutMs": 30000,
+      "ProbeTimeoutMs": 1000,
+      "ProbePeriodMs": 1000,
+      "SuccessThreshold": 1,
+      "FailureThreshold": 30
+    }
+  }
+}

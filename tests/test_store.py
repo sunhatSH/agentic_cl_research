@@ -84,3 +84,24 @@ def test_invalid_metadata_rejected():
         pass
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_sqlite_snapshot_roundtrip(tmp_path):
+    s = TrajectoryStore()
+    s.put("a1", [{"role": "assistant", "content": "hi"}],
+          {"bucket": "Workflow", "priority": 0.7, "pattern_id": "p1",
+           "original_logprobs": [-1.0, -2.0]})
+    s.put("b1", "raw-text", {"bucket": "SysOps", "priority": 0.3, "pattern_id": "p2"})
+    snap = tmp_path / "snap.sqlite"
+    s.save_sqlite(snap)
+
+    s2 = TrajectoryStore()
+    s2.load_sqlite(snap)
+    assert len(s2) == 2
+    traj, meta = s2.get("a1")
+    assert traj == [{"role": "assistant", "content": "hi"}]
+    assert meta["priority"] == 0.7
+    assert meta["original_logprobs"] == [-1.0, -2.0]
+    # Indexes rebuilt.
+    assert s2.bucket_size("Workflow") == 1
+    assert s2.pattern_counts() == {"p1": 1, "p2": 1}

@@ -131,7 +131,7 @@ def trajectory_diversity(trajectories_per_query: Sequence[Sequence[Sequence]]) -
 
     Args:
         trajectories_per_query: list of length Q; each element is a list of
-                                M trajectories (M = traj/query, default 2),
+                                M trajectories (M = traj/query, default 8),
                                 each trajectory is a token sequence.
 
     Returns:

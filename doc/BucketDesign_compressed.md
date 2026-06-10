@@ -76,7 +76,7 @@ $$q_i = q_{min} + (C - B \cdot q_{min}) \cdot \frac{n_i^{0.5}}{\sum_j n_j^{0.5}}
 
 1. **Forgetting Risk**：当前模型在该轨迹上性能回退程度
 2. **Rarity**：桶内低频模式/模板，防热门模板占满
-3. **Diversity/Redundancy**：与桶内已有轨迹的重复度（每 query 仅 2 条轨迹，去重尤其重要）
+3. **Diversity/Redundancy**：与桶内已有轨迹的重复度（每 query 8 条轨迹，组内与桶内去重都重要）
 4. **Within-bucket Difficulty**：桶内相对难度，覆盖边界/复杂场景
 
 高 priority = 代表旧能力 + 已出现退化 + 稀有 + 不重复 + 覆盖边界

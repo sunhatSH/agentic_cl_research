@@ -65,11 +65,16 @@ def build_buffer(cfg):
         return None
 
     from replay_buffer.bucket import BucketReplayBuffer
-    from replay_buffer.priority import Priority, RewardPriority
+    from replay_buffer.priority import Priority, RewardPriority, UniformPriority
 
     bcfg = cl["buffer"]
     priority_type = bcfg.get("priority_type", "anti_forgetting")
-    priority = RewardPriority() if priority_type == "reward" else Priority()
+    if priority_type == "reward":
+        priority = RewardPriority()
+    elif priority_type == "uniform":
+        priority = UniformPriority()
+    else:
+        priority = Priority()
 
     return BucketReplayBuffer(
         num_buckets=int(bcfg.get("num_buckets", 7)),
@@ -79,6 +84,9 @@ def build_buffer(cfg):
         bucket_task_counts=list(bcfg.get("bucket_task_counts", [])) or None,
         alpha=float(bcfg.get("alpha", 0.5)),
         priority=priority,
+        eviction_type=bcfg.get("eviction_type", "priority"),
+        within_bucket_sampling=bcfg.get("within_bucket_sampling", "priority"),
+        seed=bcfg.get("seed", None),
     )
 
 

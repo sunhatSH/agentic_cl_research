@@ -5,9 +5,10 @@
 defaults:
   - ../base
 
-actor:
-  use_kl_loss: false
-  kl_loss_coef: 0.0
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0
 
 cl:
   lambda_replay: 0.5
@@ -17,4 +18,5 @@ cl:
     total_capacity: 25000
     q_min: 2000
   weighting:
-    scheme: W0                   # 采样用 priority，但 token 权重均匀
+    scheme: W0                   # 无 U 形（token 级均匀）；priority 仍按轨迹缩放 + 用于采样。
+                                 # 与 R4-w(W2) 的唯一差异 = 是否启用 U 形块权重
