@@ -56,16 +56,19 @@ data:
 algorithm:
   adv_estimator: grpo
 
-# Reward -- RULE-BASED, no learned reward model (Gap A; doc/Plan_训练链路补齐.md).
-# verl naive manager calls trainer/rule_reward.py::compute_score per sample.
+# Reward -- MODEL JUDGE (no rules; see trainer/model_reward.py "Why NOT rules").
+# A single frozen LLM judge grades every trajectory on one consistent scale.
+# verl naive manager calls trainer/model_reward.py::compute_score per sample;
+# the judge model is NOT hardcoded -- it is resolved from env (launch with
+# scripts/serve_reward_model.sh, then export JUDGE_API_BASE + JUDGE_MODEL).
 reward:
   reward_manager:
     name: naive
   custom_reward_function:
-    path: trainer/rule_reward.py
+    path: trainer/model_reward.py
     name: compute_score
   reward_model:
-    enable: false                 # never spin up a reward-model worker
+    enable: false                 # judge is served externally, not a verl RM worker
 
 # Continual Learning -- replay buffer config (read by trainer/cl_main.py)
 cl:

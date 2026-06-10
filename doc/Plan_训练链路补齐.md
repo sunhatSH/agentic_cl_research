@@ -33,9 +33,21 @@
 
 ---
 
-## Gap A（P0）：规则 Reward —— ✅ 已实现
+## Gap A（P0）：Reward —— 🟡 方案与 judge 规模【暂定】，代码已就位
 
-> 2026-06-10：`trainer/rule_reward.py` + `tests/test_rule_reward.py`（8 passed）+ `base.yaml` `reward.*` 配置已落地。下方为原始规格，保留备查。
+> **状态（2026-06-10）：reward 方案 + judge 模型规模均暂定，尚未拍板。** 原因：任务/结果的判断难度未知。**决策门 = 先有数据（哪怕几十条人工标注 pilot）→ 跑 `scripts/calibrate_judge.py` 看每桶一致率与分数分布 → 才定 judge 规模 / 是否需要规则补充。** 在此之前不锁定。
+>
+> 代码已为暂定而设计、不阻塞：judge 模型不写死（env 解析）、reward 是 `compute_score` 单文件 + `JudgeClient` 抽象接口，换方案只换实现不动调用方。
+>
+> **倾向方案**（2026-06-10，可改）：单一冻结模型 judge。理由：①规则[0,1]与语义分尺度不齐，混用污染跨桶 advantage 基线；②规则覆盖不到 Communication/Dialogue 等语义桶；③ClawEval 本身就是模型 judge，reward 用同构保证 reward/eval 一致。
+>
+> 实现：`trainer/model_reward.py`（抽象 `JudgeClient`，`compute_score` 委托，**模型不写死**，从 `JUDGE_API_BASE`/`JUDGE_MODEL` 解析）+ `tests/test_model_reward.py`（6 passed，mock judge）+ `scripts/serve_reward_model.sh`（vLLM 起本地冻结 judge，模型路径参数化）+ `base.yaml reward.*` 指向 model_reward。
+>
+> judge 部署：本地冻结、对标/略强于 27B 策略（anti reward-hacking）；默认 32B，需用 ClawEval 人工 rubric 一致率校准。详见 `doc/Sandbox_Agent架构.md` reward judge 节。
+>
+> **待办**：选定 judge 模型 + 起 endpoint + 一致率校准。下方规则方案已废弃，仅留作历史背景。
+
+<details><summary>（已废弃）原规则方案</summary>
 
 ### A.1 verl 0.8 接入点（已验证，按此实现）
 
@@ -109,6 +121,8 @@ reward:
 
 - 单测：safety 命中→0；完整 checker→加权正确；无 checker→fallback；返回 dict 时附加指标透传
 - 集成：`tests/test_verl_smoke.py` 风格——`get_custom_reward_fn(cfg)` 能加载到函数（仅导入级，不跑训练）
+
+</details>
 
 ---
 
@@ -276,7 +290,6 @@ verl 的 rollout（vLLM 生成）需要在生成过程中执行 tool call 并把
 | dev 依赖缺失 | `.venv` 里没装 ruff/black/mypy → `uv pip install -e ".[dev]"` |
 | 未提交变更 | 文档清理 + 调度指南 + 架构文档 + 镜像层文件待 commit 到 `dev_train` |
 | 文档漂移 | `doc/CL_Update_Sunhao.md` 个别处可能残留 traj/query=2 旧数字；27B 显存/耗时估算待重算（C2） |
-| `datasets/sample.jsonl` | 无换行符的单行文件，确认是否还需要，不需要则删 |
 
 ---
 

@@ -179,9 +179,49 @@ verl 的范式是「整批 prompt **一次性生成完** → 再统一打分」�
 
 ---
 
+## 7b. Reward judge（模型判分）
+
+> 🟡 **暂定**：reward 方案与 judge 规模均未拍板（任务判断难度未知）。**决策门 = 有标注数据 → 跑校准看每桶一致率 → 再定**。代码已为暂定设计：judge 模型 env 解析、reward 单文件可换。以下为**当前倾向方案**，非定论。
+
+**倾向（2026-06-10，可改）**：reward 用**单一冻结模型 judge**。
+
+| 为什么不用规则 | 说明 |
+|----------------|------|
+| 尺度不齐 | 规则[0,1] 与语义分分布不同，混用污染跨桶 advantage 基线 |
+| 覆盖不到 | Communication/Dialogue/无 gold 的 Knowledge 规则判不了 |
+| reward/eval 一致 | ClawEval 本身就是模型 judge（completion/safety/robustness rubric） |
+
+**本地 vs API → 本地冻结**：RL reward 必须是不变的尺子，跑数周/20 实验测遗忘；API 会版本漂移→reward 非平稳→污染遗忘度量。判分对象 = ClawEval 三维 rubric，与评测同构。
+
+**模型大小**：anti reward-hacking 要求 judge ≥ 策略（27B）；有 rubric 则核对清单较易。默认 **32B**（从 40 推理卡切 2 张），用 ClawEval 人工 rubric **一致率**校准，不是凭参数量定。
+
+**代码**：`trainer/model_reward.py`——`JudgeClient` 抽象 + `compute_score` 委托，**模型不写死**，从 `JUDGE_API_BASE`/`JUDGE_MODEL` 解析；judge 故障记 `judge_error` 不崩 batch。部署：`scripts/serve_reward_model.sh`（vLLM，模型路径参数化）。rubric 来源 = `extra_info.checkers`（Gap B 抽取）/ `extra_info.rubric`。
+
+**定 judge = 一致率校准（不是凭参数量）**：
+
+- 工具：`eval/judge_agreement.py`（MAE/pearson/Cohen's kappa/F1 + 按桶分解 + `rank_judges`）+ `scripts/calibrate_judge.py`（跑候选 endpoint→算 judge↔人工一致率→**推荐能过阈值的最小模型**）。
+- 流程：①各候选用 `serve_reward_model.sh` 起在不同端口/卡 → ②`calibrate_judge.py --labeled <人工标注> --judges <候选 json>` → ③按 pass kappa 排名，软桶（Communication/Dialogue）一致率掉得多的才往上加大模型。
+- **标注数据契约**（每行一条人工评过的轨迹）：
+
+```json
+{"task":"...","trajectory":"...","rubric":"...","bucket":"SysOps",
+ "human":{"completion":1.0,"safety":1.0,"robustness":0.5},"pass":true}
+```
+
+- ⚠️ **阻塞**：ClawEval 人工 rubric 标注数据依赖 @杨益博 manifest；到货前可用同 schema 的小规模人工 pilot 集先跑通校准。工具链已就绪，数据一到即可定 judge。
+
+```text
+trajectory(solution_str) + task(queries) + rubric(checkers)
+        → build_judge_prompt → JudgeClient.score（本地冻结 32B vLLM）
+        → {completion, safety, robustness} → safety*(0.8c+0.2r) → reward
+```
+
+---
+
 ## 8. 待确认 / PoC
 
 1. **OpenClaw 配置 schema**：`openclaw.config.template.json` 是按文档的最佳猜测，构建后用 `openclaw doctor` 校准实际字段名（provider/baseUrl/model 的确切 key）。
 2. **headless 单轮**：确认 `openclaw agent --message ...` 能无 channel、无 daemon 跑通一次 agent turn 并吐出可解析的 trace（轨迹来源）。
 3. **logprob 通路**（Gap D 核心）：vLLM OpenAI endpoint 返回的 `logprobs` 能否对齐成 verl 训练所需的 per-token logprob。
 4. **镜像体积**：Node+OpenClaw+pandoc 后镜像可能较大，评估冷启动/派生耗时；浏览器默认不装以控体积。
+5. **reward judge 选型**：选定 judge 模型 + 起 `serve_reward_model.sh` endpoint + ClawEval 一致率校准（§7b）。
