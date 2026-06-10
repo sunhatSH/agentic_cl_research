@@ -86,16 +86,26 @@ def make_react_agent_fn(
     and records messages (assistant + tool) for transcript / bucket tagging.
     """
 
-    def agent_fn(client: Any, query: str, state: Any, slot_idx: int) -> Trajectory:
-        messages: list[dict[str, Any]] = [{"role": "user", "content": query}]
+    def agent_fn(
+        client: Any,
+        query: str,
+        state: Any,
+        slot_idx: int,
+        history: list[dict[str, Any]] | None = None,
+    ) -> Trajectory:
+        # 正史 = prior winners' messages (§3 ①) used ONLY as the generation
+        # prefix; the returned trajectory records just THIS query's turns so the
+        # pool can accumulate session_history without double-counting.
+        prefix: list[dict[str, Any]] = list(history or [])
+        turns: list[dict[str, Any]] = [{"role": "user", "content": query}]
         all_resp_ids: list[int] = []
         all_logprobs: list[float] = []
         response_mask: list[int] = []
         full_text_parts: list[str] = []
 
         for _turn in range(max_turns):
-            step = generate_fn(messages)
-            messages.append({"role": "assistant", "content": step.text})
+            step = generate_fn(prefix + turns)
+            turns.append({"role": "assistant", "content": step.text})
             all_resp_ids.extend(step.response_ids)
             all_logprobs.extend(step.logprobs)
             response_mask.extend([1] * len(step.response_ids))
@@ -106,7 +116,7 @@ def make_react_agent_fn(
                 break  # no tool call -> final answer
             tool, code = call
             obs, obs_ids = tool_exec(client, tool, code)
-            messages.append({"role": "tool", "content": obs})
+            turns.append({"role": "tool", "content": obs})
             all_resp_ids.extend(obs_ids)
             all_logprobs.extend([0.0] * len(obs_ids))  # not policy tokens
             response_mask.extend([0] * len(obs_ids))    # masked out of loss
@@ -121,7 +131,7 @@ def make_react_agent_fn(
         return Trajectory(
             slot_idx=slot_idx,
             trajectory_id="",
-            messages=messages,
+            messages=turns,
             reward=None,  # scorer fills this in (Gap A)
             response_token_ids=all_resp_ids,
             logprobs=all_logprobs,

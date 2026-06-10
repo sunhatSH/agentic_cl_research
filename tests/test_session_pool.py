@@ -33,10 +33,16 @@ def _make_pool(**kw):
     )
 
 
-def _agent_fn(reward_by_slot):
-    """Build an agent_fn whose reward depends on slot idx (deterministic)."""
+def _agent_fn(reward_by_slot, seen_history=None):
+    """Build an agent_fn whose reward depends on slot idx (deterministic).
 
-    def fn(client, query, state, slot_idx):
+    If ``seen_history`` is a list, records the history passed to slot 0 each call
+    (to assert winner-context propagation).
+    """
+
+    def fn(client, query, state, slot_idx, history=None):
+        if seen_history is not None and slot_idx == 0:
+            seen_history.append(list(history or []))
         new_state = dict(state)
         new_state["step"] = state.get("step", 0) + 1
         new_state["files"] = {**state.get("files", {}), f"slot{slot_idx}.out": query}
@@ -102,7 +108,7 @@ def test_scorer_error_skips_sync_keeps_state():
     pool = _make_pool()
     pool.spawn()
 
-    def err_agent(client, query, state, slot_idx):
+    def err_agent(client, query, state, slot_idx, history=None):
         return Trajectory(slot_idx=slot_idx, trajectory_id=f"t{slot_idx}", reward=None)
 
     trajs = pool.run_query("q1", err_agent)
@@ -110,6 +116,17 @@ def test_scorer_error_skips_sync_keeps_state():
     # history stays empty (no winner to adopt)
     assert pool.session_history == []
     pool.destroy_all()
+
+
+def test_winner_history_propagates_to_next_query():
+    """§3 ①: query_{k+1}'s prompt prefix = winner(q_k) messages, not own past."""
+    pool = _make_pool()
+    seen = []
+    agent = _agent_fn(lambda i, q: 1.0 if i == 5 else 0.0, seen_history=seen)
+    pool.run_session(["q1", "q2"], agent)
+    # q1 saw empty history; q2 saw winner(q1) = slot5's message
+    assert seen[0] == []
+    assert seen[1] == [{"role": "assistant", "content": "slot5:q1"}]
 
 
 def test_run_session_collects_all_trajectories():

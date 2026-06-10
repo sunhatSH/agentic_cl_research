@@ -124,6 +124,8 @@ A_i = \frac{r_i - \mathrm{mean}(r)}{\mathrm{std}(r) + \epsilon}
 
 等价表述：**会话的正史 = 每步 winner 轨迹的拼接**；输家的 7 条轨迹只用于该条 query 的 GRPO 更新（仍进 Replay Buffer），之后从会话谱系中丢弃。
 
+> 已接通代码：`run_query` 把 `session_history`（历代 winner 消息）作为 `history` 传给 `agent_fn`，`make_react_agent_fn` 用它作生成前缀；`sync_to_winner` 只把 **winner 的本轮消息**追加进 `session_history`（不双计前缀）。见 `tests/test_session_pool.py::test_winner_history_propagates_to_next_query`。
+
 ```text
 会话正史:  winner(q1) ─→ winner(q2) ─→ winner(q3) ─→ …
               │              │              │

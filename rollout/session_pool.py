@@ -49,8 +49,11 @@ class Trajectory:
     meta: dict[str, Any] = field(default_factory=dict)
 
 
-# agent_fn(client, query, state, slot_idx) -> Trajectory
-AgentFn = Callable[[Any, str, Any, int], Trajectory]
+# agent_fn(client, query, state, slot_idx, history) -> Trajectory
+# ``history`` is the session 正史 = concatenation of prior winners' messages
+# (§3 ①); the agent MUST prepend it so query_{k+1}'s prompt matches the winner's
+# evolved environment, not each slot's own losing trajectory.
+AgentFn = Callable[..., Trajectory]
 # sync_fn(slots, winner_state) -> None  (mutate slot states to winner's)
 SyncFn = Callable[[list["_Slot"], Any], None]
 
@@ -166,7 +169,9 @@ class SessionSandboxPool:
 
         def _run(slot: _Slot) -> Trajectory:
             try:
-                traj = agent_fn(slot.client, query, slot.state, slot.idx)
+                # feed the winner-derived session history so every slot's prompt
+                # starts from the SAME 正史 (§3 ①), not its own past trajectory
+                traj = agent_fn(slot.client, query, slot.state, slot.idx, history)
             except Exception as exc:  # noqa: BLE001 -- isolate slot failures
                 traj = Trajectory(
                     slot_idx=slot.idx,
