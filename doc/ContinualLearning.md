@@ -440,9 +440,12 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 - 需要一套自己的简单 agent loop harness 实现，参考 hermes 等
 - 只做必要的工具实现，约 30 个
 
+**已定：**
+- agent harness = **OpenClaw**（Node，模型无关，推理走外部 vLLM）。架构见 [`Sandbox_Agent架构.md`](Sandbox_Agent架构.md)：动作在沙箱内执行、推理在沙箱外。
+
 **待确认：**
 - 模型是否需要自己优化代码、优化 harness？
-- 选择 openclaw / hermes / 模拟工具？
+- OpenClaw 配置 schema / headless 单轮 / logprob 通路（见 `Sandbox_Agent架构.md §8`）
 
 ---
 

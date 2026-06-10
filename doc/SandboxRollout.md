@@ -2,6 +2,8 @@
 
 基于**腾讯云 Agent Runtime**（E2B 协议兼容）的 GRPO trajectory 采集方案。
 
+> **调度与状态同步（16 会话 × 8 槽、会话内 winner 对齐、会话结束回母版）**：见 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)。
+
 ## 1. 问题
 
 GRPO 在同 query 的 M 条 trajectory 内归一化 reward 得到 advantage。若 M 个执行环境的初始状态不一致，方差里混入环境噪声，advantage 不再纯粹反映策略差异。

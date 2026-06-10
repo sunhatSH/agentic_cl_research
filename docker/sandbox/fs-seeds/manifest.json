@@ -1,0 +1,24 @@
+{
+  "_comment": "Persona filesystem corpus for the sandbox 'user machine'. Each persona is a directory copied verbatim into the agent workspace at instance start (bin/seed_workspace.sh). Add new personas by creating a dir + an entry here. 'buckets' lets the scheduler pick a persona that fits the target query's capability bucket; otherwise selection is a stable hash of AGENTIC_CL_FS_SEED.",
+  "version": 1,
+  "personas": [
+    {
+      "id": "finance_analyst",
+      "dir": "finance_analyst",
+      "buckets": ["Finance", "OfficeQA"],
+      "summary": "Quarterly financials, a reconciliation note, and a budget spreadsheet (csv)."
+    },
+    {
+      "id": "sysops_engineer",
+      "dir": "sysops_engineer",
+      "buckets": ["SysOps", "Workflow"],
+      "summary": "Service config, a rotating log, and an ops helper script."
+    },
+    {
+      "id": "office_assistant",
+      "dir": "office_assistant",
+      "buckets": ["OfficeQA", "Communication", "Knowledge"],
+      "summary": "A meeting notes doc, a contacts csv, and a todo list."
+    }
+  ]
+}

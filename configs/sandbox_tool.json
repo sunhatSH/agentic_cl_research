@@ -1,5 +1,5 @@
 {
-  "_comment": "Agent Runtime custom sandbox TOOL template. Fill placeholders after image push + CAM role. API ref: doc/Sandbox_Image_Onboarding.md",
+  "_comment": "Agent Runtime custom sandbox TOOL template. Fill placeholders after image push + CAM role. See doc/Sandbox_腾讯云操作手册.md",
   "ToolName": "agentic-cl-sandbox",
   "ToolType": "custom",
   "Description": "Agentic CL GRPO rollout — code-interpreter + project deps (pandas/aiohttp/...)",

@@ -56,6 +56,17 @@ data:
 algorithm:
   adv_estimator: grpo
 
+# Reward -- RULE-BASED, no learned reward model (Gap A; doc/Plan_训练链路补齐.md).
+# verl naive manager calls trainer/rule_reward.py::compute_score per sample.
+reward:
+  reward_manager:
+    name: naive
+  custom_reward_function:
+    path: trainer/rule_reward.py
+    name: compute_score
+  reward_model:
+    enable: false                 # never spin up a reward-model worker
+
 # Continual Learning -- replay buffer config (read by trainer/cl_main.py)
 cl:
   lambda_replay: 0.0              # lambda_3, set per experiment

@@ -358,12 +358,14 @@ CL 项目建议 **`agentos-cl-sandbox`**（`image.env`）；团队 RL 共用选 
 
 ---
 
-## §10 其他文档（可选深入，不必先看）
+## §10 其他文档
 
 | 文件 | 内容 |
 |------|------|
-| `doc/SandboxRollout.md` | GRPO 多沙盒、环境链、winner 固化 |
-| `doc/Sandbox_Image_Onboarding.md` | 镜像构建细节 |
-| `doc/Sandbox_Account_QuickStart.md` | 简短清单（已被本文覆盖） |
+| `doc/Sandbox_冒烟指南.md` | 已跑通路径、ops 一键命令 |
+| `doc/Sandbox_Agent架构.md` | 动作在沙箱内/推理在外、OpenClaw、随机用户文件系统、镜像依赖 |
+| `doc/Sandbox_管理调度指南.md` | 16×8 调度、会话内 winner 同步、母版策略 |
+| `doc/SandboxRollout.md` | 平台 API、Tool/Instance、PoC |
+| `docker/sandbox/README.md` + `ops/` | 密钥、镜像 build、快捷脚本 |
 
-**以后沙箱相关问题，只打开本文即可。**
+**账号/镜像/custom 细节以本文 + 冒烟指南为准；调度与 winner 同步见 `Sandbox_管理调度指南.md`。**
