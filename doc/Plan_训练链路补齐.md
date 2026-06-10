@@ -199,14 +199,14 @@ class SessionSandboxPool:
     def __init__(self, master_template: str, slots: int = 8, backend: str = "e2b"): ...
     def spawn(self) -> None: ...                       # 从母版起 slots 个实例
     def run_query(self, query: str, agent_fn) -> list[Trajectory]: ...   # 8 路并行
-    def sync_to_winner(self, winner_idx: int) -> None: ...               # D1: winner 快照 -> 派生替换其余槽
+    def sync_to_winner(self, winner_idx: int) -> None: ...               # winner 保活, 仅替换其余 7 槽（绝不 kill winner）
     def run_checkers(self, checkers: list[dict]) -> list[dict]: ...      # Gap A.4：销毁前跑 sandbox checker
     def destroy_all(self) -> None: ...
 ```
 
-- `sync_to_winner` 首版走指南 §6 的 **D1 路径**（winner pause → 快照派生），平台 API 不支持时降级 D2（杀重建）；两条路径都封装在 pool 内部，调用方无感
+- `sync_to_winner` 走指南 §6 的 **D1 路径**：**winner 保活**，只 kill 输家 7 个 → 从存活 winner fork/覆盖出 7 个替补。**会话内绝不能 kill winner**（它是会话累积状态的唯一活载体，含进程/内存态；kill 了再靠快照重建会断依赖链——已弃用的 D2 杀重建即此坑）
 - winner 兜底：同分/全失败 → 随机槽；打分器异常 → 本 query 不入训练、槽位保持上一边界状态
-- **PoC 先行**（实现 pool 前必须跑通）：单会话 8 槽 2 query，验证 sync 后 8 槽文件一致（`touch /tmp/step` 法）；128 并发配额实测
+- **PoC 先行**（实现 pool 前必须跑通）：单会话 8 槽 2 query，验证 sync 后 7 个替补与**存活 winner** 文件一致、winner 全程未死；128 并发配额实测
 
 ### C.3 验收
 

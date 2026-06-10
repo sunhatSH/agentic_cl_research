@@ -200,19 +200,27 @@ stateDiagram-v2
 
 ## 6. 「同步到 winner」在平台上怎么做（实现待 PoC）
 
-设计意图是 **D：把 winner 磁盘状态扩散到其余 7 槽**。注意「原地覆盖 7 个实例的磁盘」并非唯一实现——**kill 全部 8 个 → 从 winner 快照 fork 出 8 个新实例** 结果完全等价，且「从快照派生 N 个」在平台上更可能有现成 API。腾讯云没有标准 `docker commit`，可选实现：
+设计意图是 **D：把 winner 状态扩散到其余 7 槽**。
 
-| 路径 | 做法 | 会话内 sync | 会话结束回母版 |
-|------|------|------------|----------------|
-| **D1 克隆/恢复（推荐先试）** | winner pause → 从快照派生 7（或 kill 全部后派生 8）个新 Instance | ✓ | kill 全部，母版 Tool 不动 |
-| **D2 杀重建** | kill 8 个 → 从 **会话母版快照**（仅本 queries 内有效）起 8 个新 Instance | 需每 sync 更新会话快照 | 会话快照丢弃 |
-| **A freeze Tool** | winner → 新 Tool（若 API 支持 Instance→Tool） | 下轮从新区 Tool 起 8 个 | **不符合**「不保存到全局母版」——仅当 freeze 的是 **会话级临时 Tool** 时可考虑 |
+> ⚠️ **关键约束（别踩坑）：会话内绝不能 kill winner。** winner 实例是本会话**累积状态的唯一活载体**——后续 query 依赖它，且依赖的不只是磁盘文件，还有**进程/内存态**（agent 装好并跑着的服务、加载进内存的数据、shell 环境）。磁盘快照未必抓得到这些。所以「kill 全部 8 个 → 从 winner 快照 fork 8 个」**不等价**：一旦快照不完整 / 异步 / 平台不支持，整条会话依赖链就断了。**会话内只 kill 输家的 7 个，winner 必须存活到会话结束。**
+
+腾讯云没有标准 `docker commit`，会话内 sync 的可选实现：
+
+| 路径 | 做法 | 会话内 sync | 会话结束 |
+|------|------|------------|----------|
+| **D1 复制/fork（推荐）** | **winner 保活**；kill 输家 7 个 → 从**存活的 winner** fork/克隆出 7 个替补 | ✓ winner 全程不死 | 此时才 kill 全部 8 个，母版 Tool 不动 |
+| **D1' 原地覆盖** | winner 保活；把 winner 磁盘覆盖到其余 7 个存活实例 | ✓ | 同上 |
+| ~~D2 杀重建~~ ❌ | ~~kill 全部 8 个 → 从快照重建~~ | **不可用**：kill 了状态载体，丢进程/内存态、断依赖链 | — |
+| **A freeze Tool** | winner → 会话级临时 Tool（若 API 支持 Instance→Tool） | 下轮从该 Tool 起替补 | **不符合**「不保存到全局母版」——仅当 Tool 是会话级临时、会话结束即删时可考虑 |
+
+> **一个待 PoC 的张力**：query_{k+1} 要求 8 槽**位级一致**，但 winner 保活意味着 winner 有活进程、7 个替补可能只继承磁盘 → 进程态不一致。能否让 7 个替补连进程态都等于 winner，取决于平台 fork 的保真度（仅磁盘 vs 全活态 CRIU 级）。**若平台只能磁盘快照**：要么任务设计避免依赖未被快照的进程态，要么接受「winner 有进程态、替补只有磁盘态」这一已知不对称（多数任务的依赖在磁盘/文件，影响有限）。此为 §6 头号 PoC 项。
 
 **推荐工程顺序**：
 
-1. PoC：单会话 8 槽、2 个 query，验证「sync 后 8 槽文件一致」（如 `touch /tmp/step`）
-2. PoC：16 会话 × 8 槽并发上限与耗时
-3. 实现 `SessionSandboxPool`（见 §7），再接入 verl rollout
+1. PoC：单会话 8 槽、2 个 query，验证「sync 后 7 个替补与**存活 winner** 文件一致」（如 winner `touch /tmp/step`，替补可见）；确认 **winner 全程未被 kill**
+2. PoC：进程态保真度——winner 在 query1 起一个后台服务，query2 检查替补能否复用（决定上面那条「张力」走哪条路）
+3. PoC：16 会话 × 8 槽并发上限与耗时
+4. 实现 `SessionSandboxPool`（见 §7），再接入 verl rollout
 
 ---
 
