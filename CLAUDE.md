@@ -147,6 +147,7 @@ agentic_cl_research/
 | `doc/ClawEval_Metadata.md` | ClawEval 评测数据集的任务分类、难度分布、工具能力层、模型排名 | 评测基准参考 |
 | `doc/VerlIntegration.md` | verl 集成指导：是否 fork、Replay Buffer 接入方式、推荐工程结构、风险点 | 实现路径参考 |
 | `doc/SandboxRollout.md` | 基于腾讯 Agent Runtime（E2B 兼容）的 trajectory 采集方案：每 query × M 个沙盒、snapshot fork/pause、advantage 选优胜 | rollout 工程方案 |
+| `doc/Progress.md` | 里程碑、模块完成度、20 实验状态、外部依赖阻塞、变更日志 | **进度单一来源** |
 
 阅读顺序建议：`ContinualLearning.md`（全貌）→ `CL_Update_Sunhao.md`（技术细节）→ `BucketDesign.md`（分桶论证）→ `ClawEval_Metadata.md`（评测数据）→ `VerlIntegration.md`（落地工程）。
 

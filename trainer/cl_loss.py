@@ -6,125 +6,133 @@ Standard verl loss signature:
 Composition:
     L_cl = lambda_1 * L_rl + lambda_2 * L_kl + lambda_3 * L_replay + lambda_4 * L_ent
 
-- L_rl      : delegated to verl's ``ppo_loss`` (handles GRPO advantage etc.).
-- L_kl      : verl already supports it -- toggled via config.use_kl_loss /
-              kl_loss_coef / kl_loss_type. We only need to choose reverse KL
-              and the right pi_ref ckpt.
-- L_replay  : SFT-style supervised replay over batch sampled from BucketReplayBuffer.
-              Implemented in this file -- one extra forward on the replay batch,
-              then -log pi(a|s) * w_t per token.
-- L_ent     : verl already supports it via config.entropy_coeff (lambda_4=0.001 fixed).
+L_rl / L_kl / L_ent are produced by verl's ``ppo_loss``. L_replay is computed
+here from the replay rows that ``install_buffer_hooks`` appended to the batch:
+``model_output["log_probs"]`` already covers those rows WITH gradient, so the
+replay term is differentiable (see ``trainer/replay_forward.py``).
 
-Performance — zero-coefficient short-circuit (MANDATORY):
-    Project rule (see project memory `short_circuit_zero_coefficient`):
-    any loss term whose coefficient is 0 MUST be skipped end-to-end:
-        - no buffer sampling
-        - no model forward
-        - no KL computation against pi_ref
-    Across 20 ablation experiments most lambdas are zero in most runs
-    (B1 has lambda_2 = lambda_3 = 0; K* have lambda_3 = 0; R* have
-    lambda_2 = 0). Failing to short-circuit wastes GPU time without
-    affecting results.
+The buffer object never enters this closure -- it lives only on the driver. The
+loss reads everything it needs from ``model_output`` / ``data``.
 
-Token weight w_t comes from ``replay_buffer.weighting.TokenWeighting`` (W2 scheme,
-U-shaped block weight: (gamma^block + delta^(K_i - block)) / 2, with K_i derived
-from per-trajectory message-block segmentation -- assistant / tool chat turns,
-not XML tags. Equal-length K=20 fallback when message format is unavailable or
-K_i == 1.
-
-See ``doc/VerlIntegration.md`` section 3.2 for the skeleton this implements.
+See ``doc/VerlIntegration.md`` section 3.2.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from trainer.replay_forward import IS_REPLAY_KEY, REPLAY_WEIGHTS_KEY, select_replay_rows
+
+
+def _get_non_tensor(data, key: str, default=None):
+    try:
+        from verl.utils import tensordict_utils as tu
+
+        return tu.get_non_tensor_data(data=data, key=key, default=default)
+    except ImportError:
+        return default
+
+
+def _data_get(data, key, default=None):
+    if hasattr(data, "get"):
+        try:
+            return data.get(key, default)
+        except TypeError:
+            val = data.get(key)
+            return val if val is not None else default
+    return default
+
+
+def compute_replay_loss(model_output, data):
+    """Differentiable replay loss over appended replay rows.
+
+    Pulls ``log_probs`` from ``model_output`` (gradient-carrying), and
+    ``response_mask`` / ``replay_token_weights`` / ``is_replay`` from ``data``.
+    Returns a scalar tensor (0 when there are no replay rows).
+    """
+    log_probs = model_output["log_probs"] if isinstance(model_output, dict) else model_output.get("log_probs")
+    is_replay = _data_get(data, IS_REPLAY_KEY)
+    response_mask = _data_get(data, "response_mask")
+    token_weights = _data_get(data, REPLAY_WEIGHTS_KEY)
+    return select_replay_rows(log_probs, response_mask, token_weights, is_replay)
+
+
+def _replay_is_empty(data) -> bool:
+    is_replay = _data_get(data, IS_REPLAY_KEY)
+    if is_replay is None:
+        return True
+    try:
+        return bool(is_replay.sum() == 0)
+    except AttributeError:
+        return not any(bool(x) for x in is_replay)
+
 
 def make_cl_loss(
-    buffer: Any | None = None,
+    replay_enabled: bool = False,
     lambda_replay: float = 0.5,
     replay_batch_size: int = 32,
     use_token_weighting: bool = True,
     weighting_scheme: str = "W2",
-    weighting: Any | None = None,
 ):
-    """Build a verl-compatible loss function with replay added.
+    """Build a verl-compatible loss function.
 
     Args:
-        buffer: ``BucketReplayBuffer`` instance, or None when lambda_replay=0.
-        lambda_replay: lambda_3, weight on L_replay. **If 0, replay path is
-                       compiled away** -- no buffer sampling, no replay forward.
-        replay_batch_size: number of replay trajectories per step (ignored
-                           when lambda_replay=0).
-        use_token_weighting: if True, apply token-level weights; else uniform.
-        weighting_scheme: 'W0' or 'W2'. Selects the TokenWeighting scheme.
-        weighting: optional pre-built TokenWeighting instance; if None one is
-                   constructed lazily from weighting_scheme.
+        replay_enabled: whether to compile the replay branch. When False the
+            returned closure is RL+KL+entropy only (no replay fields touched).
+        lambda_replay: lambda_3 weight on L_replay.
+        replay_batch_size / use_token_weighting / weighting_scheme: kept for
+            metric/debug parity; the actual sampling + weighting happens on the
+            driver (``install_buffer_hooks``), not in this closure.
 
-    Returns:
-        callable with signature
-            (config, model_output, data, dp_group) -> (loss, metrics)
-
-    The returned closure dispatches to a branch chosen at construction time
-    based on whether lambda_replay > 0. This avoids per-step branching cost
-    AND removes the need for replay-related fields in the `data` TensorDict
-    for the zero-replay experiments.
+    The buffer is intentionally NOT a parameter -- it must not be pickled to the
+    actor worker via ``set_loss_fn``.
     """
-    replay_enabled = lambda_replay > 0.0 and buffer is not None
-    if replay_enabled and weighting is None:
-        from replay_buffer.weighting import TokenWeighting
-        weighting = TokenWeighting(scheme=weighting_scheme)
+    enabled = bool(replay_enabled) and lambda_replay > 0.0
 
     def cl_loss_no_replay(config, model_output, data, dp_group=None):
-        """RL + KL + entropy only. No buffer touch. Used when lambda_replay=0."""
+        """RL + KL + entropy only. Used when replay is disabled (B1 / K*)."""
         from verl.workers.utils.losses import ppo_loss
+
         rl_loss, metrics = ppo_loss(config, model_output, data, dp_group)
         metrics["actor/replay_loss"] = 0.0
         metrics["actor/replay_enabled"] = 0.0
         return rl_loss, metrics
 
     def cl_loss_with_replay(config, model_output, data, dp_group=None):
-        """RL + KL + entropy + replay. Replay batch sampled per call."""
+        """RL + KL + entropy + differentiable replay over appended rows."""
         from verl.workers.utils.losses import ppo_loss
+
         rl_loss, metrics = ppo_loss(config, model_output, data, dp_group)
 
-        replay_batch = buffer.sample(replay_batch_size)
-        if not replay_batch:
-            # Buffer empty (early training). Skip replay this step.
+        if _replay_is_empty(data):
             metrics["actor/replay_loss"] = 0.0
             metrics["actor/replay_enabled"] = 1.0
             metrics["actor/replay_empty"] = 1.0
             return rl_loss, metrics
 
-        replay_inputs = [meta for _, _, meta in replay_batch]
-        token_weights = weighting.compute(replay_inputs) if use_token_weighting else None
-        replay_loss = compute_replay_loss(
-            model_output=model_output,
-            replay_batch=replay_inputs,
-            replay_token_weights=token_weights,
-        )
-
+        replay_loss = compute_replay_loss(model_output, data)
         total = rl_loss + lambda_replay * replay_loss
-        metrics["actor/replay_loss"] = float(getattr(replay_loss, "item", lambda: replay_loss)())
+        metrics["actor/replay_loss"] = float(replay_loss.detach().item())
         metrics["actor/replay_enabled"] = 1.0
         metrics["actor/replay_empty"] = 0.0
         return total, metrics
 
-    return cl_loss_with_replay if replay_enabled else cl_loss_no_replay
+    return cl_loss_with_replay if enabled else cl_loss_no_replay
 
 
-def compute_replay_loss(model_output, replay_batch, replay_token_weights):
-    """One forward over replay_batch -> -log pi(a|s) * w_t aggregated.
+def build_weighting_from_cfg(cl_cfg) -> Any | None:
+    """Construct TokenWeighting from ``cfg.cl.weighting``."""
+    wcfg = cl_cfg.get("weighting", {}) or {}
+    scheme = wcfg.get("scheme", "W2")
+    from replay_buffer.weighting import TokenWeighting
 
-    Two staging options (see ``doc/VerlIntegration.md`` section 4):
-      (A) call model(...) inside cl_loss directly.
-      (B) precompute log_probs in trainer layer via engine.infer_batch and
-          pass them in via the ``data`` TensorDict.
-
-    Pending integration with verl's engine API. Caller must NOT invoke
-    this when lambda_replay == 0 -- the make_cl_loss closure handles that
-    short-circuit.
-    """
-    raise NotImplementedError(
-        "Replay forward pending verl engine integration; see VerlIntegration.md §4."
+    return TokenWeighting(
+        scheme=scheme,
+        gamma=float(wcfg.get("gamma", 0.88)),
+        delta=float(wcfg.get("delta", 0.88)),
+        segmenter=wcfg.get("segmenter", "message_block"),
+        role_boundaries=list(wcfg.get("role_boundaries", ["assistant", "tool"])),
+        equal_length_K=int(wcfg.get("equal_length_K", 20)),
+        long_block_threshold=int(wcfg.get("long_block_threshold", 100)),
+        clip_quantiles=tuple(wcfg.get("clip_quantiles", [0.05, 0.95])),
     )

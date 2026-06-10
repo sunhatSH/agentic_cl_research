@@ -389,8 +389,9 @@ verl 的 `engine.train_batch` 一次只接一个 batch。要在同一个 step �
 | Policy loss 注册表 | `verl/trainer/ppo/core_algos.py` | `register_policy_loss` 装饰器 + `POLICY_LOSS_REGISTRY` |
 | Loss 函数标准签名 | `verl/workers/utils/losses.py` | `ppo_loss(config, model_output, data, dp_group)` |
 | Engine 顶层接口 | `verl/workers/engine/base.py` | `train_batch(data, loss_function)` (L99, L113) |
-| Loss 注入 API | `verl/workers/engine_workers.py` | `actor.set_loss_fn(loss_fn)` (L587) |
-| Trainer 主循环 | `verl/trainer/ppo/ray_trainer.py` | `RayPPOTrainer.fit()` 中 `for batch_dict in self.train_dataloader` (L1423) |
+| Loss 注入 API | `verl/workers/engine_workers.py` | `ActorRolloutRefWorker.set_loss_fn()` → `TrainingWorker.set_loss_fn()` (v0.8.0) |
+| Trainer 主循环 | `verl/trainer/ppo/ray_trainer.py` | `RayPPOTrainer.fit()` 中 `for batch_dict in self.train_dataloader` |
+| 推荐入口 (v0.8.0) | `verl/trainer/main_ppo.py` | `run_ppo()` + `TaskRunner`；本仓库用 `trainer/verl_runner.CLTaskRunner` |
 | 自定义 sampler 入口 | `verl/trainer/ppo/ray_trainer.py` | `__init__(train_sampler: Optional[Sampler])` (L307) |
 | KL penalty | `verl/trainer/ppo/core_algos.py` | `kl_penalty(logprob, ref_logprob, kl_penalty=...)` |
 | Advantage estimator 注册 | `verl/trainer/ppo/core_algos.py` | `register_adv_est` + `ADV_ESTIMATOR_REGISTRY` |

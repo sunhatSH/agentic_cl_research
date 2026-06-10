@@ -9,6 +9,7 @@ Layout:
                            pending real data -- equal-length K=20 fallback
                            is testable now.
     test_cl_loss.py     -- cl_loss composition (RL + KL + replay + entropy)
+    test_trajectory_adapter.py -- verl batch -> buffer metadata
     test_verl_smoke.py  -- minimal smoke test that custom loss survives a verl
                            train step on toy data (validates the FSDP / grad
                            accumulation risk flagged in doc/VerlIntegration.md
