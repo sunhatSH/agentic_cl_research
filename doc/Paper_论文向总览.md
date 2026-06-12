@@ -220,5 +220,6 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 | 实验·评测 | [`ClawEval_Metadata.md`](ClawEval_Metadata.md) |
 | 系统·落地 | [`VerlIntegration.md`](VerlIntegration.md)、[`Plan_训练链路补齐.md`](Plan_训练链路补齐.md) |
 | 协作总览 / 进度 | [`ContinualLearning.md`](ContinualLearning.md)、[`Progress.md`](Progress.md) |
+| **论文 Method 散文初稿** | [`Paper_Method_draft_CN.md`](Paper_Method_draft_CN.md)（中文）/ [`Paper_Method_draft_EN.md`](Paper_Method_draft_EN.md)（英文投稿用） |
 
 > 阅读顺序：本文（全貌）→ `CL_Update_Sunhao.md`（技术细节）→ `BucketDesign.md`（分桶论证）→ Sandbox 三件套（环境）→ `UserSim_*`（多轮数据）→ `ClawEval_Metadata.md`（评测）。
