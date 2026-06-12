@@ -20,6 +20,8 @@ $$A_i = \frac{r_i - \mathrm{mean}(r)}{\mathrm{std}(r) + \epsilon}.$$
 
 ### 4.1 持续学习目标
 
+我们先讲第二半部——如何巩固信号（§4.1–§4.3），因为它界定了训练对信号的要求；明确了"需要什么样的信号"之后，再回到第一半部——如何在源头把信号做干净（§4.4–§4.5）。本节从目标函数开始。
+
 我们优化一个在标准 RL loss 上叠加回放与正则的四项目标：
 $$L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_4 L_{ent}.$$
 
@@ -55,7 +57,7 @@ $$\text{priority}_i = f\big(\text{forgetting\_risk}_i,\ \text{rarity}_i,\ \text{
 
 ### 4.3 Replay 的 U 形块重加权
 
-$L_{replay}$ 中的权重 $w$ 由 trajectory 级项与 token 级项相乘合成。具体地，对轨迹 $i$ 的 token $t$，
+§4.2 的优先级决定了*哪条*轨迹值得回放，但一条多轮轨迹内部的 token 并非同等重要——早期的分支决策与最终的结论段，比中间的执行细节更值得巩固。我们因此把信用进一步细分到 token 级：$L_{replay}$ 中的权重 $w$ 由 trajectory 级项与 token 级项相乘合成。具体地，对轨迹 $i$ 的 token $t$，
 $$w_t^{(i)} = \mathrm{normalize}\Big(\mathrm{clip}\big(\text{priority}_i \cdot \tfrac{\gamma^{\,\mathrm{block}(t)} + \delta^{\,K_i - 1 - \mathrm{block}(t)}}{2},\ q_5,\ q_{95}\big)\Big),$$
 其中 $\text{priority}_i$ 是 §4.2 的轨迹优先级，第二个因子是仅作用于 response token 的 **U 形块权重**。
 
@@ -69,13 +71,15 @@ $$w_t^{(i)} = \mathrm{normalize}\Big(\mathrm{clip}\big(\text{priority}_i \cdot \
 
 ### 4.4 沙箱 Rollout 与 Winner 同步会话
 
-现在转向如何产出干净的学习信号。每个 agentic 任务在云沙箱中执行：策略推理（27B 前向，同时产出训练所需的逐 token log-probability）在沙箱**外**的 GPU 集群上运行；动作（装包、写文件、跑命令）在沙箱**内**运行——那里状态可进程级快照、可数百实例并发隔离。轨迹直接从 rollout 引擎的**原生**输出（token id、response mask、行为 log-prob）收集，而非由外部 proxy 事后重建。
+以上三节（§4.1–§4.3）都默认喂进来的学习信号是干净的——advantage 只反映策略差异、多轮 query 的前提都成立。但正如 §4 开头所述，这个前提在 agentic 多轮场景下并不自动成立，需要主动保证。本节与下一节就回到第一半部：在源头把信号做干净。我们先处理组内环境一致性。每个 agentic 任务在云沙箱中执行：策略推理（27B 前向，同时产出训练所需的逐 token log-probability）在沙箱**外**的 GPU 集群上运行；动作（装包、写文件、跑命令）在沙箱**内**运行——那里状态可进程级快照、可数百实例并发隔离。轨迹直接从 rollout 引擎的**原生**输出（token id、response mask、行为 log-prob）收集，而非由外部 proxy 事后重建。
 
 一个 rollout step 并行跑 $16$ 个会话，每会话一组 $M=8$ 个槽，共 $128$ 个并发实例。会话内，每条 query 的处理如下：$8$ 个槽从同一母版派生，因此起点**位级一致**；策略随后 rollout 出 $8$ 条轨迹，允许它们在执行中发散（这种发散正是 advantage 方差的来源）；选出优胜者；并在下一条 query 前把全部 $8$ 个槽的磁盘状态**与**对话历史都对齐到优胜者。会话结束时整体销毁，不回写母版。
 
 这种每轮 winner 同步正是在多 query 会话中保持 GRPO advantage 干净的关键。若不同步，query $k{+}1$ 的 $8$ 个槽将从不同状态出发，组内比较就会混入历史路径差异；某个槽可能并非因策略更差、而是因 query $k$ 留下的不利状态被惩罚，破坏 credit assignment，且组内标准差会吸收随 query 序号累积的环境方差。我们**只在 query 边界**同步；query 执行过程中的发散被保留。一个实现约束是：会话内 winner 实例必须存活——它是累积的进程态与内存态的唯一活载体——所以只 kill 七个输家、由存活的 winner fork 出替补。
 
 > **图 4.** *Winner 同步会话。* 单会话时序：从母版派生 8 个位级一致的槽；对每条 query，8 路并行 rollout → 选 winner → 全部槽（磁盘+历史）同步到 winner → 下一条 query；会话结束销毁。
+
+**实现注记：在标准框架内落地 winner 同步。** 上述会话调度无法用标准 RL 框架（如 verl/GRPO）的默认 rollout 表达。默认范式是"把整批 prompt 一次性生成完、再统一打分"——而 winner 同步是 *query 之间* 的耦合（query $k{+}1$ 的起点取决于 query $k$ 的优胜者），单次批量生成内部无法表达这种顺序依赖。我们因此把 rollout 阶段的控制权收归己有：**由我们编排会话循环（$16\times8$ 槽 + 每 query 后 winner 同步），但每一步的单条生成仍调用框架原生的生成引擎**，使 token 与 logprob 由框架直接产出，而非由外部 proxy 事后重建（这是保证 $L_{rl}$ 的 importance ratio 与训练前向数值一致的前提）。具体地，我们利用框架预留的 rollout 管理器注入点，以一个自定义的 rollout 管理器替换默认实现：它对外仍满足"输入一批 prompt、输出一批带 `response_mask`/`logprob` 的轨迹"的契约（从而训练循环的其余部分——优势计算、loss、参数更新——完全不变），对内则把这批 prompt 当作种子 query 交给我们的会话调度器，跑完 $16\times8$ + winner 同步后，再把收集到的轨迹组装回框架要求的批张量格式。**这一替换是非侵入的**：不 fork 框架、不改其训练循环，只在官方注入点挂入；与我们注入 CL loss 用的是同一种"零源码改动"策略（§4.1）。其代价是一个适配层——把可变长度的多轮轨迹（prompt 左对齐填充、response 右对齐填充、observation token 用 `response_mask=0` 标出）组装成框架的稠密批张量。
 
 ---
 
