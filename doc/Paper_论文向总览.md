@@ -71,7 +71,7 @@ $$L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_
 - **弃用 $L_{reg}$（参数 L2）**：参数距离 ≠ 功能距离，$L_{kl}$ 在输出分布空间约束更精确，原槽位让给 $L_{ent}$。
 - **$L_{ent}$ 必须默认开**：GRPO 与 $L_{rl}/L_{replay}$ 都是 mode-seeking、加速 entropy 下降；KL 只保形状不保 entropy。关掉 entropy 会让 B1 baseline 崩盘，测到的就不是"真实遗忘量"而是"崩盘退化"——为保所有 Phase 可比，entropy 全程同值开启。
 
-> 工程注入：`trainer/cl_loss.py::make_cl_loss` 返回 verl 兼容 loss_fn，replay 行用双 mask 与 PPO 行隔离（replay 行 `response_mask=0` 不污染 PPO 分母）。详见 [`VerlIntegration.md`](VerlIntegration.md)。
+> 工程注入：`trainer/cl_loss.py::make_cl_loss` 返回 verl 兼容 loss_fn，replay 行用双 mask 与 PPO 行隔离（replay 行 `response_mask=0` 不污染 PPO 分母）。**2026-06-12 已审计 verl 0.8.0 兼容性并修复三处接线 bug**：loss 闭包签名对齐 verl keyword 调用（去 config 位置参）、replay log_probs 先 `no_padding_2_padding` 还原 dense（engine 原生为 NestedTensor）、replay 行构造为 left-right padded rollout-row 以过 packing 断言。纯逻辑单测通过；真 verl 全链路端到端待 GPU 集群。详见 [`VerlIntegration.md`](VerlIntegration.md) 与 `doc/RunLog.md`。
 
 ---
 
@@ -157,6 +157,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 - **自适应课程**：出题 agent 始终对当前策略的实际输出挑刺 → 策略越强、刺越细，难度自动跟随能力前沿。
 
 > 完整设计（接口契约、决策记录、风险）见 [`UserSim_多轮Query在线生成.md`](UserSim_多轮Query在线生成.md)。
+> **实现状态（2026-06-12）**：三 agent 已落盘 `agents/`（observer/questioner/reward + 16 人设库 + 双轴耐心机制 `PatienceTracker`），三个 prompt（O6/O3/O4）已填（见 Method 草稿附录 A）；会话编排 `rollout/simulated_session.run_simulated_session`（Algorithm 1）已实现并以 mock 单测覆盖。三方后端各自独立 env（`OBSERVER_*`/`USERSIM_*`/`JUDGE_*`）抗 self-preference。待集群：把 `run_simulated_session` 接进 scheduler + 接 verl 原生 generate（`inference/VerlRolloutGenerateFn`）。
 
 ---
 
@@ -204,8 +205,8 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 - **U 形 / priority 融合权重未实证调优**：$\gamma=\delta=0.88$、$\alpha=(0.4,0.2,0.2,0.2)$ 均为起步值，待 Phase 3 数据校准；短轨迹（小 $K_i$）下 U 形可能近乎消失，需更小 $\gamma$。
 - **模拟用户分布失真 / 幻觉**：16 人设分布 ≠ 真实 follow-up 分布；观察不全时前提漂移以小概率回归（靠首轮真实锚点 + 前提成立率审计缓解）。
 - **winner-sync 进程态保真**：平台若只支持磁盘快照，替补槽的进程/内存态可能与 winner 不一致（头号 PoC）。
-- **judge 选型未定**：默认 32B，须用 ClawEval 人工 rubric 一致率校准；外部 judge API 地址待提供。
-- **27B 成本数字待重算**；全栈 64 卡 smoke 未跑。
+- **judge 选型未定**：须用 ClawEval 人工 rubric 一致率校准；外部 judge API 地址待提供（reward 走 `JudgeClient` env 注入，代码零改动）。
+- **27B 成本数字待重算**；**全栈 64 卡 smoke 未跑**——Loss 链路三处接线 bug 已审计修复且纯逻辑单测通过（218 passed），但 replay 行真过 verl forward + log_probs 选回 + packing 断言不触发，仍待集群 1-step 全栈验证。`inference/VerlRolloutGenerateFn` 为占位（接 verl 原生 generate 是 Gap D）。
 
 ---
 
