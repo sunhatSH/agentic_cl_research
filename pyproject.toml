@@ -42,7 +42,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["replay_buffer*", "trainer*", "eval*"]
+include = ["replay_buffer*", "trainer*", "eval*", "rollout*", "agents*", "inference*"]
 exclude = ["tests*", "doc*", "configs*", "scripts*"]
 
 [tool.ruff]

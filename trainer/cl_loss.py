@@ -56,12 +56,46 @@ def compute_replay_loss(model_output, data):
     ``data``. The replay term uses ``replay_response_mask`` (the real span),
     NOT the PPO ``response_mask`` -- the latter is 0 for replay rows so verl's
     ppo_loss skips them (bug B8). Returns a scalar (0 when no replay rows).
+
+    Bug-2 fix: verl's engine produces ``model_output["log_probs"]`` as a
+    NestedTensor (jagged, ``use_remove_padding=True`` default) covering the WHOLE
+    sequence, NOT a dense ``[N, T]`` response tensor. We MUST run it through
+    ``no_padding_2_padding`` first -- exactly as verl's own ``ppo_loss`` does on
+    its first line -- to get dense ``[bsz, max_response_len]`` log-probs before
+    selecting replay rows. ``replay_response_mask`` / ``replay_token_weights``
+    are response-length aligned to match.
     """
     log_probs = model_output["log_probs"] if isinstance(model_output, dict) else model_output.get("log_probs")
     is_replay = _data_get(data, IS_REPLAY_KEY)
     replay_mask = _data_get(data, REPLAY_MASK_KEY)
     token_weights = _data_get(data, REPLAY_WEIGHTS_KEY)
+
+    # Restore dense [bsz, max_response_len] (same as ppo_loss line 1). On a real
+    # verl batch log_probs is a NestedTensor; off-cluster mocks pass a dense
+    # tensor, so only convert when the verl helper is importable and the tensor
+    # is nested / needs slicing.
+    log_probs = _to_dense_response_logprobs(log_probs, data)
     return select_replay_rows(log_probs, replay_mask, token_weights, is_replay)
+
+
+def _to_dense_response_logprobs(log_probs, data):
+    """Convert verl NestedTensor log_probs to dense [bsz, max_response_len].
+
+    No-op when verl is not importable (unit tests pass dense tensors directly)
+    or when ``data`` lacks the prompts/responses metadata the converter needs.
+    """
+    try:
+        from verl.workers.utils.padding import no_padding_2_padding
+    except ImportError:
+        return log_probs
+    is_nested = getattr(log_probs, "is_nested", False)
+    has_meta = hasattr(data, "__contains__") and ("responses" in data)
+    if not (is_nested or has_meta):
+        return log_probs
+    try:
+        return no_padding_2_padding(log_probs, data)
+    except Exception:  # noqa: BLE001 -- mocks / dense inputs fall through unchanged
+        return log_probs
 
 
 def _replay_is_empty(data) -> bool:
@@ -74,12 +108,38 @@ def _replay_is_empty(data) -> bool:
         return not any(bool(x) for x in is_replay)
 
 
+def _resolve_ppo_loss(actor_cfg):
+    """Return a ``partial(ppo_loss, config=ActorConfig)`` callable for RL term.
+
+    Bug-1 fix: verl's engine calls the registered loss as
+    ``loss_function(model_output=..., data=..., dp_group=...)`` -- it does NOT
+    pass ``config`` (verl curries it via ``partial(ppo_loss, config=actor_config)``,
+    engine_workers.py:584). When we override the loss via ``set_loss_fn`` we lose
+    that binding, so we rebuild it here on the worker: ``actor_cfg`` is the
+    (pickle-safe) OmegaConf ``actor_rollout_ref.actor`` subtree, converted to an
+    ``ActorConfig`` exactly as verl does (engine_workers.py:543). Cached per call
+    site via a closure cell. Returns None when verl is absent (mock tests).
+    """
+    try:
+        from verl.utils.config import omega_conf_to_dataclass
+        from verl.workers.config.actor import ActorConfig  # noqa: F401
+        from verl.workers.utils.losses import ppo_loss
+    except ImportError:
+        return None
+    from functools import partial
+
+    config = omega_conf_to_dataclass(actor_cfg) if actor_cfg is not None else None
+    return partial(ppo_loss, config=config)
+
+
 def make_cl_loss(
     replay_enabled: bool = False,
     lambda_replay: float = 0.5,
     replay_batch_size: int = 32,
     use_token_weighting: bool = True,
     weighting_scheme: str = "W2",
+    actor_cfg: Any = None,
+    base_loss_fn: Any = None,
 ):
     """Build a verl-compatible loss function.
 
@@ -90,26 +150,43 @@ def make_cl_loss(
         replay_batch_size / use_token_weighting / weighting_scheme: kept for
             metric/debug parity; the actual sampling + weighting happens on the
             driver (``install_buffer_hooks``), not in this closure.
+        actor_cfg: OmegaConf ``actor_rollout_ref.actor`` subtree, used to rebuild
+            the ``ActorConfig`` that the RL term (``ppo_loss``) needs -- because
+            verl calls the loss WITHOUT a ``config`` arg (bug-1). Pickle-safe.
+        base_loss_fn: optional pre-bound RL loss ``fn(model_output, data,
+            dp_group)``. When given it is used directly (tests / custom); else a
+            ``partial(ppo_loss, config=ActorConfig(actor_cfg))`` is rebuilt lazily
+            on the worker.
 
     The buffer is intentionally NOT a parameter -- it must not be pickled to the
-    actor worker via ``set_loss_fn``.
+    actor worker via ``set_loss_fn``. The closure signature matches verl's call
+    convention: ``(model_output, data, dp_group=None)`` -- NO ``config`` arg.
     """
     enabled = bool(replay_enabled) and lambda_replay > 0.0
+    # Lazily resolved on first call (on the worker) so ActorConfig is built in the
+    # worker process, not pickled across Ray.
+    _rl_cell: dict[str, Any] = {"fn": base_loss_fn}
 
-    def cl_loss_no_replay(config, model_output, data, dp_group=None):
+    def _rl_loss(model_output, data, dp_group):
+        if _rl_cell["fn"] is None:
+            _rl_cell["fn"] = _resolve_ppo_loss(actor_cfg)
+        fn = _rl_cell["fn"]
+        if fn is None:  # verl absent (mock test path)
+
+            lp = model_output["log_probs"] if isinstance(model_output, dict) else model_output.get("log_probs")
+            return lp.sum() * 0.0, {}
+        return fn(model_output=model_output, data=data, dp_group=dp_group)
+
+    def cl_loss_no_replay(model_output, data, dp_group=None):
         """RL + KL + entropy only. Used when replay is disabled (B1 / K*)."""
-        from verl.workers.utils.losses import ppo_loss
-
-        rl_loss, metrics = ppo_loss(config, model_output, data, dp_group)
+        rl_loss, metrics = _rl_loss(model_output, data, dp_group)
         metrics["actor/replay_loss"] = 0.0
         metrics["actor/replay_enabled"] = 0.0
         return rl_loss, metrics
 
-    def cl_loss_with_replay(config, model_output, data, dp_group=None):
+    def cl_loss_with_replay(model_output, data, dp_group=None):
         """RL + KL + entropy + differentiable replay over appended rows."""
-        from verl.workers.utils.losses import ppo_loss
-
-        rl_loss, metrics = ppo_loss(config, model_output, data, dp_group)
+        rl_loss, metrics = _rl_loss(model_output, data, dp_group)
 
         if _replay_is_empty(data):
             metrics["actor/replay_loss"] = 0.0

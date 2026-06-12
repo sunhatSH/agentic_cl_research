@@ -7,8 +7,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Continual Learning over Agentic LLM 的训练项目。仓库所有者：@孙豪。
 
 - **设计文档**：全部位于 `doc/`，是项目的需求与设计依据
-- **代码骨架**：`replay_buffer/`、`trainer/`、`configs/`、`eval/`、`scripts/`、`tests/`
-- **训练框架**：[verl](https://github.com/volcengine/verl)（pip 安装，不 fork，详见 `doc/VerlIntegration.md`）
+- **代码骨架**：`replay_buffer/`、`trainer/`、`rollout/`、`configs/`、`eval/`、`docker/sandbox/`、`scripts/`、`tests/`
+- **训练框架**：[verl](https://github.com/volcengine/verl) `0.8.0`（pip 安装，不 fork，详见 `doc/VerlIntegration.md`）
+
+### 当前阶段（交接背景，必读）
+
+代码已全部写完，在 CPU + 单卡 H800 上跑通 **170 单测**（唯一 skip = 全栈 GPU smoke，标 `@pytest.mark.gpu`）。**唯一阻塞是 64 卡集群 + 真实 Qwen3.6-27B 权重 + 数据**——全栈训练只能在多卡机器上做。
+
+跨机器 / 跨 session 接手时的权威顺序：
+
+1. **`doc/Migration_64GPU.md`** — 交接文档，冷启动步骤
+2. **`doc/Progress.md`** — 交付状态单一来源（里程碑、模块完成度、阻塞）
+3. **`doc/Plan_训练链路补齐.md`** — 64 卡正式训练前残缺模块的施工规格（Gap A–H）
+4. **`doc/RunLog.md`** — append-only 运行记录
+
+> **硬性规则（来自 `RunLog.md`）**：任何可判定结果的动作（smoke / 训练 / 评测 / bug 复现与修复）都必须向 `doc/RunLog.md` **追加**一条，成功与失败都保留，**禁止删改历史条目**——失败是调试与论文的证据。
 
 ## 开发命令
 
@@ -47,38 +60,78 @@ bash scripts/eval.sh ckpts/b1-step-100
 
 # 训练入口也可直接调用
 python -m trainer.cl_main --config configs/phase1/b1.yaml
+
+# 沙箱 / 采样链路（无 GPU 也可跑，用 --backend local）
+python scripts/sandbox_smoke.py --backend local   # execute + M 采样 + winner 固化 + domain→bucket
+bash docker/sandbox/ops/ops.sh query              # 查询腾讯沙箱 Tool / Instance
+bash scripts/validate_sandbox_dockerfile.sh       # 校验镜像 Dockerfile 快照约束
 ```
+
+> ⚠️ 测试分两类：默认全套（CPU/单卡）约 170 个；`@pytest.mark.gpu` 标记的全栈 smoke 需多卡 verl，本机会 skip。沙箱真实后端（腾讯云北京区，`X-Access-Token`）需账号凭证；无凭证用 `--backend local`。
 
 ## 代码架构
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ verl (pip install, 不 fork)                                  │
-│   RayPPOTrainer → actor.set_loss_fn(cl_loss)  ← 唯一注入点  │
+│ verl 0.8.0 (pip install, 不 fork)                            │
+│   RayPPOTrainer → set_loss_fn(cl_loss) + buffer hooks        │
+│                      ← 唯一注入点，零源码改动                 │
 └──────────────────────────────────┬───────────────────────────┘
-                                   │
+                                   │ inject_cl_loss / install_buffer_hooks
 ┌──────────────────────────────────▼───────────────────────────┐
-│ trainer/                                                      │
-│   cl_main.py   — 入口：解析 yaml → 构建 buffer → 注入 loss   │
-│   cl_loss.py   — make_cl_loss() 返回 verl 兼容的 loss_fn     │
-│                  内部调用 compute_replay_loss() 做 replay 前向│
+│ trainer/  （基于 verl，与 rollout 共用 buffer）              │
+│   cl_main.py        — 入口：parse yaml → run_cl_ppo()        │
+│   verl_runner.py    — 构建 RayPPOTrainer，安装 CL hook       │
+│                       (inject_cl_loss / install_buffer_hooks)│
+│   verl_async_runner.py — Fully-Async-Policy 分离训练 scaffold│
+│   cl_loss.py        — make_cl_loss()：按 is_replay 分流，     │
+│                       replay 行不污染 PPO 分母                │
+│   replay_forward.py — 携梯度 replay batch 构建（拼接设计）   │
+│   replay_batch.py   — driver 侧 replay batch 准备            │
+│   trajectory_adapter.py — verl rollout batch → buffer 轨迹   │
+│   domain_tagging.py — LLM 产出的 domain → 7 桶 label 路由     │
+│   model_reward.py   — LLM judge reward（默认关，用规则奖励） │
+│   replay_metrics.py — 论文证据钩子：buffer 动态/forgetting   │
 └──────────────────────────────────┬───────────────────────────┘
                                    │ 使用
 ┌──────────────────────────────────▼───────────────────────────┐
-│ replay_buffer/ （纯 Python，不依赖 verl）                     │
+│ replay_buffer/ （纯 Python，不依赖 verl / Ray）              │
 │   BucketReplayBuffer  — 顶层接口：add / sample / stats        │
-│     ├── Priority       — 4 信号融合的 trajectory 优先级       │
-│     ├── TwoLevelSampler— 采桶 → 桶内 priority 加权随机       │
-│     ├── TokenWeighting — W0(均权) / W2(U 形块权重)            │
+│     ├── priority.py    — 4 信号融合的 trajectory 优先级       │
+│     ├── sampler.py     — 采桶 → 桶内 priority 加权随机        │
+│     ├── weighting.py   — W0(均权) / W2(U 形块权重)            │
 │     ├── eviction.py    — 桶内淘汰策略                         │
-│     └── store.py       — 底层存储 + 索引                      │
+│     └── store.py       — 内存存储 + 索引 + SQLite 快照        │
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│ rollout/ （采样侧，与 verl 解耦；详见 doc/Sandbox_*.md）     │
+│   sandbox_client.py — 厂商隔离沙箱客户端 + GRPO group 采样   │
+│   sandbox_env.py    — 腾讯沙箱 Instance 注入环境变量加载     │
+│   session_pool.py   — session 级沙箱编排（snapshot fork）    │
+│   simulated_session.py — UserSim Algorithm 1 在线会话构造    │
+│   scheduler.py      — N session 并行，每个 = 8-slot GRPO 组   │
+│   collect.py        — 轨迹采集：框架原生字段（非 proxy）     │
+│ agents/  （UserSim 三 agent，与 verl 解耦，可 mock 单测）    │
+│   observer.py       — 观察 agent（无人设，客观状态报告）    │
+│   questioner.py     — 出题 agent（16 人设）+ 耐心机制        │
+│   reward.py         — observation-grounded reward（复用 judge）│
+│   personas.py / prompts.py / schema.py / base.py            │
+│ inference/ — 单步生成边界（VerlRolloutGenerateFn / HTTP）    │
+│ docker/sandbox/     — agent harness = OpenClaw 沙箱镜像层    │
+│   （Node24 + OpenClaw + 工具 + persona 种子文件系统）        │
 └──────────────────────────────────────────────────────────────┘
 
 configs/base.yaml        — 所有实验共享的基础配置（OmegaConf 继承）
+                           key 已对齐 verl Hydra path（actor_rollout_ref.*）
 configs/phase<N>/<exp>.yaml — 按 phase 隔离，每个 yaml 只 override 变化的字段
+configs/sandbox_*.json   — 腾讯沙箱 Tool / runtime env 配置
+skills/                  — 可复用方法与工程规范（5 篇，见下）
 ```
 
-**关键设计约束**：`replay_buffer/` 必须与 verl 完全解耦——不 import verl、不依赖 Ray。这保证 Buffer 可独立单测。
+**关键设计约束**：`replay_buffer/` 必须与 verl 完全解耦——不 import verl、不依赖 Ray。`rollout/` 同样与 verl 解耦（`model_reward.py` 除外）。这保证 Buffer 可独立单测。
+
+**奖励 = 规则计算，不用 reward model**：`reward_model.enable` 保持 false，奖励走 `custom_reward_function`。`trainer/model_reward.py`（LLM judge）是可选路径，默认不进主路径。
 
 ## 编码规范
 
@@ -148,8 +201,26 @@ agentic_cl_research/
 | `doc/VerlIntegration.md` | verl 集成指导：是否 fork、Replay Buffer 接入方式、推荐工程结构、风险点 | 实现路径参考 |
 | `doc/SandboxRollout.md` | 基于腾讯 Agent Runtime（E2B 兼容）的 trajectory 采集方案：每 query × M 个沙盒、snapshot fork/pause、advantage 选优胜 | rollout 工程方案 |
 | `doc/Progress.md` | 里程碑、模块完成度、20 实验状态、外部依赖阻塞、变更日志 | **进度单一来源** |
+| `doc/Migration_64GPU.md` | 跨机器 / 跨 session 交接：冷启动步骤、当前阻塞 | **接手必读** |
+| `doc/RunLog.md` | append-only 运行记录（smoke / 训练 / 评测 / bug） | 禁止删改历史 |
+| `doc/Plan_训练链路补齐.md` | 64 卡正式训练前残缺模块施工规格（Gap A–H） | 实现待办清单 |
+| `doc/Sandbox_Agent架构.md` 等 `Sandbox_*.md` | OpenClaw agent harness + 腾讯沙箱管理/调度/冒烟手册 | rollout 落地手册 |
+| `doc/UserSim_多轮Query在线生成.md` | 多轮 query 在线生成（三 agent + 双参人设耐心机制） | 数据获取方案 |
+| `doc/Paper_*.md` | 论文 Intro / Method 中英初稿 + 总览 | 论文产出 |
 
-阅读顺序建议：`ContinualLearning.md`（全貌）→ `CL_Update_Sunhao.md`（技术细节）→ `BucketDesign.md`（分桶论证）→ `ClawEval_Metadata.md`（评测数据）→ `VerlIntegration.md`（落地工程）。
+阅读顺序建议：接手先读 `Migration_64GPU.md` → `Progress.md`；理解设计读 `ContinualLearning.md`（全貌）→ `CL_Update_Sunhao.md`（技术细节）→ `BucketDesign.md`（分桶论证）→ `ClawEval_Metadata.md`（评测数据）→ `VerlIntegration.md`（落地工程）。
+
+## 可复用方法（skills/）
+
+实现中提炼的跨实验/跨项目规范，改相关模块前先看对应 skill：
+
+| Skill | 主题 |
+|-------|------|
+| `seven-bucket-replay-buffer.md` | 7 桶 Buffer（quota / priority / 两级采样 / 淘汰 / 持久化） |
+| `verl-noninvasive-loss-injection.md` | verl 无侵入 loss 注入（不 fork，`set_loss_fn` + hooks，含 fully-async） |
+| `cl-loss-zero-coefficient-shortcircuit.md` | CL Loss 组合实现与零系数端到端短路 |
+| `experiment-yaml-conventions.md` | 实验 yaml 规范（OmegaConf 继承 + verl Hydra key path + 全量校验） |
+| `claweval-forgetting-metrics.md` | ClawEval 评测与遗忘度量（manifest 接口 / Pass^N / CL Score） |
 
 ## 核心设计要点
 

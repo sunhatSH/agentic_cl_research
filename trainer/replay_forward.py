@@ -109,7 +109,6 @@ def pad_rows_to_seq_len(row_dict: dict[str, Any], target_seq_len: int) -> dict[s
     shorter/longer than the RL batch. 1D tensors (e.g. ``is_replay``) and rows
     already at the target length are returned unchanged.
     """
-    import torch
     import torch.nn.functional as F
 
     out: dict[str, Any] = {}
@@ -130,21 +129,33 @@ def build_replay_rows(
 ) -> dict[str, Any]:
     """Tokenize replay message lists into verl-compatible row tensors.
 
-    Returns a dict of tensors to be concatenated onto the actor batch:
-        input_ids, attention_mask, position_ids, responses,
-        response_mask (ALL ZEROS -> ppo_loss ignores replay rows, bug B8),
-        replay_response_mask (real span -> drives L_replay),
-        old_log_probs / ref_log_prob (zero placeholders, bug B10),
-        advantages (zeros), replay_token_weights, is_replay (all True).
+    Bug-2b fix: a replay row must be SHAPE-compatible with a verl rollout row so
+    that ``_update_actor``'s ``left_right_2_no_padding`` (run on the whole
+    concatenated batch) and ``ppo_loss``'s ``no_padding_2_padding`` both work. A
+    rollout row is a left-padded ``prompt`` segment + a right-padded ``response``
+    segment; ``no_padding_2_padding`` reads ``prompts.shape[1]`` /
+    ``responses.shape[1]`` / ``attention_mask`` to slice the response log-probs.
+    So we split each replay trajectory into (prompt tokens, response tokens) and
+    emit:
+        prompts          : [n, P]  left-padded prompt segment
+        responses        : [n, R]  right-padded response segment (assistant/tool)
+        input_ids        : [n, P+R] = prompts ++ responses
+        attention_mask   : [n, P+R] real-token mask (left+right padding -> 0)
+        position_ids     : [n, P+R] cumsum of attention_mask
+        response_mask    : [n, R] ALL ZEROS  -> ppo_loss ignores replay rows (B8)
+        replay_response_mask : [n, R] real response span -> drives L_replay
+        replay_token_weights : [n, R] per-token weight (response-aligned)
+        old_log_probs / ref_log_prob / advantages : [n, R] zeros (B10)
+        is_replay        : [n] all True
 
-    NOTE: verl's exact batch schema (no_padding vs padded, multi-turn) is validated
-    on the GPU cluster. This builds the right-padded dense form; adapt in
-    ``CLTaskRunner`` if the configured engine expects the nested/no-padding form.
+    Response-length alignment (R) matters: ``no_padding_2_padding`` returns dense
+    ``[bsz, max_response_len]`` log-probs, so the replay mask / weights are R-wide,
+    NOT (P+R)-wide.
     """
     import torch
 
-    input_ids_rows: list[list[int]] = []
-    resp_mask_rows: list[list[int]] = []
+    prompt_rows: list[list[int]] = []
+    resp_rows: list[list[int]] = []
     weight_lists: list[list[float]] = []
     built_tids: list[str] = []
 
@@ -153,54 +164,95 @@ def build_replay_rows(
         messages = meta.get("messages") or []
         if not messages:
             continue
-        enc = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=False)
-        if isinstance(enc, dict):
-            ids = enc["input_ids"]
+        prompt_ids, resp_ids = _split_prompt_response(messages, tokenizer, max_length)
+        if not prompt_ids or not resp_ids:
+            # no_padding_2_padding asserts prompt_len > 0; skip degenerate rows
+            continue
+        prompt_rows.append(prompt_ids)
+        resp_rows.append(resp_ids)
+        # weight aligned to the RESPONSE segment only
+        if w is not None:
+            weight_lists.append(list(w)[: len(resp_ids)])
         else:
-            ids = enc
-        ids = list(ids)[:max_length]
-        # Response = assistant/tool spans; without offset map we approximate by
-        # treating the full sequence after the first user turn as response. The
-        # precise span is recomputed on the cluster from chat template offsets.
-        resp_mask = [1] * len(ids)
-        input_ids_rows.append(ids)
-        resp_mask_rows.append(resp_mask)
-        weight_lists.append(list(w) if w is not None else [1.0] * len(ids))
+            weight_lists.append([1.0] * len(resp_ids))
         built_tids.append(_tid)
 
-    if not input_ids_rows:
+    if not prompt_rows:
         return {}
 
-    seq_len = max(len(r) for r in input_ids_rows)
+    n = len(prompt_rows)
+    P = max(len(r) for r in prompt_rows)
+    R = max(len(r) for r in resp_rows)
     pad_id = getattr(tokenizer, "pad_token_id", 0) or 0
 
-    def _pad(rows, fill):
-        return torch.tensor([r + [fill] * (seq_len - len(r)) for r in rows])
+    # prompt: LEFT-padded; response: RIGHT-padded (verl rollout convention).
+    prompts = torch.full((n, P), pad_id, dtype=torch.long)
+    responses = torch.full((n, R), pad_id, dtype=torch.long)
+    prompt_mask = torch.zeros((n, P), dtype=torch.long)
+    resp_attn = torch.zeros((n, R), dtype=torch.long)
+    replay_response_mask = torch.zeros((n, R), dtype=torch.long)
+    for i, (p, r) in enumerate(zip(prompt_rows, resp_rows)):
+        prompts[i, P - len(p) :] = torch.tensor(p, dtype=torch.long)
+        prompt_mask[i, P - len(p) :] = 1
+        responses[i, : len(r)] = torch.tensor(r, dtype=torch.long)
+        resp_attn[i, : len(r)] = 1
+        replay_response_mask[i, : len(r)] = 1
 
-    input_ids = _pad(input_ids_rows, pad_id)
-    replay_response_mask = _pad(resp_mask_rows, 0)
-    attention_mask = (input_ids != pad_id).long()
-    position_ids = attention_mask.cumsum(dim=-1) - 1
-    position_ids = position_ids.clamp(min=0)
-    weights = align_token_weights(weight_lists, len(input_ids_rows), seq_len)
-    n = len(input_ids_rows)
+    input_ids = torch.cat([prompts, responses], dim=1)
+    attention_mask = torch.cat([prompt_mask, resp_attn], dim=1)
+    position_ids = (attention_mask.cumsum(dim=-1) - 1).clamp(min=0)
+    weights = align_token_weights(weight_lists, n, R)
 
     return {
+        "prompts": prompts,
+        "responses": responses,
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "position_ids": position_ids,
-        "responses": input_ids,
         # verl PPO mask = 0 for replay rows -> ppo_loss contributes nothing (B8).
-        "response_mask": torch.zeros((n, seq_len), dtype=torch.long),
-        # Real response span, consumed only by L_replay.
+        "response_mask": torch.zeros((n, R), dtype=torch.long),
+        # Real response span (R-wide, matches no_padding_2_padding output).
         REPLAY_MASK_KEY: replay_response_mask,
-        "old_log_probs": torch.zeros((n, seq_len)),
-        "ref_log_prob": torch.zeros((n, seq_len)),
-        "advantages": torch.zeros((n, seq_len)),
+        "old_log_probs": torch.zeros((n, R)),
+        "ref_log_prob": torch.zeros((n, R)),
+        "advantages": torch.zeros((n, R)),
         REPLAY_WEIGHTS_KEY: weights,
         IS_REPLAY_KEY: torch.ones(n, dtype=torch.bool),
-        # Non-tensor sidecar: trajectory ids aligned with the rows above (rows
-        # whose messages were empty are skipped). Consumed by the forgetting
-        # backfill and popped before DataProto.concat (see _append_replay_rows).
+        # Non-tensor sidecar: trajectory ids aligned with the rows above. Consumed
+        # by the forgetting backfill and popped before DataProto.concat.
         REPLAY_TIDS_KEY: built_tids,
     }
+
+
+def _split_prompt_response(
+    messages: list[dict], tokenizer: Any, max_length: int
+) -> tuple[list[int], list[int]]:
+    """Split a chat trajectory into (prompt_ids, response_ids).
+
+    Prompt = everything up to and including the first user turn (the task);
+    response = the assistant/tool turns the policy is trained on. Uses the
+    tokenizer chat template; the exact assistant-span recovery (offset map) is
+    refined on the GPU cluster, but the prompt/response BOUNDARY here is what
+    no_padding_2_padding needs to slice correctly.
+    """
+    # First user turn (inclusive) is the prompt; the rest is the response.
+    split = 1
+    for i, m in enumerate(messages):
+        if m.get("role") in ("assistant", "tool"):
+            split = i
+            break
+    else:
+        split = len(messages)
+    prompt_msgs = messages[:split] or messages[:1]
+    resp_msgs = messages[split:]
+
+    def _enc(msgs, add_gen):
+        if not msgs:
+            return []
+        enc = tokenizer.apply_chat_template(msgs, tokenize=True, add_generation_prompt=add_gen)
+        ids = enc["input_ids"] if isinstance(enc, dict) else enc
+        return list(ids)
+
+    prompt_ids = _enc(prompt_msgs, add_gen=True)[:max_length]
+    resp_ids = _enc(resp_msgs, add_gen=False)[: max(0, max_length - len(prompt_ids))]
+    return prompt_ids, resp_ids

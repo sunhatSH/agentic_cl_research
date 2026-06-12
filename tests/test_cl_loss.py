@@ -68,12 +68,13 @@ def _ensure_verl_losses_mock():
 
 
 def test_make_cl_loss_zero_replay_uses_no_replay_branch():
-    losses = _ensure_verl_losses_mock()
+    # New closure signature (bug-1 fix): (model_output, data, dp_group) -- NO config.
+    # verl absent -> RL term falls back to a 0 scalar; we assert the replay metrics.
+    _ensure_verl_losses_mock()
     loss_fn = make_cl_loss(replay_enabled=False, lambda_replay=0.0)
-    losses.ppo_loss = MagicMock(return_value=(torch.tensor(1.5), {"actor/pg_loss": 1.5}))
-    total, metrics = loss_fn(MagicMock(), {"log_probs": torch.zeros(2, 4)}, MagicMock())
-    assert total.item() == pytest.approx(1.5)
+    total, metrics = loss_fn({"log_probs": torch.zeros(2, 4)}, MagicMock(), None)
     assert metrics["actor/replay_enabled"] == 0.0
+    assert metrics["actor/replay_loss"] == 0.0
 
 
 def test_align_token_weights_pads_and_tail_aligns():
@@ -180,23 +181,29 @@ def test_build_replay_rows_tids_skip_empty_messages():
 
 
 def test_cl_loss_with_replay_adds_weighted_term():
-    losses = _ensure_verl_losses_mock()
-    loss_fn = make_cl_loss(replay_enabled=True, lambda_replay=0.5, weighting_scheme="W0")
+    # Inject a fake RL loss via base_loss_fn (bug-1: closure takes no config).
+    _ensure_verl_losses_mock()
+    base = MagicMock(return_value=(torch.tensor(2.0), {}))
+    loss_fn = make_cl_loss(
+        replay_enabled=True, lambda_replay=0.5, weighting_scheme="W0", base_loss_fn=base
+    )
     data = MagicMock()
-    losses.ppo_loss = MagicMock(return_value=(torch.tensor(2.0), {}))
     with patch("trainer.cl_loss._replay_is_empty", return_value=False):
         with patch("trainer.cl_loss.compute_replay_loss", return_value=torch.tensor(1.0)):
-            total, metrics = loss_fn(MagicMock(), {}, data)
+            total, metrics = loss_fn({}, data, None)
     assert total.item() == pytest.approx(2.0 + 0.5 * 1.0)
     assert metrics["actor/replay_empty"] == 0.0
+    # RL term was called with verl's keyword convention (no config arg).
+    base.assert_called_once()
+    assert "config" not in base.call_args.kwargs
 
 
 def test_cl_loss_replay_empty_skips_forward():
-    losses = _ensure_verl_losses_mock()
-    loss_fn = make_cl_loss(replay_enabled=True, lambda_replay=0.5)
+    _ensure_verl_losses_mock()
+    base = MagicMock(return_value=(torch.tensor(1.0), {}))
+    loss_fn = make_cl_loss(replay_enabled=True, lambda_replay=0.5, base_loss_fn=base)
     data = MagicMock()
-    losses.ppo_loss = MagicMock(return_value=(torch.tensor(1.0), {}))
     with patch("trainer.cl_loss._replay_is_empty", return_value=True):
-        total, metrics = loss_fn(MagicMock(), {}, data)
+        total, metrics = loss_fn({}, data, None)
     assert total.item() == pytest.approx(1.0)
     assert metrics["actor/replay_empty"] == 1.0

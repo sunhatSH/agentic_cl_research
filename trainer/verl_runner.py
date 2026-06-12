@@ -30,18 +30,24 @@ def make_cl_loss_from_cfg(cfg: Any):
 
     The buffer is never captured here -- the closure is pickled to the actor
     worker via ``set_loss_fn`` and must stay free of the (driver-only) buffer.
+
+    Passes the ``actor_rollout_ref.actor`` subtree so the closure can rebuild the
+    ``ActorConfig`` that verl's ``ppo_loss`` needs (bug-1: verl calls the loss
+    without a ``config`` arg). This subtree is plain OmegaConf -> pickle-safe.
     """
     from trainer.cl_loss import make_cl_loss
 
     cl = cfg.get("cl", {}) or {}
     lambda_replay = float(cl.get("lambda_replay", 0.0))
     scheme = (cl.get("weighting", {}) or {}).get("scheme", "W2")
+    actor_cfg = cfg.get("actor_rollout_ref", {}).get("actor", None)
     return make_cl_loss(
         replay_enabled=lambda_replay > 0.0,
         lambda_replay=lambda_replay,
         replay_batch_size=int(cl.get("replay_batch_size", 32)),
         use_token_weighting=scheme != "W0",
         weighting_scheme=scheme,
+        actor_cfg=actor_cfg,
     )
 
 
@@ -162,12 +168,16 @@ def _append_replay_rows(batch: Any, replay_rows: dict[str, Any]) -> Any:
     mirror-image zero fields so the two row sets are rectangular and never
     contaminate each other.
 
-    Both sides are right-padded to a common sequence length (bug B9) before
-    DataProto.concat. The exact concat/padding mode for the configured engine
-    is validated on the GPU cluster (see doc/Progress.md verl checklist).
+    Alignment (bug B9 / bug-2b): verl rollout rows are LEFT-padded prompt + RIGHT
+    -padded response. Replay rows from ``build_replay_rows`` share that layout. We
+    align the two sets on BOTH dims independently -- prompts left-padded to max P,
+    responses right-padded to max R -- then rebuild ``input_ids`` / ``attention_mask``
+    / ``position_ids`` so ``no_padding_2_padding`` slices the response correctly.
+    The exact engine concat path is validated on the GPU cluster (doc/Progress.md).
     """
     try:
         import torch
+        import torch.nn.functional as F
         from verl import DataProto
     except ImportError:
         return batch
@@ -177,31 +187,59 @@ def _append_replay_rows(batch: Any, replay_rows: dict[str, Any]) -> Any:
         REPLAY_MASK_KEY,
         REPLAY_TIDS_KEY,
         REPLAY_WEIGHTS_KEY,
-        pad_rows_to_seq_len,
     )
 
     # Non-tensor sidecar (trajectory ids) never enters the TensorDict.
     replay_rows = {k: v for k, v in replay_rows.items() if k != REPLAY_TIDS_KEY}
 
-    n_rl = len(batch.batch["responses"]) if "responses" in batch.batch else len(batch.batch)
-    rl_seq_len = batch.batch["responses"].shape[-1] if "responses" in batch.batch else 0
-    replay_seq_len = replay_rows["responses"].shape[-1]
-    target_seq_len = max(rl_seq_len, replay_seq_len)
+    bb = batch.batch
+    if "prompts" not in bb or "responses" not in bb:
+        # Unexpected layout (no prompt/response split) -> skip replay append
+        # rather than corrupt the batch; logged upstream by metrics.
+        return batch
 
-    # Pad replay rows up to the common seq_len, then pad the RL batch tensors too.
-    replay_rows = pad_rows_to_seq_len(replay_rows, target_seq_len)
-    if rl_seq_len < target_seq_len:
-        for k, v in list(batch.batch.items()):
-            if hasattr(v, "dim") and v.dim() == 2 and v.shape[-1] < target_seq_len:
-                import torch.nn.functional as F
+    n_rl = len(bb["responses"])
+    P_rl, R_rl = bb["prompts"].shape[-1], bb["responses"].shape[-1]
+    P_re, R_re = replay_rows["prompts"].shape[-1], replay_rows["responses"].shape[-1]
+    P, R = max(P_rl, P_re), max(R_rl, R_re)
 
-                batch.batch[k] = F.pad(v, (0, target_seq_len - v.shape[-1]), value=0)
+    # Response-width fields (right-pad), prompt-width fields (left-pad).
+    resp_width_keys = {
+        "responses", "response_mask", REPLAY_MASK_KEY, REPLAY_WEIGHTS_KEY,
+        "old_log_probs", "ref_log_prob", "advantages",
+    }
 
-    # Back-fill RL rows with the mirror-image replay fields.
-    batch.batch[IS_REPLAY_KEY] = torch.zeros(n_rl, dtype=torch.bool)
-    batch.batch[REPLAY_WEIGHTS_KEY] = torch.zeros((n_rl, target_seq_len), dtype=torch.float32)
-    batch.batch[REPLAY_MASK_KEY] = torch.zeros((n_rl, target_seq_len), dtype=torch.long)
+    def _align(rows: dict[str, Any]) -> dict[str, Any]:
+        out = dict(rows)
+        # left-pad prompts
+        if out["prompts"].shape[-1] < P:
+            out["prompts"] = F.pad(out["prompts"], (P - out["prompts"].shape[-1], 0), value=0)
+        # right-pad response-width fields
+        for k in resp_width_keys:
+            v = out.get(k)
+            if v is not None and hasattr(v, "dim") and v.dim() == 2 and v.shape[-1] < R:
+                out[k] = F.pad(v, (0, R - v.shape[-1]), value=0)
+        # rebuild full-sequence fields from aligned prompt + response segments
+        prompt_attn = (out["prompts"] != 0).long()
+        # attention over the response segment = response tokens that are real
+        # (pad id 0 for placeholder positions in both RL and replay rows).
+        resp_real = (out["responses"] != 0).long()
+        out["input_ids"] = torch.cat([out["prompts"], out["responses"]], dim=1)
+        out["attention_mask"] = torch.cat([prompt_attn, resp_real], dim=1)
+        out["position_ids"] = (out["attention_mask"].cumsum(dim=-1) - 1).clamp(min=0)
+        return out
 
+    # Back-fill RL rows with mirror-image replay fields (response-width).
+    bb[IS_REPLAY_KEY] = torch.zeros(n_rl, dtype=torch.bool)
+    bb[REPLAY_WEIGHTS_KEY] = torch.zeros((n_rl, R_rl), dtype=torch.float32)
+    bb[REPLAY_MASK_KEY] = torch.zeros((n_rl, R_rl), dtype=torch.long)
+
+    # Align RL batch tensors in place (prompts left, responses right).
+    rl_aligned = _align({k: bb[k] for k in bb.keys()})
+    for k, v in rl_aligned.items():
+        bb[k] = v
+
+    replay_rows = _align(replay_rows)
     replay_dp = DataProto.from_single_dict(replay_rows)
 
     # DataProto.concat requires both sides to share non_tensor_batch keys with a
