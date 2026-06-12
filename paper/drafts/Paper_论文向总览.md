@@ -1,7 +1,7 @@
 # Continual Learning over Agentic LLMs：论文向总览
 
 > **定位**：把整个 agentic CL research 项目的设计**收敛成一篇论文的骨架**——问题、方法、系统、实验、局限。每节对应论文章节，并指向仓库内的单一信源文档。
-> **本文是综述/索引，不是新信源**：公式与超参以 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md) 为准，调度以 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md) 为准，多轮数据以 [`UserSim_多轮Query在线生成.md`](UserSim_多轮Query在线生成.md) 为准。
+> **本文是综述/索引，不是新信源**：公式与超参以 [`CL_Update_Sunhao.md`](../../doc/CL_Update_Sunhao.md) 为准，调度以 [`Sandbox_管理调度指南.md`](../../doc/Sandbox_管理调度指南.md) 为准，多轮数据以 [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md) 为准。
 > **写作日期**：2026-06-12
 
 ---
@@ -42,7 +42,7 @@
 
 ### 1.3 与已有工作的关系（一句话定位）
 
-RFT 天然比 SFT 抗遗忘（B2/C1），但**仍会遗忘**；CLEAR（A2）证明 task-agnostic 下朴素经验回放即可大幅缓解遗忘，是我们的 baseline（R0）。我们在其上叠加 **能力分桶 + 抗遗忘优先级 + 块级重加权**，并把整套放进**真实多轮 agentic** 场景（含工具、沙箱、用户模拟），这是与既有 continual-RL 文献（多在玩具/GUI 环境，C1–C3）的关键区别。完整文献见 [`CL_Update_Sunhao.md` § 参考文献](CL_Update_Sunhao.md#参考文献)（A/B/C/D 四组）。
+RFT 天然比 SFT 抗遗忘（B2/C1），但**仍会遗忘**；CLEAR（A2）证明 task-agnostic 下朴素经验回放即可大幅缓解遗忘，是我们的 baseline（R0）。我们在其上叠加 **能力分桶 + 抗遗忘优先级 + 块级重加权**，并把整套放进**真实多轮 agentic** 场景（含工具、沙箱、用户模拟），这是与既有 continual-RL 文献（多在玩具/GUI 环境，C1–C3）的关键区别。完整文献见 [`CL_Update_Sunhao.md` § 参考文献](../../doc/CL_Update_Sunhao.md#参考文献)（A/B/C/D 四组）。
 
 ---
 
@@ -71,7 +71,7 @@ $$L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_
 - **弃用 $L_{reg}$（参数 L2）**：参数距离 ≠ 功能距离，$L_{kl}$ 在输出分布空间约束更精确，原槽位让给 $L_{ent}$。
 - **$L_{ent}$ 必须默认开**：GRPO 与 $L_{rl}/L_{replay}$ 都是 mode-seeking、加速 entropy 下降；KL 只保形状不保 entropy。关掉 entropy 会让 B1 baseline 崩盘，测到的就不是"真实遗忘量"而是"崩盘退化"——为保所有 Phase 可比，entropy 全程同值开启。
 
-> 工程注入：`trainer/cl_loss.py::make_cl_loss` 返回 verl 兼容 loss_fn，replay 行用双 mask 与 PPO 行隔离（replay 行 `response_mask=0` 不污染 PPO 分母）。**2026-06-12 已审计 verl 0.8.0 兼容性并修复三处接线 bug**：loss 闭包签名对齐 verl keyword 调用（去 config 位置参）、replay log_probs 先 `no_padding_2_padding` 还原 dense（engine 原生为 NestedTensor）、replay 行构造为 left-right padded rollout-row 以过 packing 断言。纯逻辑单测通过；真 verl 全链路端到端待 GPU 集群。详见 [`VerlIntegration.md`](VerlIntegration.md) 与 `doc/RunLog.md`。
+> 工程注入：`trainer/cl_loss.py::make_cl_loss` 返回 verl 兼容 loss_fn，replay 行用双 mask 与 PPO 行隔离（replay 行 `response_mask=0` 不污染 PPO 分母）。**2026-06-12 已审计 verl 0.8.0 兼容性并修复三处接线 bug**：loss 闭包签名对齐 verl keyword 调用（去 config 位置参）、replay log_probs 先 `no_padding_2_padding` 还原 dense（engine 原生为 NestedTensor）、replay 行构造为 left-right padded rollout-row 以过 packing 断言。纯逻辑单测通过；真 verl 全链路端到端待 GPU 集群。详见 [`VerlIntegration.md`](../../doc/VerlIntegration.md) 与 `doc/RunLog.md`。
 
 ---
 
@@ -79,7 +79,7 @@ $$L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_
 
 ### 4.1 为什么按能力分桶、按抗遗忘排序
 
-- **按能力/领域分桶，不按难度**：难度随模型能力漂移，难度桶会不断重新分类；能力是稳定的划分轴。7 桶 = Workflow[54] / SysOps[52] / Dialogue[38] / Finance[18] / Communication[12] / Knowledge[11] / OfficeQA[10]（OfficeQA 单独成桶，避免并入 Knowledge 被稀释）。论证见 [`BucketDesign.md`](BucketDesign.md)。
+- **按能力/领域分桶，不按难度**：难度随模型能力漂移，难度桶会不断重新分类；能力是稳定的划分轴。7 桶 = Workflow[54] / SysOps[52] / Dialogue[38] / Finance[18] / Communication[12] / Knowledge[11] / OfficeQA[10]（OfficeQA 单独成桶，避免并入 Knowledge 被稀释）。论证见 [`BucketDesign.md`](../../doc/BucketDesign.md)。
 - **Priority 不用 reward 绝对值**：训练推进 reward 整体上升，按 reward 排序会系统性淘汰旧轨迹，buffer 退化成滑动窗口、丧失 CL 意义。改用**抗遗忘价值**：
 
 $$priority_i = f(\text{forgetting\_risk}_i,\ \text{rarity}_i,\ \text{diversity}_i,\ \text{within\_bucket\_difficulty}_i)$$
@@ -91,7 +91,7 @@ $$priority_i = f(\text{forgetting\_risk}_i,\ \text{rarity}_i,\ \text{diversity}_
 - **Quota = 保底 + 平方根加权**：$q_i = q_{min} + (C-Bq_{min})\cdot\frac{n_i^{0.5}}{\sum_j n_j^{0.5}}$。大桶得更多但不线性膨胀，小桶有 hard floor 不被挤空。
 - **桶内淘汰、禁止跨桶挤出**：保证不同能力不互相侵占——这是"按能力分桶"主张的执行保障。
 - **两级采样**：先采桶（soft target 比例 + 均匀混合 + starvation_boost）→ 桶内按 priority 加权随机（非 top-k，避免只刷明星轨迹）。
-- **冷启动**：buffer 空 → replay_ratio=0；未达 warmup 阈值 → 线性爬升。冷启动数据需求见 [`Buffer_冷启动数据需求.md`](Buffer_冷启动数据需求.md)。
+- **冷启动**：buffer 空 → replay_ratio=0；未达 warmup 阈值 → 线性爬升。冷启动数据需求见 [`Buffer_冷启动数据需求.md`](../../doc/Buffer_冷启动数据需求.md)。
 
 > 实现：`replay_buffer/`（纯 Python，与 verl 完全解耦，可独立单测）。
 
@@ -110,7 +110,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 - **$\gamma=\delta=1$ 内置等权基线**：所有块权重恒为 1 → 退化为均权（W0），无需单独 scheme。Phase 3 对照 **W0（$\gamma=\delta=1$）vs W2（$\gamma=\delta=0.88$）**，唯一变量是超参值。
 - **clip 整体乘积**：极端值由 priority×块权重组合放大，必须对最终 $w_t^{(i)}$ 剪枝（非仅 priority）。
 
-> 完整推导、备选方案表、与 advantage 的量级配合（端点/中点比 ~1.93×，控制在 2–3×）见 [`CL_Update_Sunhao.md` § $L_{replay}$ 权重](CL_Update_Sunhao.md#l_replay-权重-w-计算规则)。
+> 完整推导、备选方案表、与 advantage 的量级配合（端点/中点比 ~1.93×，控制在 2–3×）见 [`CL_Update_Sunhao.md` § $L_{replay}$ 权重](../../doc/CL_Update_Sunhao.md#l_replay-权重-w-计算规则)。
 
 ---
 
@@ -118,7 +118,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 
 ### 6.1 动作在内、推理在外
 
-推理（27B 前向/采样/logprob）在沙箱外的 GPU 集群（vLLM）；动作（装包、写文件、跑命令）在腾讯云沙箱内（OpenClaw agent harness）。128 个沙箱不可能各带一份 27B，而动作必须落到"那台用户机器"的磁盘上。详见 [`Sandbox_Agent架构.md`](Sandbox_Agent架构.md)。
+推理（27B 前向/采样/logprob）在沙箱外的 GPU 集群（vLLM）；动作（装包、写文件、跑命令）在腾讯云沙箱内（OpenClaw agent harness）。128 个沙箱不可能各带一份 27B，而动作必须落到"那台用户机器"的磁盘上。详见 [`Sandbox_Agent架构.md`](../../doc/Sandbox_Agent架构.md)。
 
 ### 6.2 16×8 + winner-sync
 
@@ -156,7 +156,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 - **防模式坍缩**：16 人设会话级随机（含观察偏好：整体/细节、形式/内容）+ 轮数压小（1–3）+ winner 状态逐轮演化。
 - **自适应课程**：出题 agent 始终对当前策略的实际输出挑刺 → 策略越强、刺越细，难度自动跟随能力前沿。
 
-> 完整设计（接口契约、决策记录、风险）见 [`UserSim_多轮Query在线生成.md`](UserSim_多轮Query在线生成.md)。
+> 完整设计（接口契约、决策记录、风险）见 [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md)。
 > **实现状态（2026-06-12）**：三 agent 已落盘 `agents/`（observer/questioner/reward + 16 人设库 + 双轴耐心机制 `PatienceTracker`），三个 prompt（O6/O3/O4）已填（见 Method 草稿附录 A）；会话编排 `rollout/simulated_session.run_simulated_session`（Algorithm 1）已实现并以 mock 单测覆盖。三方后端各自独立 env（`OBSERVER_*`/`USERSIM_*`/`JUDGE_*`）抗 self-preference。待集群：把 `run_simulated_session` 接进 scheduler + 接 verl 原生 generate（`inference/VerlRolloutGenerateFn`）。
 
 ---
@@ -165,7 +165,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 
 ### 8.1 评测
 
-**ClawEval**（300 任务，3 split：General 161 / Multimodal 101 / Multi-turn 38；当前用纯文本 195）。评分 $score = s_{safety}\times(0.8\cdot s_{completion}+0.2\cdot s_{robustness})$，**Pass³**（三次独立运行全过）。Reward 与评测同构（模型 judge），保证 reward/eval 一致。评测元数据见 [`ClawEval_Metadata.md`](ClawEval_Metadata.md)。
+**ClawEval**（300 任务，3 split：General 161 / Multimodal 101 / Multi-turn 38；当前用纯文本 195）。评分 $score = s_{safety}\times(0.8\cdot s_{completion}+0.2\cdot s_{robustness})$，**Pass³**（三次独立运行全过）。Reward 与评测同构（模型 judge），保证 reward/eval 一致。评测元数据见 [`ClawEval_Metadata.md`](../../doc/ClawEval_Metadata.md)。
 
 ### 8.2 20 个受控消融（逐组件验证）
 
@@ -196,7 +196,7 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 | 训练框架 | verl 0.8.0，pip 安装不 fork，唯一注入点 `actor.set_loss_fn(cl_loss)` |
 | 工程解耦 | `replay_buffer/` 不 import verl/Ray，可独立单测 |
 
-> ⚠️ `CL_Update_Sunhao.md` 中按 70B 估算的显存/耗时数字待按 27B 重算（标记 C2）。落地施工图见 [`Plan_训练链路补齐.md`](Plan_训练链路补齐.md)，状态见 [`Progress.md`](Progress.md)。
+> ⚠️ `CL_Update_Sunhao.md` 中按 70B 估算的显存/耗时数字待按 27B 重算（标记 C2）。落地施工图见 [`Plan_训练链路补齐.md`](../../doc/Plan_训练链路补齐.md)，状态见 [`Progress.md`](../../doc/Progress.md)。
 
 ---
 
@@ -214,13 +214,13 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 
 | 论文章节 | 信源文档 |
 |---------|---------|
-| 方法·CL Loss / 实验路线 / GPU / 精度 / 文献 | [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)（**主文档**） |
-| 方法·7 桶 Buffer 论证 | [`BucketDesign.md`](BucketDesign.md)（+ `_compressed` 速查） |
-| 方法·环境/调度 | [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)、[`SandboxRollout.md`](SandboxRollout.md)、[`Sandbox_Agent架构.md`](Sandbox_Agent架构.md) |
-| 方法·多轮数据 | [`UserSim_多轮Query在线生成.md`](UserSim_多轮Query在线生成.md) |
-| 实验·评测 | [`ClawEval_Metadata.md`](ClawEval_Metadata.md) |
-| 系统·落地 | [`VerlIntegration.md`](VerlIntegration.md)、[`Plan_训练链路补齐.md`](Plan_训练链路补齐.md) |
-| 协作总览 / 进度 | [`ContinualLearning.md`](ContinualLearning.md)、[`Progress.md`](Progress.md) |
+| 方法·CL Loss / 实验路线 / GPU / 精度 / 文献 | [`CL_Update_Sunhao.md`](../../doc/CL_Update_Sunhao.md)（**主文档**） |
+| 方法·7 桶 Buffer 论证 | [`BucketDesign.md`](../../doc/BucketDesign.md)（+ `_compressed` 速查） |
+| 方法·环境/调度 | [`Sandbox_管理调度指南.md`](../../doc/Sandbox_管理调度指南.md)、[`SandboxRollout.md`](../../doc/SandboxRollout.md)、[`Sandbox_Agent架构.md`](../../doc/Sandbox_Agent架构.md) |
+| 方法·多轮数据 | [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md) |
+| 实验·评测 | [`ClawEval_Metadata.md`](../../doc/ClawEval_Metadata.md) |
+| 系统·落地 | [`VerlIntegration.md`](../../doc/VerlIntegration.md)、[`Plan_训练链路补齐.md`](../../doc/Plan_训练链路补齐.md) |
+| 协作总览 / 进度 | [`ContinualLearning.md`](../../doc/ContinualLearning.md)、[`Progress.md`](../../doc/Progress.md) |
 | **论文主旨 + Introduction 初稿** | [`Paper_Intro_draft_CN.md`](Paper_Intro_draft_CN.md) / [`Paper_Intro_draft_EN.md`](Paper_Intro_draft_EN.md)（单主旨框架：一个核心信息 + 部件降格为手段） |
 | **论文 Method 散文初稿** | [`Paper_Method_draft_CN.md`](Paper_Method_draft_CN.md)（中文）/ [`Paper_Method_draft_EN.md`](Paper_Method_draft_EN.md)（英文投稿用） |
 

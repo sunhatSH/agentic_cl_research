@@ -1,0 +1,44 @@
+% Agentic Continual Learning -- paper main file.
+% Sections live in sections/; figures in ../assets/; bib in ../refs/references.bib.
+% Prose source of truth (while drafting) is ../drafts/Paper_*_EN.md; this LaTeX
+% skeleton is for assembling the submission. Build: pdflatex main; bibtex main; pdflatex x2.
+
+\documentclass[11pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\graphicspath{{../assets/}}
+
+% Citation tags A2/B4/... map to keys in ../refs/references.bib.
+% TODO macro for unfilled, results-dependent numbers.
+\newcommand{\TODO}[1]{{\color{red}[TODO: #1]}}
+
+\title{Continual Reinforcement Learning of Multi-Turn Agentic LLMs\\
+       \large Producing a Clean Learning Signal Before Consolidating It}
+\author{Sun Hao \and others}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+% Source: ../drafts/Paper_论文向总览.md §0 (Abstract draft).
+\TODO{paste abstract from drafts/Paper\_论文向总览.md §0; fill headline numbers after training.}
+\end{abstract}
+
+\input{sections/01_introduction}
+\input{sections/04_method}
+\input{sections/05_experiments}
+
+\bibliographystyle{plain}
+\bibliography{../refs/references}
+
+\appendix
+\input{sections/A_prompts}
+
+\end{document}

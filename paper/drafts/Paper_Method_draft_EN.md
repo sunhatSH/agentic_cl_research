@@ -1,7 +1,7 @@
 # Paper Draft — Method Section (§4), English
 
 > **Use**: English prose draft of the paper's Method section; drop directly into the paper `.tex`/`.md` and polish.
-> **Conventions**: experiment-dependent numbers are marked `[TODO: fill after training]`; equations/hyperparameters follow [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md); citation tags `[A2]`/`[B4]` match its reference list.
+> **Conventions**: experiment-dependent numbers are marked `[TODO: fill after training]`; equations/hyperparameters follow [`CL_Update_Sunhao.md`](../../doc/CL_Update_Sunhao.md); citation tags `[A2]`/`[B4]` match its reference list.
 > **Chinese version**: [`Paper_Method_draft_CN.md`](Paper_Method_draft_CN.md).
 > **Date**: 2026-06-12
 
@@ -112,7 +112,7 @@ A useful side effect is an **adaptive curriculum**: the questioner always critiq
 
 ## Appendix A: Prompts
 
-> **Note**: This appendix holds the complete prompts for the three agents and the reward model. They are **implemented** in `agents/prompts.py` (2026-06-12), corresponding to design items O3/O4/O6 in [`UserSim_多轮Query在线生成.md`](UserSim_多轮Query在线生成.md); the reward rubric's three dimensions align with `trainer/model_reward.py`. The verbatim system prompts follow.
+> **Note**: This appendix holds the complete prompts for the three agents and the reward model. They are **implemented** in `agents/prompts.py` (2026-06-12), corresponding to design items O3/O4/O6 in [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md); the reward rubric's three dimensions align with `trainer/model_reward.py`. The verbatim system prompts follow.
 
 ### A.1 Observer prompt (O6)
 

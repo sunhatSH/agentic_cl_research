@@ -1,7 +1,7 @@
 # 论文初稿 — 方法章节（§4），中文
 
 > **用途**：论文 Method 章节的中文初稿，供你阅读、迭代、对外讲解。正式投稿用英文版 [`Paper_Method_draft_EN.md`](Paper_Method_draft_EN.md)。
-> **约定**：依赖实验结果的数字用 `[TODO: 训练后回填]` 占位；公式/超参与 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md) 一致；文献标签 `[A2]`/`[B4]` 对应其参考文献编号。
+> **约定**：依赖实验结果的数字用 `[TODO: 训练后回填]` 占位；公式/超参与 [`CL_Update_Sunhao.md`](../../doc/CL_Update_Sunhao.md) 一致；文献标签 `[A2]`/`[B4]` 对应其参考文献编号。
 > **写作日期**：2026-06-12
 
 ---
@@ -111,7 +111,7 @@ $$P_k = P_{k-1} - d_0(p)\,2^{\,k-1} \;=\; P_0(p) - d_0(p)\,(2^{k}-1).$$
 
 ## 附录 A：完整提示词（Prompts）
 
-> **说明**：本附录给出三个 agent 与奖励模型的完整提示词。三个 prompt **已实现并落盘**于 `agents/prompts.py`（2026-06-12），对应设计文档 [`UserSim_多轮Query在线生成.md`](UserSim_多轮Query在线生成.md) 的 O3/O4/O6；判分准则的 ClawEval 三维与 `trainer/model_reward.py` 对齐。以下为正文使用的英文 system prompt（论文投稿用英文，故此处与代码一致保留英文原文）。
+> **说明**：本附录给出三个 agent 与奖励模型的完整提示词。三个 prompt **已实现并落盘**于 `agents/prompts.py`（2026-06-12），对应设计文档 [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md) 的 O3/O4/O6；判分准则的 ClawEval 三维与 `trainer/model_reward.py` 对齐。以下为正文使用的英文 system prompt（论文投稿用英文，故此处与代码一致保留英文原文）。
 
 ### A.1 观察 agent 提示词（Observer，对应 O6）
 

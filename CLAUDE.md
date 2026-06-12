@@ -148,6 +148,7 @@ agentic_cl_research/
 ├── README.md                # 项目入口
 ├── pyproject.toml           # 项目元数据与依赖
 ├── doc/                     # 设计文档（详见下表）
+├── paper/                   # 论文产出：drafts/(md 草稿) latex/ assets/ refs/
 ├── replay_buffer/           # 7 桶 Buffer 实现（与 verl 解耦的纯 Python 模块）
 ├── trainer/                 # CL Loss 与训练入口（基于 verl，零源码改动）
 ├── configs/                 # 实验配置（按 phase 分子目录）
@@ -207,7 +208,7 @@ agentic_cl_research/
 | `doc/Plan_训练链路补齐.md` | 64 卡正式训练前残缺模块施工规格（Gap A–H） | 实现待办清单 |
 | `doc/Sandbox_Agent架构.md` 等 `Sandbox_*.md` | OpenClaw agent harness + 腾讯沙箱管理/调度/冒烟手册 | rollout 落地手册 |
 | `doc/UserSim_多轮Query在线生成.md` | 多轮 query 在线生成（三 agent + 双参人设耐心机制） | 数据获取方案 |
-| `doc/Paper_*.md` | 论文 Intro / Method 中英初稿 + 总览 | 论文产出 |
+| `paper/` | 论文产出独立目录：`drafts/`(Intro/Method 中英 + 总览)、`latex/`(投稿正文)、`assets/`(图)、`refs/`(.bib) | 论文产出 |
 
 阅读顺序建议：接手先读 `Migration_64GPU.md` → `Progress.md`；理解设计读 `ContinualLearning.md`（全貌）→ `CL_Update_Sunhao.md`（技术细节）→ `BucketDesign.md`（分桶论证）→ `ClawEval_Metadata.md`（评测数据）→ `VerlIntegration.md`（落地工程）。
 

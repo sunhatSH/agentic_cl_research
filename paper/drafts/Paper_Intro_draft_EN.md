@@ -1,7 +1,7 @@
 # Paper Draft — Thesis & Introduction (§1), English
 
 > **Use**: the single-thesis framing + Introduction prose for the *whole project as one paper*. The point of this draft is discipline: **one core message, with all five components demoted to "how we realize it"**, so the paper reads as one coherent contribution rather than a feature list.
-> **Conventions**: results-dependent claims marked `[TODO: results]`; citation tags `[A2]`/`[B4]`/`[B2]`/`[C1]` match [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md). Chinese version: [`Paper_Intro_draft_CN.md`](Paper_Intro_draft_CN.md).
+> **Conventions**: results-dependent claims marked `[TODO: results]`; citation tags `[A2]`/`[B4]`/`[B2]`/`[C1]` match [`CL_Update_Sunhao.md`](../../doc/CL_Update_Sunhao.md). Chinese version: [`Paper_Intro_draft_CN.md`](Paper_Intro_draft_CN.md).
 > **Date**: 2026-06-12
 
 ---
