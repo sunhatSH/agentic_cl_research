@@ -50,7 +50,18 @@
       "Bash(curl *)",
       "Bash(git mv *)",
       "Bash(chmod +x *)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(git *)",
+      "Bash(python -m pytest tests/ -x --tb=short)",
+      "Bash(pip3 install *)",
+      "WebFetch(domain:cloud.tencent.com)",
+      "Bash(env)",
+      "Bash(grep -v \"^[[:space:]]*\\\\\"$\")",
+      "Bash(bash --version)",
+      "Read(//root/**)",
+      "Bash(bash *)",
+      "Read(//tmp/**)",
+      "Bash(GH_FORCE_TTY=0 gh repo create sunhatSH/start_dev --private --source=. --remote=origin --push)"
     ]
   }
 }
