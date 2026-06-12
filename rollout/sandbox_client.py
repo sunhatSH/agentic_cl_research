@@ -159,9 +159,13 @@ class E2BSandbox:
         return ExecResult(stdout, stderr, not stderr)
 
     def kill(self) -> None:
+        # Delete by the bare sandboxID (the run-code host id), NOT the
+        # ``sandboxID-clientID`` form: the platform returns 404 for the latter
+        # and the instance leaks. Verified 2026-06-12 against ap-beijing:
+        # DELETE /sandboxes/<sandboxID> -> 204 (reclaimed), -<clientID> -> 404.
         try:
             self._client.delete(
-                f"{self._api_url}/sandboxes/{self._full_id}",
+                f"{self._api_url}/sandboxes/{self._sandbox_id}",
                 headers={"X-API-KEY": self._api_key},
                 timeout=30.0,
             )

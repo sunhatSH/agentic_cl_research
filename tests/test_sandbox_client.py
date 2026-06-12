@@ -70,3 +70,48 @@ def test_make_sandbox_e2b_without_credentials_raises(monkeypatch):
     monkeypatch.delenv("E2B_DOMAIN", raising=False)
     with pytest.raises(RuntimeError, match="E2B_API_KEY"):
         make_sandbox("e2b")
+
+
+def test_e2b_kill_deletes_bare_sandbox_id(monkeypatch):
+    """Regression: kill() must DELETE /sandboxes/<sandboxID>, NOT <sandboxID-clientID>.
+
+    Verified live 2026-06-12 on ap-beijing: the ``sandboxID-clientID`` form
+    returns 404 and the instance LEAKS; the bare ``sandboxID`` returns 204.
+    """
+    import httpx
+
+    from rollout.sandbox_client import E2BSandbox
+
+    monkeypatch.setenv("E2B_API_KEY", "k")
+    monkeypatch.setenv("E2B_DOMAIN", "ap-beijing.tencentags.com")
+
+    captured: dict = {}
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "sandboxID": "sbx123",
+                "clientID": "1",
+                "envdAccessToken": "tok",
+            }
+
+    class _FakeClient:
+        def post(self, *a, **k):
+            return _FakeResp()
+
+        def delete(self, url, **k):
+            captured["delete_url"] = url
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(httpx, "Client", lambda *a, **k: _FakeClient())
+    sb = E2BSandbox(timeout=300)
+    assert sb._sandbox_id == "sbx123"
+    sb.kill()
+    # must delete the bare sandboxID, not the sandboxID-clientID form
+    assert captured["delete_url"].endswith("/sandboxes/sbx123")
+    assert not captured["delete_url"].endswith("sbx123-1")
+    assert captured.get("closed") is True
