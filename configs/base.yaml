@@ -28,6 +28,15 @@ actor_rollout_ref:
   rollout:
     n: 8                          # traj/query (GRPO group size M)
     temperature: 1.0
+    # Custom rollout via our session scheduler (16x8 + winner-sync). verl's
+    # official injection point (ray_trainer.py:931): when set, verl uses our
+    # AgentLoopManager instead of the default batch rollout, WITHOUT touching
+    # fit(). Default OFF (commented) -> verl-native rollout. Enable to route
+    # rollout through rollout/scheduler.py with sandbox + winner-sync.
+    # agent:
+    #   agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
+    #   sessions_per_step: 16       # 16 sessions in parallel (x n slots = 128)
+    #   sandbox_backend: e2b        # 'e2b' (Tencent) on cluster, 'local' for dev
 
   # Reference policy pi_ref -- pi_0 (initial) or pi_{t-1} (prev stage ckpt).
   ref:

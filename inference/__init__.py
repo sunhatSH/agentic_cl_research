@@ -8,8 +8,9 @@ session/agent layer depends only on the ``GenerateFn`` boundary defined in
 that boundary.
 
 Two implementations:
-  - ``VerlRolloutGenerateFn`` : wraps verl rollout generate / AgentLoopOutput
-    (cluster path; validated on GPU per doc/Progress.md). Returns native fields.
+  - ``VerlRolloutGenerateFn`` : wraps verl's rollout LLM server
+    (``LLMServerClient.generate`` -> token ids + logprobs). Cluster path;
+    validated end-to-end on GPU. Returns native fields.
   - ``HTTPGenerateFn``        : OpenAI-compatible endpoint fallback (W1) used only
     when driving generation outside verl; logprobs are best-effort.
 

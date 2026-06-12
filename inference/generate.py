@@ -14,31 +14,55 @@ from rollout.collect import GenStep
 
 
 class VerlRolloutGenerateFn:
-    """Single-step generate backed by verl's native rollout engine.
+    """Single-step generate backed by verl's native rollout LLM server.
 
     The cluster wiring (doc/Sandbox_Agent架构.md §3.2): we own the 16×8 +
-    winner-sync orchestration, but call verl's rollout generate for each step so
-    token + logprob + response_mask are produced natively (no proxy). The exact
-    AgentLoopOutput field plumbing is validated on the GPU cluster (Gap D /
-    doc/Progress.md). This holds the rollout worker group + tokenizer and adapts
-    one generate() call into a GenStep.
+    winner-sync orchestration, but call verl's rollout LLM server for each step
+    so token + logprob are produced natively (no proxy). The connection point is
+    ``LLMServerClient.generate(request_id, *, prompt_ids, sampling_params)
+    -> TokenOutput{token_ids, log_probs}`` (verl/workers/rollout/llm_server.py),
+    the same per-turn call verl's own AgentLoopWorker uses.
+
+    ``llm_client.generate`` is async; the ReAct loop / scheduler are synchronous,
+    so we bridge with a private event loop per call (the scheduler runs sessions
+    on a thread pool, so each thread gets its own loop). Validated end-to-end on
+    the GPU cluster (no verl/LLM server off-cluster).
     """
 
-    def __init__(self, rollout_wg: Any, tokenizer: Any, *, max_new_tokens: int = 1024):
-        self.rollout_wg = rollout_wg
+    def __init__(self, llm_client: Any, tokenizer: Any, *, sampling_params: dict | None = None):
+        self.llm_client = llm_client
         self.tokenizer = tokenizer
-        self.max_new_tokens = max_new_tokens
+        self.sampling_params = sampling_params or {"temperature": 1.0, "max_tokens": 1024}
 
     def __call__(self, messages: list[dict[str, Any]]) -> GenStep:
-        # Cluster path: build a prompt DataProto from messages, call
-        # self.rollout_wg.generate_sequences(...), and read response_ids /
-        # rollout_log_probs / response_mask from the returned AgentLoopOutput.
-        # Left as the integration seam validated on GPU (verl rollout API), to
-        # avoid hardcoding a generate signature that differs by engine/version.
-        raise NotImplementedError(
-            "VerlRolloutGenerateFn wires verl rollout generate on the GPU cluster "
-            "(Gap D, doc/Progress.md). Use HTTPGenerateFn or a mock off-cluster."
+        import asyncio
+        from uuid import uuid4
+
+        prompt_ids = self.tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True
         )
+        if isinstance(prompt_ids, dict):
+            prompt_ids = prompt_ids["input_ids"]
+        prompt_ids = list(prompt_ids)
+
+        async def _gen():
+            return await self.llm_client.generate(
+                uuid4().hex, prompt_ids=prompt_ids, sampling_params=self.sampling_params
+            )
+
+        # Each scheduler thread runs its own loop; reuse if one is set, else create.
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():  # pragma: no cover - nested-loop guard
+                raise RuntimeError("nested loop")
+            out = loop.run_until_complete(_gen())
+        except RuntimeError:
+            out = asyncio.new_event_loop().run_until_complete(_gen())
+
+        token_ids = list(getattr(out, "token_ids", []) or [])
+        logprobs = list(getattr(out, "log_probs", None) or [])
+        text = self.tokenizer.decode(token_ids) if token_ids else ""
+        return GenStep(text=text, response_ids=token_ids, logprobs=logprobs)
 
 
 class HTTPGenerateFn:

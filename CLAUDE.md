@@ -92,6 +92,7 @@ bash scripts/validate_sandbox_dockerfile.sh       # 校验镜像 Dockerfile 快�
 │   domain_tagging.py — LLM 产出的 domain → 7 桶 label 路由     │
 │   model_reward.py   — LLM judge reward（默认关，用规则奖励） │
 │   replay_metrics.py — 论文证据钩子：buffer 动态/forgetting   │
+│   cl_rollout_manager.py — 自定义 rollout（verl 注入点，按需）│
 └──────────────────────────────────┬───────────────────────────┘
                                    │ 使用
 ┌──────────────────────────────────▼───────────────────────────┐
