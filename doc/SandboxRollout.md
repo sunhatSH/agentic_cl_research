@@ -2,7 +2,8 @@
 
 基于**腾讯云 Agent Runtime**（E2B 协议兼容）的 GRPO trajectory 采集方案。
 
-> **调度与状态同步（16 会话 × 8 槽、会话内 winner 对齐、会话结束回母版）**：见 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)。
+> ⚠️ **文档定位（2026-06-12 整理）**：本文 §1–3 的"per-query 环境链 / winner 固化为新母版"是**旧设计**，已被 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)（16×8 + 会话内 winner-sync + 会话结束不回母版）取代。本文的**现行价值在 §4（平台 Tool/Instance API 对照）+ §6（PoC 清单）**——这两节仍是平台 API 的单一信源。调度逻辑一律以调度指南为准。
+> **总览入口**：[`Paper_论文向总览.md`](Paper_论文向总览.md)。
 
 ## 1. 问题
 

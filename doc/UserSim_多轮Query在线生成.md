@@ -1,10 +1,10 @@
 # 模拟用户在线生成多轮 Query（User-Sim Session Construction）
 
-> **定位**：多轮训练数据的构造方案——真实回流数据只保留会话首条 query 作种子，后续 query 由"模拟用户 agent"在 rollout 运行时、观察 winner 状态后在线生成。
-> **状态**：设计已定稿，**模拟器与观察 agent 代码暂不实现**（接口契约见 §7，后续按契约补齐）。
+> **定位**：多轮训练数据的构造方案——真实回流数据只保留会话首条 query 作种子，后续 query 由**三个协作 agent**（观察 / 出题 / 奖励）在 rollout 运行时、观察 winner 状态后在线生成与评分。
+> **状态**：设计已定稿，**三 agent 代码暂不实现**（接口契约见 §7，后续按契约补齐）。
 > 调度机制见 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)；reward 见 `trainer/model_reward.py` 与本文 §6。
 
-**写作日期**：2026-06-11（@孙豪 方案定稿）
+**写作日期**：2026-06-11（@孙豪 方案定稿）；2026-06-12 升级为观察/出题/奖励三 agent 架构
 
 ---
 
@@ -13,11 +13,13 @@
 | 维度 | 决策 |
 |------|------|
 | 多轮数据来源 | 真实回流数据**只取每会话第一条 query**（保真实分布锚点），其余丢弃 |
-| 后续 query | 模拟用户 agent 在 **每条 query 的 winner 选出并 sync 之后**，观察 **winner 单一状态** 在线生成 |
+| 三 agent 架构 | **观察 agent**（无人设，从 actor 输出判断要收集什么，产出客观状态报告）→ 同时喂给 **出题 agent**（有人设，生成下一 query）和 **奖励模型**（按报告+判分准则给 reward） |
+| 后续 query | 出题 agent 在 **每条 query 的 winner 选出并 sync 之后**，基于观察 agent 对 **winner 单一状态** 的报告在线生成 |
 | 观察范围 | **只观察 winner**，不观察 8 个槽（与"会话正史 = winner 轨迹拼接"自洽，省 7 份观察成本） |
-| 防模式坍缩 | ① 模拟轮数压小（follow-up 1–3 轮，抽样）② 用户画像库（会话级抽样）③ 观察视角库（轮级抽样：整体/细节、格式/内容等） |
-| Reward | 模型 judge，走 **外部 OpenAI 兼容 API**（@孙豪 提供，env 注入，见 §6） |
-| 实现进度 | 文档先行；模拟器 / 观察 agent **暂不写代码** |
+| 出题人设 | **16 个固定人设**（职业 / 偏好 / 用户画像 / 观察偏好=整体vs细节、形式vs内容），每会话**随机抽 1 个**，会话内保持一致 |
+| 防模式坍缩 | ① 模拟轮数压小（follow-up 1–3 轮，抽样）② 16 人设会话级随机 ③ winner 状态逐轮演化（同人设每轮看到的报告不同） |
+| Reward | 模型 judge，走 **外部 OpenAI 兼容 API**（@孙豪 提供，env 注入，见 §6）；**以观察报告为评分证据**，判分 prompt 暂空 |
+| 实现进度 | 文档先行；三 agent **暂不写代码** |
 
 ---
 
@@ -63,64 +65,92 @@ $$\Pr\big[\phi(q_{k+1})(e_k) = \text{true}\big] < 1$$
                                        q2..qK 运行时由模拟用户生成
 ```
 
-- 丢弃发生在**数据加载层**，原始 jsonl 不动（真实 follow-up 保留备查，亦是 O2 画像/视角库归纳的原料，见 §10.1）。
-- 设计含义：**真实数据贡献"用户会发起什么任务"的分布；模拟器贡献"用户看到结果后会怎么跟进"的分布**。前者难合成（真实意图分布），后者难预录（依赖随机执行结果）——按各自比较优势分工。
+- 丢弃发生在**数据加载层**，原始 jsonl 不动（真实 follow-up 保留备查，亦是 O2 归纳 16 人设的原料，见 §10.1）。
+- 设计含义：**真实数据贡献"用户会发起什么任务"的分布；出题 agent 贡献"用户看到结果后会怎么跟进"的分布**。前者难合成（真实意图分布），后者难预录（依赖随机执行结果）——按各自比较优势分工。
 
-### 3.2 运行时：模拟器插在 winner-sync 边界
+### 3.2 运行时：三 agent 协作的会话流水线
 
-嵌入 `SessionSandboxPool` 会话循环（`rollout/session_pool.py`），插入点 = `sync_to_winner` 之后：
+嵌入 `SessionSandboxPool` 会话循环（`rollout/session_pool.py`），插入点 = `sync_to_winner` 之后。每个 query 边界由**观察 → 出题 / 奖励**两步构成：
 
 ```text
-母版 → 派生 8 槽（位级同起点）
+母版 → 派生 8 槽（位级同起点）；会话开始随机抽 1 个出题人设 p ∈ {16}
   │
-  ├─ q1（真实种子）: 8 路并行 rollout → reward → winner → sync 8 槽
+  ├─ q1（真实种子）: 8 路并行 rollout → 选 winner → sync 8 槽
   │
-  ├─ 【模拟用户 agent】 U_sim(persona, lens_t, H_t, Obs(winner))   ← 新增环节
-  │       → 产出 q2 文本，或 <end_session>
+  ├─ 【观察 agent】（无人设）                                  ← 新增环节①
+  │     读 actor(winner) 输出 → 判断本任务要收集什么
+  │     （尤其中间结果 + 最终结果）→ 产出客观状态报告 R_t
+  │        │
+  │        ├──→ 【奖励模型】 reward(R_t, 轨迹, 判分准则)        ← 新增环节②（评分）
+  │        │
+  │        └──→ 【出题 agent】（人设 p） q_{t+1}(R_t, H_t)      ← 新增环节③（出题）
+  │                 → 下一 query，或 <end_session>
   │
   ├─ q2: 8 路并行（同起点 = winner 状态 + winner 正史）→ winner → sync
-  │
-  ├─ 【模拟用户 agent】 → q3 或 <end_session>
   │
   └─ ≤ K_max 轮后 destroy_all（母版不回写，规则 2 不变）
 ```
 
-形式化：第 $t$ 轮 follow-up 由
+形式化。第 $t$ 轮 winner 选定并 sync 后，先由观察 agent 产出报告
 
-$$q_{t+1} \sim U_{\text{sim}}\big(\cdot \,\big|\, p,\; \ell_t,\; H_t,\; \mathrm{Obs}(e_t^{w})\big)$$
+$$R_t = \mathrm{Obs}\big(a_t^{w},\; e_t^{w}\big)$$
 
-生成，其中 $p$ = 用户画像（会话级抽样），$\ell_t$ = 观察视角（轮级抽样），$H_t$ = 会话正史（历代 winner 消息，即现有 `session_history`），$e_t^{w}$ = 第 $t$ 轮 **winner** 的环境状态，$\mathrm{Obs}$ = 状态摘要算子。
+其中 $a_t^w$ = winner 这条 actor 轨迹的输出（观察对象由它**驱动**——actor 说"已存到 report.xlsx"，观察 agent 就去读 report.xlsx），$e_t^{w}$ = winner 沙箱环境。报告 $R_t$ **一份两用**：
 
-**前提成立性由构造保证**：$q_{t+1}$ 是在看到 $e_t^w$ 之后生成的，$\Pr[\phi(q_{t+1})(e_t^w)] \approx 1$（残余误差仅来自摘要不完整与模拟器幻觉，见 §9 风险）。
+- 评分：$r_t = \mathrm{Reward}\big(R_t,\; a_t^{w},\; \text{rubric}\big)$
+- 出题：$q_{t+1} \sim Q\big(\cdot \,\big|\, p,\; R_t,\; H_t\big)$
 
-### 3.3 为什么只观察 winner（而非 8 个槽）
+$p$ = 会话级随机人设（16 选 1），$H_t$ = 会话正史（历代 winner 消息，即现有 `session_history`）。
+
+**前提成立性由构造保证**：$q_{t+1}$ 是在观察 agent 看过 $e_t^w$ 之后生成的，$\Pr[\phi(q_{t+1})(e_t^w)] \approx 1$（残余误差仅来自观察不完整与出题 agent 幻觉，见 §9 风险）。
+
+### 3.3 三个 agent 的职责边界（核心结构）
+
+| | **观察 agent (Observer)** | **出题 agent (Questioner)** | **奖励模型 (Reward)** |
+|---|---|---|---|
+| 人设 | **无**（客观中立） | **有**（16 选 1，会话级固定） | 无（冻结 judge） |
+| 输入 | winner 的 actor 输出 + winner 沙箱 | 观察报告 $R_t$ + 会话正史 $H_t$ + 人设 $p$ | 观察报告 $R_t$ + winner 轨迹 + 判分准则 |
+| 职责 | 从 actor 输出**判断本任务要收集什么**，主动收集**中间结果 + 最终结果**，产出结构化客观报告 | 以人设视角（含观察偏好）阅读报告，模拟真实用户发起下一 query 或结束 | 依报告中的**实际产出与详细效果** + rubric 打 reward |
+| 输出 | 状态报告 $R_t$（喂给出题 + 奖励两方） | 下一 query 文本 / `<end_session>` | reward 标量（+ 附加指标） |
+| 沙箱权限 | **只读**（在存活 winner 上跑只读命令翻产物） | 无（不碰沙箱，只读报告） | 无（只读报告） |
+
+设计要点：
+
+1. **观察与立场解耦**：观察 agent 只负责"客观把证据收全"，不带任何用户偏好；偏好只发生在出题 agent 一侧（人设的观察偏好决定它**强调**报告里的哪部分）。好处：奖励模型与出题 agent 看到的是**同一份中立证据**，评分不被某个用户人设的主观视角污染。
+2. **观察由 actor 输出驱动**：不是套固定模板抓快照，而是让观察 agent 读 actor 自己的声明（"我生成了 X / 中间算出了 Y"）去定向收集——这样**中间结果**（易被后续步骤覆盖删除）也能在被丢弃前被捕获，正好接住依赖强度 C 类（§2.2）。
+3. **一次观察、两个下游**：报告 $R_t$ 同时供评分与出题，省一次重复观察，且保证"用来给分的事实"和"用来出题的事实"严格一致。
+4. **奖励落到实处**：reward 不再只读轨迹文本，而是读观察 agent 收来的**实际效果**（文件真生成了没、内容对不对），抗"嘴上说做完了"的 reward hacking。
+
+### 3.4 为什么只观察 winner（而非 8 个槽）
 
 这不仅是省成本的优化，而是**与会话语义一致性的要求**：
 
-1. **正史一致**：调度指南 §3① 已定义"会话正史 = 历代 winner 轨迹拼接"，输家轨迹不进会话谱系。模拟用户是会话中的"另一方"，它能看见的世界**只能是 winner 这条世界线**——看输家状态生成的 query 会引用不存在于正史的产物，等于重新引入前提漂移。
-2. **同起点不破坏**：q_{t+1} 的 8 槽起点 = sync 后的 winner 状态。模拟器基于该状态出题，恰好保证"题目与 8 槽共同起点匹配"，GRPO 组内比较仍然干净。
+1. **正史一致**：调度指南 §3① 已定义"会话正史 = 历代 winner 轨迹拼接"，输家轨迹不进会话谱系。出题 agent 是会话中的"另一方"，它能看见的世界**只能是 winner 这条世界线**——看输家状态生成的 query 会引用不存在于正史的产物，等于重新引入前提漂移。
+2. **同起点不破坏**：q_{t+1} 的 8 槽起点 = sync 后的 winner 状态。出题基于该状态，恰好保证"题目与 8 槽共同起点匹配"，GRPO 组内比较仍然干净。
 3. **成本**：观察 1 份而非 8 份；且 7 个输家在 sync 时即销毁，观察它们毫无用处。
 
-### 3.4 防模式坍缩：三维抽样
+### 3.5 防模式坍缩：16 人设 + 轮数压制 + 状态演化
 
-LLM 自我对话的已知失效模式是**模式坍缩**——follow-up 趋同于少数模板腔（"请再优化一下"），熵随轮数衰减。三个独立的随机化维度对抗它：
+LLM 自我对话的已知失效模式是**模式坍缩**——follow-up 趋同于少数模板腔（"请再优化一下"），熵随轮数衰减。三个机制对抗它：
 
-| 维度 | 抽样粒度 | 内容 | 作用机理 |
-|------|---------|------|---------|
-| **用户画像 $p$** | 会话级（会话内保持一致） | 身份 / 专业度 / 语气 / 耐心 / 表达风格。起步复用 `docker/sandbox/fs-seeds/` 的 3 个 persona（finance_analyst / sysops_engineer / office），与沙箱种子文件系统天然对齐（财务画像挑财务产物的刺），后续扩库 | 改变"问什么"的先验 |
-| **观察视角 $\ell_t$** | 轮级（每轮重抽） | 整体 vs 细节 / 格式 vs 内容 / 正确性 vs 偏好 / 追加需求 vs 挑错 vs 追问解释 | 同一 winner 状态在不同视角下产生不同 follow-up，制造条件分布的多样性 |
-| **轮数 $K$** | 会话级 | follow-up 轮数抽样（暂定 1–3 均匀，期望 2；非固定值），模拟器亦可提前输出 `<end_session>` 自然终止 | 截断自回归生成链——链越长越容易漂进模板腔；轮数随机化同时避免模型学到"固定在第 N 轮结束"的捷径 |
+| 机制 | 粒度 | 内容 | 作用机理 |
+|------|------|------|---------|
+| **16 人设随机** $p$ | 会话级（会话内固定） | 每个人设 = 职业 + 偏好 + 用户画像 + **观察偏好**（整体 vs 细节、形式 vs 内容）。每会话从 16 个中随机抽 1 个（见 §7 / O2）。观察偏好让同一份客观报告被不同人设**问出不同侧面** | 改变"以谁的视角问、强调结果的哪一面"的先验 |
+| **轮数 $K$ 压制** | 会话级 | follow-up 轮数抽样（暂定 1–3 均匀，期望 2；非固定值），出题 agent 亦可提前 `<end_session>` 自然终止 | 截断自回归生成链——链越长越易漂进模板腔；轮数随机化同时避免模型学到"固定第 N 轮结束"的捷径 |
+| **winner 状态逐轮演化** | 轮级（天然） | 每轮 winner 状态都被上一条 follow-up 改变，观察报告 $R_t$ 随之不同 | 即使人设固定，每轮报告不同 → 出题条件分布天然变化，不靠重抽视角 |
 
-附加机制（实现期可选）：模拟器采样温度调高；对同 batch 生成的 query 做 n-gram / embedding 去重监控（只监控告警，不在线拒绝，避免引入选择偏置，见 §8.1）。
+> **与旧版差异**：原设计把"观察视角"作为**轮级**单独抽样的维度；现版把观察偏好并入**会话级人设**（点 4 要求），轮内多样性改由 winner 状态演化（机制三）提供。这样观察 agent 保持无人设、客观，视角偏好只存在于出题 agent 一侧。
 
-### 3.5 与现有训练链路的耦合（全部在已有轨道内）
+附加机制（实现期可选）：出题 agent 采样温度调高；对同 batch 生成的 query 做 n-gram / embedding 去重监控（只监控告警，不在线拒绝，避免引入选择偏置，见 §8.1）。
+
+### 3.6 与现有训练链路的耦合（全部在已有轨道内）
 
 | 模块 | 影响 |
 |------|------|
-| GRPO / winner-sync | **零改动**。模拟器只是 query 边界上多了一个"出题人"，8 路同起点性质不变 |
-| 会话正史 | 复用 `session_history` 机制；模拟器生成的 query 以 user 消息身份进正史 |
+| GRPO / winner-sync | **零改动**。三 agent 只在 query 边界工作，8 路同起点性质不变 |
+| 会话正史 | 复用 `session_history` 机制；出题 agent 生成的 query 以 user 消息身份进正史 |
 | 入桶 | 不变。per-query 入桶 + `<task_domain>` 标签（`SandboxRollout.md` §5.5），生成 query 同样适用，同会话不同桶合法 |
-| Reward | q1 可保留 convert 时提取的静态 checker；生成 follow-up **只能走模型 judge**（无预录 ground truth），见 §6 |
+| Reward | q1 可保留 convert 时提取的静态 checker；生成 follow-up **只能走模型 judge**（无预录 ground truth），且以观察报告为证据，见 §6 |
 | batch 换算（Gap F） | 每会话 query 数 = $1 + K$，$K$ 为随机变量 → `gen_batch_size` 换算用 $\mathbb{E}[1+K]$（K~U{1..3} 时期望 3 条/会话） |
 | 母版 / 会话销毁 | 不变（规则 2：会话结束销毁、不回写母版） |
 
@@ -132,39 +162,41 @@ LLM 自我对话的已知失效模式是**模式坍缩**——follow-up 趋同�
 |--|---------------------|--------------|--------------------------|
 | B 类 follow-up（挑刺/修改） | 前提随机失效 | 失效时只能丢弃 → B 类覆盖率低 | 看结果后生成，前提由构造成立 |
 | 数据复用率 | 整会话绑定 | 截断浪费尾部 | 一条种子可重复 rollout 出**不同**会话（每次 winner 不同 → follow-up 不同），数据增益 |
-| 真实分布保真 | 全真实但前提错位 | 同左 | **首轮全真实**；follow-up 分布由 persona/lens 库控制（保真度风险见 §9） |
-| 对抗策略漂移 | 模型变强 → "挑错"类 query 前提成立率持续下降 | 同左（截断率上升） | 模拟器始终对**当前策略的实际输出**挑刺 → 难度自适应跟随策略演化（curriculum 效应） |
+| 真实分布保真 | 全真实但前提错位 | 同左 | **首轮全真实**；follow-up 分布由 16 人设库控制（保真度风险见 §9） |
+| 对抗策略漂移 | 模型变强 → "挑错"类 query 前提成立率持续下降 | 同左（截断率上升） | 出题 agent 始终对观察 agent 报告的**当前策略实际输出**挑刺 → 难度自适应跟随策略演化（curriculum 效应） |
 
-最后一行值得在论文里单独强调：在线模拟器构成一个**弱对抗的自适应课程**——策略越强，残留缺陷越细微，模拟器挑出的刺也越细，follow-up 难度自动跟随能力前沿，无需人工设计难度调度。
+最后一行值得在论文里单独强调：在线出题构成一个**弱对抗的自适应课程**——策略越强，残留缺陷越细微，出题 agent 挑出的刺也越细，follow-up 难度自动跟随能力前沿，无需人工设计难度调度。
 
 ---
 
 ## 5. 会话构造算法（伪代码，论文 Algorithm 1 底稿）
 
 ```text
-Algorithm 1: User-Sim Session Rollout（单会话）
-输入: 种子 q1（真实回流）、母版 M、画像库 P、视角库 L、K_max
- 1:  p ~ P；K ~ U{1..K_max}                    # 会话级抽样
- 2:  slots ← spawn(M, 8)                       # 位级同起点
+Algorithm 1: User-Sim Session Rollout（单会话，三 agent）
+输入: 种子 q1（真实回流）、母版 M、16 人设库 P、K_max
+ 1:  p ~ P；K ~ U{1..K_max}                       # 会话级抽样（出题人设 + 轮数）
+ 2:  slots ← spawn(M, 8)                          # 位级同起点
  3:  H ← []；q ← q1
  4:  for t = 1, 2, ... do
- 5:      T ← parallel_rollout(slots, q, H)      # 8 条轨迹
- 6:      r ← judge(T)（+ t=1 时静态 checker）    # §6
- 7:      w ← select_winner_with_fallback(r)     # 含同分/全失败兜底
- 8:      buffer ← T（全部 8 条，per-query 入桶）
- 9:      if w = None: continue/终止（沿用现行兜底）
-10:      sync_to_winner(w)；H ← H ∥ T[w].messages
-11:      if t > K: break
-12:      ℓ_t ~ L                                # 轮级视角
-13:      q ← U_sim(p, ℓ_t, H, Obs(slots.winner)) # 只观察 winner
-14:      if winner 全失败/无产物:                 # 兜底（决策 #10）
+ 5:      T ← parallel_rollout(slots, q, H)         # 8 条轨迹
+ 6:      w ← select_winner_with_fallback(T)        # 先按已有 reward 选 winner（含兜底）
+ 7:      if w = None: buffer←T; continue/终止       # 沿用现行 scorer-error 兜底
+ 8:      sync_to_winner(w)；H ← H ∥ T[w].messages
+ 9:      R_t ← Observer(actor=T[w], sandbox=winner) # 观察 agent：客观报告（中间+最终结果）
+10:      r ← Reward(R_t, T[w], rubric)              # 奖励模型：以报告为证据打分（§6）
+11:      buffer ← T（全部 8 条，per-query 入桶；winner 用 r）
+12:      if t > K: break
+13:      q ← Questioner(p, R_t, H)                  # 出题 agent：人设视角生成下一 query
+14:      if winner 全失败/无产物:                    # 兜底（决策 #10）
 15:          q ← 随机{抱怨要求重做, <end_session>}
 16:          if 累计抱怨次数 > 3: q ← <end_session>   # 防崩溃循环
 17:      if q = <end_session>: break
-18:  destroy_all()                              # 母版不回写
+18:  destroy_all()                                 # 母版不回写
 ```
 
-与现行 `run_session`（`session_pool.py`）的差异只有 11–17 行：循环驱动从"遍历静态 queries 列表"变成"模拟器决定下一条 / 终止"。
+> 说明：第 6 行选 winner 仍用现有 reward（q1 用静态 checker / 已有 judge）；第 9–10 行的"观察→奖励"链是新增的、面向**生成 follow-up**的评分路径。两者关系待实现时统一（见 §6：observer 报告是否回灌 winner 选择）。
+
+与现行 `run_session`（`session_pool.py`）的差异在 9–17 行：新增观察 agent（9）、报告驱动的奖励（10）与出题（13），循环驱动从"遍历静态 queries 列表"变成"出题 agent 决定下一条 / 终止"。
 
 ---
 
@@ -184,8 +216,10 @@ export JUDGE_API_KEY=<key>                     # 同上
 - **一致率校准照旧**：外部 judge 同样要过 `scripts/calibrate_judge.py` 的人工一致率门（Gap A 决策门不变）。
 - 评分对象差异：
   - **q1（真实种子）**：静态 checker（convert 时提取）+ judge 混合，按现行 Gap A 设计；
-  - **生成 follow-up**：无预录 ground truth，**纯 judge**——rubric 即模拟器发出的 query 本身（"用户这条要求是否被落实"），judge 输入 = (follow-up query, winner 同步后的会话上下文, 本轮轨迹, 沙箱产物摘要)。
-- ⚠️ **同模型耦合风险**：若模拟器后续也复用同一个外部 API（同一模型既出题又阅卷），存在自我偏好（self-preference）偏置。实现模拟器时优先考虑出题/阅卷用不同模型，或至少 prompt 角色隔离 + env 分离配置（§7.4）。
+  - **生成 follow-up**：无预录 ground truth，**纯 judge**，且**以观察 agent 报告 $R_t$ 为评分证据**——judge 输入 = (follow-up query, 会话正史 $H_t$, winner 轨迹 $a_t^w$, **观察报告 $R_t$**, 判分准则)。报告里的"实际产出与详细效果"让 judge 据实判分，而非只看 actor 嘴上声明（抗 reward hacking，对应 §3.3 要点 4）。
+- **判分 prompt（rubric）暂空**：评分准则的具体 prompt 模板**先留空**（O4），实现时再定（是否沿用 ClawEval 的 $s_{safety}\times(0.8 s_{completion}+0.2 s_{robustness})$、输入裁剪 token 预算等）。`JudgeClient` 接口不变，只是 prompt 体后填。
+- **待实现统一**：winner 选择（Algorithm 1 第 6 行，用已有 reward）与 follow-up 评分（第 10 行，用观察报告）目前是两条路径。是否让观察报告也回灌 winner 选择（即第 6 行也走 observer-grounded reward）留待实现时定。
+- ⚠️ **同模型耦合风险**：观察 / 出题 / 奖励三方若复用同一外部 API（同一模型既观察、又出题、又阅卷），存在自我偏好（self-preference）偏置。优先**异模型或异 endpoint**，至少 prompt 角色隔离 + env 分离配置（§7.5）。
 
 > 截至本文写作，外部 API 的具体地址/模型/key 尚未入库（仓库与历史会话中均未找到）。**待 @孙豪 提供后填入运行环境**（env 注入，密钥不进 git，与 `tencent.env` 同等待遇）。
 
@@ -193,7 +227,7 @@ export JUDGE_API_KEY=<key>                     # 同上
 
 ## 7. 接口契约（暂不实现，施工时按此对齐）
 
-> 本节是后续补码的施工边界。**当前迭代不写模拟器与观察 agent 的任何代码。**
+> 本节是后续补码的施工边界。**当前迭代不写观察 / 出题 / 奖励三 agent 的任何代码。**三方边界见 §3.3。
 
 ### 7.1 数据 schema（`datasets/queries.jsonl` 加载层）
 
@@ -201,44 +235,73 @@ export JUDGE_API_KEY=<key>                     # 同上
 {
   "session_id": "...",
   "queries": ["q1 真实", "q2 真实(加载时丢弃)", "..."],
-  "persona": "finance_analyst | null（null 则运行时从画像库抽）",
   "max_followups": 3
 }
 ```
 
-加载层只取 `queries[0]`；保留原始字段备查（不删原始数据）。
+加载层只取 `queries[0]`；保留原始字段备查（不删原始数据）。**注意**：出题人设**不来自数据**，而是运行时从 16 人设库随机抽（见 §7.5）——数据侧不再带 `persona` 字段。
 
-### 7.2 模拟器协议（Python Protocol，纯接口）
+### 7.2 观察报告（三 agent 共享的中间数据结构）
 
-```python
-class UserSimulator(Protocol):
-    def next_query(
-        self,
-        persona: str,            # 会话级画像
-        lens: str,               # 本轮观察视角
-        session_history: list[dict],   # 正史（历代 winner 消息）
-        winner_obs: "WinnerObservation",
-    ) -> str | None: ...         # None == <end_session>
-```
-
-### 7.3 winner 观察摘要（固定 digest，首版不给模拟器工具权限）
+观察 agent 的输出，**同时**喂给出题 agent 与奖励模型（§3.3 要点 3）。客观、无人设：
 
 ```python
 @dataclass
-class WinnerObservation:
-    file_tree: str           # winner 沙箱 workspace 文件树（深度截断）
-    artifacts: list[dict]    # 主要产物: {path, kind, content_excerpt(截断)}
-    last_response: str       # winner 本轮最终回复
-    checker_results: dict    # 本轮 checker 结果（若有）
+class ObservationReport:
+    intermediate: list[dict]   # 中间结果: {desc, source(命令/文件), value_excerpt}（由 actor 输出驱动收集）
+    final: list[dict]          # 最终交付物: {path, kind, content_excerpt}
+    actor_claims: str          # actor 在 winner 轨迹里声明了"做了什么"（观察的线索来源）
+    discrepancies: str         # 声明 vs 实际的差异（供奖励模型抗 hacking；可空）
+    file_tree: str             # winner workspace 文件树（深度截断，兜底）
 ```
 
-采集时机与 `run_checkers` 相同（sync 后、在存活 winner 实例上跑只读命令）。"给模拟器只读工具权限自己翻沙箱"作为升级路径记录，digest 不够用（前提成立率掉，见 §8）时再启用。
+采集时机与 `run_checkers` 相同（sync 后、在存活 winner 实例上跑只读命令）。**与旧"固定 digest"的区别**：不再是套死模板抓快照，而是观察 agent 读 `actor_claims` 后**定向**收集（尤其中间结果，易被后续步骤覆盖）。具体只读命令集 / 截断预算 = O6（留空，实现时定）。
 
-### 7.4 `SessionSandboxPool` 改动点（届时）
+### 7.3 观察 agent 协议（Observer，无人设）
 
-- `run_session(queries, agent_fn)` 旁增 `run_simulated_session(seed_query, agent_fn, simulator, ...)`（Algorithm 1 的 11–17 行）；现行静态入口保留（兼容/调试用）。
-- 画像库 / 视角库：`rollout/user_sim_profiles.py`（纯数据表 + 抽样函数，与 verl 解耦，可单测）。
-- 模拟器后端：复用 `JudgeClient` 同款 OpenAI 兼容 HTTP 封装，模型从 `USERSIM_API_BASE`/`USERSIM_MODEL` env 解析（与 judge 隔离配置，即使初期填同一地址）。
+```python
+class Observer(Protocol):
+    def observe(
+        self,
+        actor_trajectory: list[dict],   # winner 这条 actor 的输出（驱动观察）
+        sandbox: "ReadOnlySandbox",      # 只读权限的存活 winner 实例
+    ) -> ObservationReport: ...
+```
+
+### 7.4 出题 agent 协议（Questioner，有人设）
+
+```python
+class Questioner(Protocol):
+    def next_query(
+        self,
+        persona: "Persona",              # 会话级随机人设（16 选 1）
+        report: ObservationReport,       # 观察 agent 的报告（不直接碰沙箱）
+        session_history: list[dict],     # 正史（历代 winner 消息）
+    ) -> str | None: ...                 # None == <end_session>
+```
+
+奖励模型沿用 `trainer/model_reward.py` 的 `JudgeClient`，新增入参把 `ObservationReport` 拼进 judge prompt（prompt 体 = O4，留空）。
+
+### 7.5 16 人设库 + agent 后端配置（届时）
+
+- 人设库：`rollout/user_sim_personas.py`（16 条纯数据 + 随机抽样函数，与 verl 解耦，可单测）。每条字段：
+
+```python
+@dataclass
+class Persona:
+    name: str
+    profession: str       # 职业
+    preference: str       # 偏好（关注点 / 容忍度）
+    profile: str          # 用户画像（专业度 / 语气 / 耐心）
+    observation_focus: str  # 观察偏好: 整体|细节 × 形式|内容（决定它强调报告的哪部分）
+```
+
+  - 具体 16 条内容 = O2（延后；起步可从 `docker/sandbox/fs-seeds/` 3 persona 扩到 16）。**观察 agent 无人设，不进此库。**
+- `SessionSandboxPool`：`run_session(queries, agent_fn)` 旁增 `run_simulated_session(seed_query, agent_fn, observer, questioner, reward, persona, ...)`（Algorithm 1 的 9–17 行）；现行静态入口保留（兼容/调试用）。
+- agent 后端：三方均复用 `JudgeClient` 同款 OpenAI 兼容 HTTP 封装，**各自独立 env**，便于异模型/异 endpoint 隔离（抗 self-preference，§6）：
+  - 观察：`OBSERVER_API_BASE` / `OBSERVER_MODEL`
+  - 出题：`USERSIM_API_BASE` / `USERSIM_MODEL`
+  - 奖励：`JUDGE_API_BASE` / `JUDGE_MODEL`（现有）
 
 ---
 
@@ -251,10 +314,11 @@ class WinnerObservation:
 | 指标 | 定义 | 检测什么 |
 |------|------|---------|
 | 生成 query 多样性 | distinct-n / 批内 embedding 平均成对距离 | 模式坍缩（早期预警） |
-| 前提成立率 | 抽样人工/judge 审计：follow-up 引用的事实在 winner 状态中存在的比例 | 模拟器幻觉（§9 残余风险） |
-| follow-up 类型分布 | 挑错 / 追加 / 追问解释 的占比随训练步演化 | 视角抽样是否实际生效 |
+| 前提成立率 | 抽样人工/judge 审计：follow-up 引用的事实在观察报告中存在的比例 | 出题 agent 幻觉（§9 残余风险） |
+| 观察报告 vs 实际差异率 | `discrepancies` 非空的比例 | 观察 agent 漏收 / actor 虚报 |
+| follow-up 类型分布 | 挑错 / 追加 / 追问解释 的占比随训练步演化 | 16 人设是否实际产生多样性 |
 | follow-up 组内 reward std | 生成 query 上 GRPO 组内标准差 | 题目是否仍有区分度（std→0 = 太易/太难） |
-| 桶分布漂移 | 生成 query 的 `<task_domain>` 分布 vs 种子分布 | 模拟器是否把会话拖向少数领域 |
+| 桶分布漂移 | 生成 query 的 `<task_domain>` 分布 vs 种子分布 | 出题 agent 是否把会话拖向少数领域 |
 
 ### 8.2 端到端
 
@@ -266,12 +330,12 @@ ClawEval **Multi-turn split（38 任务）**为主要终点指标（方案直接
 
 | 风险 | 说明 | 缓解 |
 |------|------|------|
-| follow-up 分布失真 | 模拟器分布 ≠ 真实用户 follow-up 分布，训练目标有系统偏移 | 首轮保持全真实锚点；persona/lens 库从真实回流 follow-up 中归纳（构建库时用真实数据，运行时不用） |
-| 模拟器幻觉 | digest 不完整 → 模拟器引用不存在的细节，前提漂移以小概率回归 | 前提成立率审计（§8.1）；digest 覆盖主要产物全文摘录 |
-| 出题/阅卷耦合 | 同模型自我偏好 | env 隔离配置（§7.4），优先异模型 |
-| Expert-iteration 偏置 | winner-sync 已知偏置（调度指南 §3②）：模型学不到"从自己的烂摊子恢复"；模拟器只看 winner 会强化它 | 与现行方案同等接受；若多轮容错差，改 softmax 抽样 sync 目标（既有预案） |
-| q1 全失败边界 | winner 也无产物时模拟器看到空状态 | **已拍板（决策 #10）**：随机二选一——顺势抱怨（要求重做，真实用户行为）或 `<end_session>`；**抱怨重做累计 ≤ 3 次/会话**，超限强制结束，防全失败循环把会话拖垮 |
-| 模拟器调用延迟 | 每 query 边界多一次 LLM 调用，串行计入会话尾延迟 | 16 会话并行天然摊薄；digest 截断控制输入长度 |
+| follow-up 分布失真 | 16 人设分布 ≠ 真实用户 follow-up 分布，训练目标有系统偏移 | 首轮保持全真实锚点；16 人设从真实回流 follow-up 中归纳（构建库时用真实数据，运行时不用） |
+| 出题 agent 幻觉 | 观察报告不完整 → 出题 agent 引用不存在的细节，前提漂移以小概率回归 | 观察由 actor 输出驱动定向收集（§3.3 要点 2）；前提成立率 + 差异率审计（§8.1） |
+| 三 agent 同模型耦合 | 观察/出题/阅卷同模型自我偏好 | 各自独立 env（§7.5），优先异模型/异 endpoint |
+| Expert-iteration 偏置 | winner-sync 已知偏置（调度指南 §3②）：模型学不到"从自己的烂摊子恢复"；三 agent 只看 winner 会强化它 | 与现行方案同等接受；若多轮容错差，改 softmax 抽样 sync 目标（既有预案） |
+| q1 全失败边界 | winner 也无产物时观察报告近乎为空 | **已拍板（决策 #10）**：随机二选一——出题 agent 顺势抱怨（要求重做，真实用户行为）或 `<end_session>`；**抱怨重做累计 ≤ 3 次/会话**，超限强制结束，防全失败循环把会话拖垮 |
+| 多 agent 调用延迟 | 每 query 边界多 观察+出题+奖励 三次 LLM 调用，串行计入会话尾延迟 | 16 会话并行天然摊薄；观察报告截断控制下游输入长度；观察一次两用省一次 |
 
 ---
 
@@ -281,25 +345,29 @@ ClawEval **Multi-turn split（38 任务）**为主要终点指标（方案直接
 |---|------|------|------|
 | 1 | 多轮 follow-up 来源 | 真实数据只留 q1，其余在线生成（放弃静态 follow-up 主路径，原始数据留存备查） | 2026-06-11 |
 | 2 | 观察范围 | 只观察 winner（正史一致性 + 成本） | 2026-06-11 |
-| 3 | 防坍缩 | 轮数压小（1–3 抽样）+ 画像库（会话级）+ 视角库（轮级） | 2026-06-11 |
+| 3 | 防坍缩 | 轮数压小（1–3 抽样）+ ~~画像库（会话级）+ 视角库（轮级）~~ → **修订见 #11** | 2026-06-11 |
 | 4 | Reward | @孙豪 提供的外部 OpenAI 兼容 API；机制走现有 `JudgeClient` env 注入；本地 vLLM 降级为 fallback；**API 地址待提供** | 2026-06-11 |
-| 5 | 实现节奏 | 文档先行；模拟器/观察 agent 代码暂缓，按 §7 契约后补 | 2026-06-11 |
-| 6 | 观察接口首版 | 固定 digest（非工具自主观察），只读工具观察作升级路径 | 2026-06-11 |
+| 5 | 实现节奏 | 文档先行；三 agent 代码暂缓，按 §7 契约后补 | 2026-06-11 |
+| 6 | 观察接口 | ~~固定 digest~~ → **修订见 #12**：升级为**观察 agent**（主动、由 actor 输出驱动收集） | 2026-06-11 |
 | 7 | **不增设消融实验** | 20 实验已饱和；有效性靠过程监控（§8.1）+ ClawEval Multi-turn 终点指标 | 2026-06-11 |
 | 8 | 出题侧安全 | 不在本方案内建设——已有专门 gate 覆盖（O5 关闭） | 2026-06-11 |
 | 9 | 种子筛选 + 单/多轮配比 | 划归**数据侧（@吴健）**，本仓库只消费（O1 移交） | 2026-06-11 |
 | 10 | q1 全失败兜底 | **随机二选一**：顺势抱怨（要求重做）或 `<end_session>`；抱怨重做**累计 ≤ 3 次/会话**，超限强制结束（防崩溃循环）。注意：抱怨轮**不计入** K 的 follow-up 配额（K 只数正常 follow-up），但计入会话总轮数硬上限 | 2026-06-11 |
+| 11 | **拆为三 agent 架构** | 观察 agent（无人设，从 actor 输出判断收集什么，产出客观报告）→ 同报告喂给出题 agent（有人设，出下一 query）+ 奖励模型（按报告+rubric 打分）。详见 §3.2/§3.3 | 2026-06-12 |
+| 12 | 观察升级为 agent | 由"固定 digest"升级为**主动观察 agent**：读 actor 声明定向收集中间+最终结果（O6 重定义为观察 agent 设计） | 2026-06-12 |
+| 13 | 出题人设 = 16 固定随机 | 16 个人设（职业/偏好/画像/观察偏好），每会话随机抽 1 个、会话内固定；观察偏好并入人设（取代原轮级视角抽样）。**观察 agent 无人设** | 2026-06-12 |
+| 14 | 奖励以观察报告为证据 | reward = f(观察报告, 轨迹, rubric)；据实际产出/效果判分抗 hacking；**判分 prompt 暂空**（O4） | 2026-06-12 |
 
-### 10.1 待设计清单（2026-06-11 @孙豪 已分流）
+### 10.1 待设计清单
 
 | # | 待设计项 | 说明 | 归属 / 状态 |
 |---|---------|------|------------|
 | O1 | 种子筛选标准 + 单/多轮配比 | "可追问性"过滤规则 + 多轮会话与单轮 query 的训练数据配比 | **数据侧（@吴健）负责**；本仓库只消费产出（schema 见 §7.1），Gap B 转换时对接 |
-| O2 | 画像库 / 视角库的具体条目 | persona 条目数、字段 schema、从真实回流 follow-up 归纳的流程 | **延后**，模拟器实现前再做；起步可先用 3 个 fs-seed persona |
-| O3 | 模拟器 prompt 模板 | 出题 system prompt：persona/lens 注入、`<end_session>` 触发、防"AI 腔" | **留空**（2026-06-11 @孙豪：暂不设计，实现时再定） |
-| O4 | follow-up 评分 rubric（judge 的评分细则：按什么标准判"用户要求被落实"） | judge 阅卷 prompt：输入裁剪 token 预算、评分维度是否沿用 ClawEval 公式 | **留空**（同上） |
+| O2 | **16 人设库的具体条目** | 16 条 persona 内容（字段 schema 见 §7.5），从真实回流 follow-up 归纳 | **延后**，出题 agent 实现前再做；起步可从 3 个 fs-seed persona 扩到 16 |
+| O3 | 出题 agent prompt 模板 | 出题 system prompt：人设 + 观察报告注入、`<end_session>` 触发、防"AI 腔" | **留空**（实现时再定） |
+| O4 | 奖励判分 rubric prompt | judge 阅卷 prompt：观察报告 + 轨迹的输入裁剪、评分维度是否沿用 ClawEval 公式 | **留空**（实现时再定） |
 | ~~O5~~ | ~~生成 query 的安全过滤~~ | **不需要**：已有专门 gate 覆盖出题侧安全（2026-06-11 @孙豪 确认），本方案不重复建设 | 已关闭 |
-| O6 | digest 采集细则（喂给模拟器的 winner 状态摘要的生成规则） | 只读命令集、file_tree 深度、产物类型摘录规则、token 预算 | **留空**（同上） |
+| O6 | **观察 agent 设计 + 采集细则** | 观察 system prompt、只读命令集、中间结果识别与捕获、file_tree 深度、token 预算 | **留空**（实现时再定） |
 | ~~O7~~ | ~~q1 全失败兜底拍板~~ | **已拍板**：随机抱怨/结束 + 抱怨 ≤ 3 次/会话，见决策 #10 | 已关闭 |
 
 ---
@@ -311,5 +379,5 @@ ClawEval **Multi-turn split（38 任务）**为主要终点指标（方案直接
 | `Sandbox_管理调度指南.md` | winner-sync / 正史 / 兜底规则——本方案的插入骨架 |
 | `SandboxRollout.md` §5.5 | per-query 入桶契约——生成 query 沿用 |
 | `Plan_训练链路补齐.md` Gap A | judge reward 决策门——外部 API 同样适用 |
-| `Sandbox_Agent架构.md` | persona / fs-seeds——画像库的初始来源 |
+| `Sandbox_Agent架构.md` | persona / fs-seeds——16 人设库的初始来源 |
 | `CL_Update_Sunhao.md` | CL Loss / 实验路线——本方案产出的轨迹按原路线入桶训练 |
