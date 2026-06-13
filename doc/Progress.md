@@ -40,13 +40,13 @@
 
 ---
 
-## 20 实验状态
+## 21 实验状态
 
 | Phase | 实验 | 配置 | 训练 | 评测 |
 |-------|------|------|------|------|
 | 1 | B1 | `configs/phase1/b1.yaml` | 未跑 | 未跑 |
 | 2 | K1–K5, K2-R | `configs/phase2/` | 未跑 | 未跑 |
-| 3 | R0, R3–R6, R4-w, R4-K | `configs/phase3/` | 未跑 | 未跑 |
+| 3 | R0-10k, R0-25k, R3–R6, R4-w, R4-K | `configs/phase3/` | 未跑 | 未跑 |
 | 4 | C1–C4 | `configs/phase4/` | 未跑 | 未跑 |
 | 5 | S1, S2 | `configs/phase5/` | 未跑 | 未跑 |
 | 6 | X* | 按需 | — | — |

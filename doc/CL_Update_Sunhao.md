@@ -297,7 +297,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
    │
    ├── Phase 2 (K1-K5, K2-R)             KL 单独验证 → top-2 KL 配置
    │
-   └── Phase 3 (R0, R3, R4, R5, R4-w, R6, R4-K)   Replay 单独验证 → top-2 Replay 配置
+   └── Phase 3 (R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K)   Replay 单独验证 → top-2 Replay 配置
            │
            └── Phase 4 (C1-C4)            KL × Replay 组合验证 → 最优 CL 配置
                    │
@@ -306,7 +306,8 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
                            └── Phase 6 (X1-X7)  按需探索
 ```
 
-实验总数：**B 系列 1 + K 系列 6 + R 系列 7 + C 系列 4 + S 系列 2 = 20 个独立训练**。Phase 6 X 系列按需触发。
+实验总数：**B 系列 1 + K 系列 6 + R 系列 8 + C 系列 4 + S 系列 2 = 21 个独立训练**。Phase 6 X 系列按需触发。
+（R 系列 8 = R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K；R0 拆两档隔离"容量 vs 桶结构"。）
 
 ---
 
@@ -316,10 +317,10 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 |---|---|---|
 | Phase 1 | 1 | B1 |
 | Phase 2 | 6 | K1-K5, K2-R |
-| Phase 3 | 7 | R0, R3, R4, R5, R4-w, R6, R4-K |
+| Phase 3 | 8 | R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K |
 | Phase 4 | 4 | C1-C4 |
 | Phase 5 | 2 | S1, S2 |
-| **核心总计** | **20** | |
+| **核心总计** | **21** | |
 | Phase 6 | 0~7 | X1-X7，按需触发 |
 
 **成本估算**（单实验 ~16 GPU-day on 8×H100, ~100 step）：
@@ -371,11 +372,12 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 **验证目标**：桶结构和 priority 是否真有价值（vs CLEAR 单 buffer）？Replay 在有 KL 时是否仍有效？
 
-**Buffer 容量约定**：CLEAR baseline (R0) 沿用原论文 **10k** 配置；其他实验统一 **25k**。
+**Buffer 容量约定**：7 桶方案统一 **25k**，桶容量不作超参（固定值，不进消融）。CLEAR baseline 单独测两档容量 **10k（原论文）/ 25k（与 7 桶对齐）**，以隔离"容量 vs 桶结构"两个因素。
 
 | 编号 | $\lambda_2$ | $\lambda_3$ | Buffer | 采样策略 | 角色 |
 |---|---|---|---|---|---|
-| R0 | 0 | 0.5 | 10k | 单 buffer + reservoir + 均匀 | CLEAR baseline，简单方案下限 |
+| R0-10k | 0 | 0.5 | 10k | 单 buffer + reservoir + 均匀 | CLEAR baseline（原论文 10k），简单方案下限 |
+| R0-25k | 0 | 0.5 | 25k | 单 buffer + reservoir + 均匀 | CLEAR + 25k 容量（vs R0-10k 看容量、vs R3 看桶结构） |
 | R3 | 0 | 0.5 | 25k | 两级采样（quota + 均匀混合） | BucketDesign 基础版（vs R0） |
 | R4 | 0 | 0.5 | 25k | 两级采样 + 抗遗忘 priority | BucketDesign 完整版（vs R3） |
 | R5 | 0 | 0.5 | 25k | 两级采样 + reward-based priority | priority 类型对照（vs R4） |
@@ -387,7 +389,8 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 | 对照轴 | 实验组 | 变化变量 | 验证目标 |
 |---|---|---|---|
-| 桶结构 vs CLEAR | R0 → R3 | 单 buffer reservoir → 两级 + 桶配额 | 桶结构在长尾分布下是否补偿稀释 |
+| 桶结构 vs CLEAR | R0-25k → R3 | 单 buffer reservoir → 两级 + 桶配额（同 25k 容量） | 桶结构在长尾分布下是否补偿稀释 |
+| Buffer 容量 | R0-10k → R0-25k | CLEAR 10k → 25k | 单纯加大容量能否替代桶结构 |
 | 是否使用 priority | R3 → R4 | 桶内均匀 → priority | 抗遗忘 priority 价值 |
 | Priority 类型 | R4 → R5 | 抗遗忘 → reward | BucketDesign 核心主张 |
 | Priority 用法 | R4 → R4-w | 仅采样（$w$ 等权）→ W2 方案（priority × U 形块权重 + clip） | Reweighted Replay 综合效果 |
@@ -396,10 +399,10 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 **BucketDesign vs CLEAR 维度对比：**
 
-| 维度 | R0（CLEAR baseline） | R3（基础版） | R4（完整版） |
+| 维度 | R0-10k（CLEAR baseline） | R3（基础版） | R4（完整版） |
 |---|---|---|---|
 | 任务边界 | task-agnostic | 7 桶分类 | 7 桶分类 |
-| Buffer 结构 | 单 buffer（10k） | 7 桶独立配额（25k） | 7 桶独立配额（25k） |
+| Buffer 结构 | 单 buffer（10k；R0-25k 为 25k） | 7 桶独立配额（25k） | 7 桶独立配额（25k） |
 | 淘汰规则 | reservoir 随机 | 桶内均匀 | 桶内 priority |
 | 采样策略 | 全 buffer 均匀 | 两级（quota + 均匀） | 两级 + priority 加权 |
 | 工程复杂度 | 极低 | 中 | 高 |

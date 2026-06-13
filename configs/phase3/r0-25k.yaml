@@ -1,6 +1,7 @@
-# Phase 3 / R0 — CLEAR baseline (单 buffer + reservoir + 均匀)
+# Phase 3 / R0-25k — CLEAR baseline (单 buffer + reservoir + 均匀), 25k 容量
 # 继承 configs/base.yaml
-# 对照轴：桶结构 vs CLEAR (R0 → R3)
+# 对照轴：buffer 容量 (R0-10k → R0-25k)，给 CLEAR 与 7 桶方案同等 25k 容量
+# 仅容量与 R0-10k 不同；q_min=total_capacity 保持纯 reservoir 语义（不触发配额淘汰）。
 
 defaults:
   - ../base
@@ -16,8 +17,8 @@ cl:
   buffer:
     enabled: true
     num_buckets: 1               # 单 buffer，无桶结构（名/数自动塌缩为 "All"）
-    total_capacity: 10000        # CLEAR 原论文 10k
-    q_min: 10000
+    total_capacity: 25000        # 与 7 桶方案对齐的 25k 容量
+    q_min: 25000                 # = total_capacity，保持纯 reservoir（永不按配额淘汰）
     eviction_type: reservoir     # CLEAR：随机丢弃（reservoir sampling）
     within_bucket_sampling: uniform  # 全 buffer 均匀采样
     priority_type: uniform       # CLEAR 不用 priority

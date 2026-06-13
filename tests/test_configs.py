@@ -1,4 +1,4 @@
-"""Validate all 20 experiment configs load and follow the verl Hydra schema.
+"""Validate all 21 experiment configs load and follow the verl Hydra schema.
 
 These checks are framework-agnostic (no verl import): they assert that our
 CL overlay yamls (a) inherit base.yaml cleanly, (b) place actor/model fields
@@ -19,8 +19,9 @@ CONFIG_ROOT = Path(__file__).resolve().parents[1] / "configs"
 EXPERIMENT_CONFIGS = sorted(CONFIG_ROOT.glob("phase*/*.yaml"))
 
 
-def test_found_all_twenty_configs():
-    assert len(EXPERIMENT_CONFIGS) == 20, [p.name for p in EXPERIMENT_CONFIGS]
+def test_found_all_experiment_configs():
+    # 21 = B1 + K(6) + R(8: R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K) + C(4) + S(2)
+    assert len(EXPERIMENT_CONFIGS) == 21, [p.name for p in EXPERIMENT_CONFIGS]
 
 
 @pytest.mark.parametrize("cfg_path", EXPERIMENT_CONFIGS, ids=lambda p: p.stem)

@@ -215,7 +215,7 @@ agentic_cl_research/
 │   ├── base.yaml                        # 共享配置（模型、rollout、entropy_coeff=0.001）
 │   ├── phase1/b1.yaml                   # Phase 1 baseline
 │   ├── phase2/k1..k5.yaml, k2-r.yaml   # Phase 2 KL 系列
-│   ├── phase3/r0..r6.yaml, r4-k.yaml   # Phase 3 Replay 系列
+│   ├── phase3/r0-10k.yaml, r0-25k.yaml, r3..r6.yaml, r4-w.yaml, r4-k.yaml  # Phase 3 Replay 系列
 │   ├── phase4/c1..c4.yaml              # Phase 4 组合
 │   ├── phase5/s1.yaml, s2.yaml         # Phase 5 rollout 规模
 │   └── phase6/                          # Phase 6 按需探索

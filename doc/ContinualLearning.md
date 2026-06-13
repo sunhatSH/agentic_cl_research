@@ -208,7 +208,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
    │
    ├── Phase 2 (K1-K5, K2-R)             KL 单独验证 → top-2 KL 配置
    │
-   └── Phase 3 (R0, R3, R4, R5, R4-w, R6, R4-K)   Replay 单独验证 → top-2 Replay 配置
+   └── Phase 3 (R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K)   Replay 单独验证 → top-2 Replay 配置
            │
            └── Phase 4 (C1-C4)            KL × Replay 组合验证 → 最优 CL 配置
                    │
@@ -217,7 +217,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
                            └── Phase 6 (X1-X7)  按需探索
 ```
 
-实验总数：**B 系列 1 + K 系列 6 + R 系列 7 + C 系列 4 + S 系列 2 = 20 个独立训练**。Phase 6 X 系列按需触发。
+实验总数：**B 系列 1 + K 系列 6 + R 系列 8 + C 系列 4 + S 系列 2 = 21 个独立训练**。Phase 6 X 系列按需触发。
 
 ---
 
@@ -227,10 +227,10 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 |---|---|---|
 | Phase 1 | 1 | B1 |
 | Phase 2 | 6 | K1-K5, K2-R |
-| Phase 3 | 7 | R0, R3, R4, R5, R4-w, R6, R4-K |
+| Phase 3 | 8 | R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K |
 | Phase 4 | 4 | C1-C4 |
 | Phase 5 | 2 | S1, S2 |
-| **核心总计** | **20** | |
+| **核心总计** | **21** | |
 | Phase 6 | 0~7 | X1-X7，按需触发 |
 
 **成本估算**（单实验 ~16 GPU-day on 8×H100, ~100 step）：

@@ -1,4 +1,4 @@
-# Configs — 20 个 CL 消融实验
+# Configs — 21 个 CL 消融实验
 
 按 Phase 分子目录组织，每个 yaml 继承 `base.yaml` 并只 override 变化的字段。
 
@@ -16,8 +16,9 @@ configs/
 │   ├── k4.yaml            #   中 KL + pi_{t-1}
 │   ├── k5.yaml            #   强 KL + pi_{t-1}
 │   └── k2-r.yaml          #   K2 + replay (与 R4-K 对偶)
-├── phase3/                # Phase 3：Replay 单独验证 (7 runs)
-│   ├── r0.yaml            #   CLEAR baseline (单 buffer 10k)
+├── phase3/                # Phase 3：Replay 单独验证 (8 runs)
+│   ├── r0-10k.yaml         #   CLEAR baseline (单 buffer 10k, 原论文)
+│   ├── r0-25k.yaml         #   CLEAR + 25k 容量 (隔离容量 vs 桶结构)
 │   ├── r3.yaml            #   BucketDesign 基础版
 │   ├── r4.yaml            #   BucketDesign 完整版 (+ priority)
 │   ├── r5.yaml            #   reward-based priority 对照

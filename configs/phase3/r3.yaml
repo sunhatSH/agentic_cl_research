@@ -15,8 +15,7 @@ cl:
   buffer:
     enabled: true
     num_buckets: 7
-    total_capacity: 25000
-    q_min: 2000
+    # total_capacity / q_min 统一由 base.yaml 定 (25000 / 2000)，桶容量不作超参
     priority_type: uniform       # 无 priority：淘汰/采样均退化为桶内均匀
   weighting:
     scheme: W2                   # gamma=delta=1 即均权（token 权重不引入 priority 维度）
