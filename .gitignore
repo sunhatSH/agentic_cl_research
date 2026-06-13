@@ -47,6 +47,9 @@ buffer_dumps/
 # Datasets (raw sessions + generated queries; large, regenerated, not source)
 datasets/
 
+# Runtime collected data (mock rollouts + warm-start buffers; regenerated, not source)
+data/
+
 # Tencent / CCR local credentials (never commit)
 docker/sandbox/tencent.env
 docker/sandbox/image.env

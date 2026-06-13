@@ -76,7 +76,7 @@ def build_buffer(cfg):
     else:
         priority = Priority()
 
-    return BucketReplayBuffer(
+    buffer = BucketReplayBuffer(
         num_buckets=int(bcfg.get("num_buckets", 7)),
         total_capacity=int(bcfg.get("total_capacity", 25000)),
         q_min=int(bcfg.get("q_min", 2000)),
@@ -87,6 +87,36 @@ def build_buffer(cfg):
         eviction_type=bcfg.get("eviction_type", "priority"),
         within_bucket_sampling=bcfg.get("within_bucket_sampling", "priority"),
         seed=bcfg.get("seed", None),
+    )
+
+    _preload_warmup(buffer, bcfg.get("warmup_path", None))
+    return buffer
+
+
+def _preload_warmup(buffer, warmup_path) -> None:
+    """Warm-start the buffer from a sqlite snapshot (CL cold-start).
+
+    ``BucketReplayBuffer.load`` restores trajectories + counters only; the
+    buffer's config (capacity / bucket_names / soft_target) stays as constructed
+    here, so a warmup dumped with a different capacity does not override the
+    experiment's quota. A non-empty ``warmup_path`` that does not exist is a hard
+    error -- a mis-set path should fail loud, not silently start empty.
+    """
+    if not warmup_path:
+        return
+    path = Path(str(warmup_path))
+    if not path.exists():
+        raise FileNotFoundError(
+            f"cl.buffer.warmup_path={path} does not exist; "
+            "dump one with scripts/warmup_buffer.py or set it to null."
+        )
+    buffer.load(path)
+    stats = buffer.stats()
+    dist = {b: v["size"] for b, v in stats["per_bucket"].items()}
+    print(
+        f"[cl] warm-started buffer from {path}: "
+        f"{stats['total_size']} trajectories, per-bucket={dist}",
+        flush=True,
     )
 
 

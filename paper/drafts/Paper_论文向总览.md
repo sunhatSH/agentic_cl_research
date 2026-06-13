@@ -40,6 +40,8 @@
 | C4 | **沙箱 winner-sync 会话调度**：组内 8 槽位级一致，保证 advantage 只反映策略差异 | §6 |
 | C5 | **模拟用户在线生成多轮 query**（观察/出题/奖励三 agent）：根除静态多轮数据的前提漂移，构成弱对抗自适应课程 | §7 |
 
+> **数据归属边界（实现说明）**：本工作的输入仅为 **query 种子**（每会话首条真实 query，由数据侧 @吴健 提供）；**多轮后续 query 的在线生成、rollout 轨迹采集、以及最终入桶/训练消费的 rollout 数据结构，均为本系统（C4/C5）的产出**——"信号产出"这一半从 query 种子开始、到结构化轨迹结束，都在本工作范围内。冷启动采集阶段先跑 C5 的 **observer + questioner 子集（不含奖励模型、不做 GRPO 组，单 query 单 rollout）**，产出单轨迹多轮数据；完整训练态再启用奖励与 8 槽 winner-sync。详见 `doc/RolloutCollect_技术报告.md`。
+
 ### 1.3 与已有工作的关系（一句话定位）
 
 RFT 天然比 SFT 抗遗忘（B2/C1），但**仍会遗忘**；CLEAR（A2）证明 task-agnostic 下朴素经验回放即可大幅缓解遗忘，是我们的 baseline（R0）。我们在其上叠加 **能力分桶 + 抗遗忘优先级 + 块级重加权**，并把整套放进**真实多轮 agentic** 场景（含工具、沙箱、用户模拟），这是与既有 continual-RL 文献（多在玩具/GUI 环境，C1–C3）的关键区别。完整文献见 [`CL_Update_Sunhao.md` § 参考文献](../../doc/CL_Update_Sunhao.md#参考文献)（A/B/C/D 四组）。
@@ -218,6 +220,8 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 | 方法·7 桶 Buffer 论证 | [`BucketDesign.md`](../../doc/BucketDesign.md)（+ `_compressed` 速查） |
 | 方法·环境/调度 | [`Sandbox_管理调度指南.md`](../../doc/Sandbox_管理调度指南.md)、[`SandboxRollout.md`](../../doc/SandboxRollout.md)、[`Sandbox_Agent架构.md`](../../doc/Sandbox_Agent架构.md) |
 | 方法·多轮数据 | [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md) |
+| **方法·三 agent 论文摘要** | [`Paper_ThreeAgent_Summary_CN.md`](Paper_ThreeAgent_Summary_CN.md) |
+| **方法·三 agent 技术设计** | [`UserSim_三Agent架构与技术设计.md`](../../doc/UserSim_三Agent架构与技术设计.md) |
 | 实验·评测 | [`ClawEval_Metadata.md`](../../doc/ClawEval_Metadata.md) |
 | 系统·落地 | [`VerlIntegration.md`](../../doc/VerlIntegration.md)、[`Plan_训练链路补齐.md`](../../doc/Plan_训练链路补齐.md) |
 | 协作总览 / 进度 | [`ContinualLearning.md`](../../doc/ContinualLearning.md)、[`Progress.md`](../../doc/Progress.md) |

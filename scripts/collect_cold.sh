@@ -67,7 +67,7 @@ if [[ -z "${VLLM_PY:-}" ]]; then
 fi
 VLLM_PY="${VLLM_PY:-python}"   # last-resort fallback
 COLLECT_PY="${COLLECT_PY:-$VLLM_PY}"
-OUT="${OUT:-$ROOT_DIR/logs/cold/buffer.sqlite}"
+OUT="${OUT:-$ROOT_DIR/data/mock/buffer_dumps/cold_buffer.sqlite}"  # mock 产物，与正式隔离
 
 # transformers must recognize Qwen3.6-27B's `qwen3_5` arch. Old image transformers
 # don't -> we install a new one into a SHARED-FS dir (persists across Pods) and

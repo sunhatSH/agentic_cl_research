@@ -1,7 +1,7 @@
 # 模拟用户在线生成多轮 Query（User-Sim Session Construction）
 
 > **定位**：多轮训练数据的构造方案——真实回流数据只保留会话首条 query 作种子，后续 query 由**三个协作 agent**（观察 / 出题 / 奖励）在 rollout 运行时、观察 winner 状态后在线生成与评分。
-> **状态**：设计已定稿，**三 agent 代码暂不实现**（接口契约见 §7，后续按契约补齐）。
+> **状态**：设计已定稿；三 agent 代码已落盘 `agents/`（2026-06-12）。**速查**：论文向 [`Paper_ThreeAgent_Summary_CN.md`](../paper/drafts/Paper_ThreeAgent_Summary_CN.md)；技术汇报向 [`UserSim_三Agent架构与技术设计.md`](UserSim_三Agent架构与技术设计.md)。
 > 调度机制见 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)；reward 见 `trainer/model_reward.py` 与本文 §6。
 
 **写作日期**：2026-06-11（@孙豪 方案定稿）；2026-06-12 升级为观察/出题/奖励三 agent 架构

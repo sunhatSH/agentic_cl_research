@@ -90,6 +90,11 @@ cl:
   forgetting_update_freq: 1       # recompute current-policy logprobs -> activate forgetting_risk
   buffer:
     enabled: false                # B1 / K* phases keep this false
+    warmup_path: null             # optional sqlite snapshot (scripts/warmup_buffer.py)
+                                  # to preload before training (CL cold-start, so
+                                  # L_replay has old experience from step 0).
+                                  # null/empty = start empty. Missing file is a
+                                  # hard error (mis-set path should fail loud).
     num_buckets: 7
     total_capacity: 25000
     q_min: 2000
