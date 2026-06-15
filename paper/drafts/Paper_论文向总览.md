@@ -17,7 +17,7 @@
 3. **U 形块权重的 Reweighted Replay**，按动作块给 replay token 赋权，首尾重、中间轻；
 4. **沙箱 rollout + winner-sync 会话调度 + 模拟用户在线生成多轮 query**，从源头保证组内 advantage 不被环境噪声污染、并根除静态多轮数据的"前提漂移"。
 
-我们在 **Qwen3.6-27B** 上以 64 卡（40 推理 + 24 训练，Fully Async）部署，用 **ClawEval**（Pass³）量化遗忘与新任务习得，设计了 **20 个受控消融实验**逐项验证每个组件的边际贡献。
+我们在 **Qwen3.6-27B** 上以 64 卡（40 推理 + 24 训练，Fully Async）部署，用 **ClawEval**（Pass³）量化遗忘与新任务习得，设计了 **21 个受控消融实验**逐项验证每个组件的边际贡献。
 
 ---
 
@@ -169,7 +169,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 
 **ClawEval**（300 任务，3 split：General 161 / Multimodal 101 / Multi-turn 38；当前用纯文本 195）。评分 $score = s_{safety}\times(0.8\cdot s_{completion}+0.2\cdot s_{robustness})$，**Pass³**（三次独立运行全过）。Reward 与评测同构（模型 judge），保证 reward/eval 一致。评测元数据见 [`ClawEval_Metadata.md`](../../doc/ClawEval_Metadata.md)。
 
-### 8.2 20 个受控消融（逐组件验证）
+### 8.2 21 个受控消融（逐组件验证）
 
 ```
 Phase 1 (B1)                            纯 RL 遗忘下界
