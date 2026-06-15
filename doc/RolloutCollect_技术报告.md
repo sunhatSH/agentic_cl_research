@@ -51,7 +51,7 @@ actor（被采集策略）有两套并跑，**数据严格分目录**：
 session = {
   record_id:          str          # 来自种子数据的 join key
   seed_query:         str          # q1，真实回流种子（吴健 query 的首条）
-  persona:            str          # 会话级随机人设（16 选 1）
+  persona:            str          # 会话级随机人设（42 选 1）
   num_turns:          int
   ended_by:           str          # k_budget | end_session | agent_error
   generated_queries:  list[str]    # questioner 在线生成的后续 query（本系统产出）

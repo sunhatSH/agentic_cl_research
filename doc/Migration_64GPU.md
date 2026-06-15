@@ -10,7 +10,7 @@
 
 ## 1. 一句话目的
 
-把已经写完、在 CPU + 单卡通过 207 单测的 **Continual-Learning-over-Agentic-LLM**
+把已经写完、在 CPU + 单卡通过约 200 单测的 **Continual-Learning-over-Agentic-LLM**
 训练栈（CL Loss + 7 桶 Replay Buffer + verl 0.8.0 无侵入注入），搬到 64 卡机器上
 **首次跑通全栈 1–2 step smoke**，然后按 Phase 1→6 路线产出 20 个实验与论文数据。
 
@@ -20,8 +20,8 @@
 
 | 维度 | 状态 |
 |------|------|
-| 代码 | **全部完成**。`replay_buffer/` + `trainer/` + `configs/`(20 yaml) + `eval/` + 5 篇 `skills/` |
-| 测试 | **207 passed / 1 skipped**（唯一 skip = 全栈 GPU smoke，标 `@pytest.mark.gpu`，需多卡） |
+| 代码 | **全部完成**。`replay_buffer/` + `trainer/` + `configs/`(21 yaml) + `eval/` + 5 篇 `skills/` |
+| 测试 | **约 200 测试函数 / 30 文件**（以集群最近一次 `pytest` 实跑为准；唯一 skip = 全栈 GPU smoke，标 `@pytest.mark.gpu`，需多卡） |
 | 论文证据钩子 | 完成：buffer 动态日志 + `forgetting_risk` 回填 + 周期 `buffer.dump`（`trainer/replay_metrics.py`） |
 | 唯一阻塞 | **GPU 集群形态联调**：见 §4 待办；细节在 `Progress.md` 的「verl 集成验证清单」 |
 
@@ -45,7 +45,7 @@ cd <repo>/agentic_cl_research && git status && git log --oneline -5
 nvidia-smi -L            # 期望 64 张
 .venv/bin/python --version   # 期望 CPython 3.10.x；没有则 pip install -e ".[dev]" 重建
 
-# 3. 跑非 GPU 回归，确认搬迁未破坏（期望 207 passed / 1 skipped）
+# 3. 跑非 GPU 回归，确认搬迁未破坏（期望约 200 passed / 1 skipped）
 .venv/bin/python -m pytest -q
 
 # 4. 跑 GPU 标记测试（单卡即可，验证 torch/verl/CUDA 正常）
@@ -161,6 +161,6 @@ ruff check . && black --check .
 
 - [ ] **先 `git add` + commit + push 到 `upstream/dev_train`**（运行时产物 ckpts/wandb/logs/.venv/datasets 已 gitignore，不会误提交）
 - [x] `doc/Progress.md`、本文、`doc/RunLog.md` 已落盘
-- [x] 207 passed / 1 skipped 基线已知（新机器复现这个数即「未搬坏」）
+- [x] 约 200 passed / 1 skipped 基线（新机器实跑此数即「未搬坏」；以集群实跑为准）
 
 > 新 session 的第一条 RunLog 应是：「在 64 卡机器 `git pull` 后复现 `pytest -q` 结果」。

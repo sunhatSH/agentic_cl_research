@@ -115,7 +115,7 @@ bash scripts/validate_sandbox_dockerfile.sh       # 校验镜像 Dockerfile 快�
 │   collect.py        — 轨迹采集：框架原生字段（非 proxy）     │
 │ agents/  （UserSim 三 agent，与 verl 解耦，可 mock 单测）    │
 │   observer.py       — 观察 agent（无人设，客观状态报告）    │
-│   questioner.py     — 出题 agent（16 人设）+ 耐心机制        │
+│   questioner.py     — 出题 agent（42 人设）+ 耐心机制        │
 │   reward.py         — observation-grounded reward（复用 judge）│
 │   personas.py / prompts.py / schema.py / base.py            │
 │ inference/ — 单步生成边界（VerlRolloutGenerateFn / HTTP）    │
@@ -209,7 +209,7 @@ agentic_cl_research/
 | `doc/Sandbox_Agent架构.md` 等 `Sandbox_*.md` | OpenClaw agent harness + 腾讯沙箱管理/调度/冒烟手册 | rollout 落地手册 |
 | `doc/UserSim_多轮Query在线生成.md` | 多轮 query 在线生成（三 agent + 双参人设耐心机制） | 数据获取方案 |
 | `doc/UserSim_三Agent架构与技术设计.md` | observer/questioner/reward 三 agent 架构与接口契约 | UserSim 实现规格 |
-| `doc/UserSim_人设库.md` | 16 个 Questioner 人设权威表 + 设计轴（观察偏好/耐心两轴）+ 配置指引 | 人设参考 |
+| `doc/UserSim_人设库.md` | 42 个 Questioner 人设表 + 设计轴（观察偏好/耐心/语气） | 人设参考 |
 | `doc/ColdRollout_采集.md` | 冷启动多轮 rollout 采集运行手册（1 query=1 rollout，无奖励，observer+questioner） | 采集运行手册 |
 | `doc/RolloutCollect_技术报告.md` | 冷启动采集系统设计/实现/验证 + rollout 数据结构定义 | 采集系统报告 |
 | `doc/Buffer_冷启动数据需求.md` | replay buffer 冷启动预热的数据规格与需求 | 预热数据规格 |

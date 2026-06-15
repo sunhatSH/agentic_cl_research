@@ -149,17 +149,17 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 | agent | 人设 | 职责 |
 |-------|------|------|
 | **观察 agent** | 无（客观） | 从 actor 输出判断要收集什么，主动收集中间+最终结果，产出客观报告 $R_t$ |
-| **出题 agent** | 有（16 选 1，会话级随机） | 以人设视角读 $R_t$，模拟真实用户出下一 query |
+| **出题 agent** | 有（42 选 1，会话级随机） | 以人设视角读 $R_t$，模拟真实用户出下一 query |
 | **奖励模型** | 无（冻结 judge） | 以 $R_t$ 中实际产出/效果 + rubric 打 reward |
 
 报告 $R_t$ **一份两用**（喂出题 + 喂奖励），保证给分与出题的事实一致；reward 落到实际效果上、抗"嘴上说做完了"的 hacking。
 
 - **只观察 winner**：与"会话正史 = winner 轨迹拼接"自洽。
-- **防模式坍缩**：16 人设会话级随机（含观察偏好：整体/细节、形式/内容）+ 轮数压小（1–3）+ winner 状态逐轮演化。
+- **防模式坍缩**：42 人设会话级随机（含观察偏好：整体/细节、形式/内容）+ 轮数压小（1–3）+ winner 状态逐轮演化。
 - **自适应课程**：出题 agent 始终对当前策略的实际输出挑刺 → 策略越强、刺越细，难度自动跟随能力前沿。
 
 > 完整设计（接口契约、决策记录、风险）见 [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md)。
-> **实现状态（2026-06-12）**：三 agent 已落盘 `agents/`（observer/questioner/reward + 16 人设库 + 双轴耐心机制 `PatienceTracker`），三个 prompt（O6/O3/O4）已填（见 Method 草稿附录 A）；会话编排 `rollout/simulated_session.run_simulated_session`（Algorithm 1）已实现并以 mock 单测覆盖。三方后端各自独立 env（`OBSERVER_*`/`USERSIM_*`/`JUDGE_*`）抗 self-preference。待集群：把 `run_simulated_session` 接进 scheduler + 接 verl 原生 generate（`inference/VerlRolloutGenerateFn`）。
+> **实现状态（2026-06-12）**：三 agent 已落盘 `agents/`（observer/questioner/reward + 42 人设库 + 双轴耐心机制 `PatienceTracker`），三个 prompt（O6/O3/O4）已填（见 Method 草稿附录 A）；会话编排 `rollout/simulated_session.run_simulated_session`（Algorithm 1）已实现并以 mock 单测覆盖。三方后端各自独立 env（`OBSERVER_*`/`USERSIM_*`/`JUDGE_*`）抗 self-preference。待集群：把 `run_simulated_session` 接进 scheduler + 接 verl 原生 generate（`inference/VerlRolloutGenerateFn`）。
 
 ---
 
@@ -205,10 +205,10 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 ## 10. 局限与未决（Limitations）
 
 - **U 形 / priority 融合权重未实证调优**：$\gamma=\delta=0.88$、设计 $\alpha=(0.4,0.2,0.2,0.2)$（v1 实跑 diversity 禁用 → $(0.5,0.25,0,0.25)$）均为起步值，待 Phase 3 数据校准；短轨迹（小 $K_i$）下 U 形可能近乎消失，需更小 $\gamma$。
-- **模拟用户分布失真 / 幻觉**：16 人设分布 ≠ 真实 follow-up 分布；观察不全时前提漂移以小概率回归（靠首轮真实锚点 + 前提成立率审计缓解）。
+- **模拟用户分布失真 / 幻觉**：42 人设分布 ≠ 真实 follow-up 分布；观察不全时前提漂移以小概率回归（靠首轮真实锚点 + 前提成立率审计缓解）。
 - **winner-sync 进程态保真**：平台若只支持磁盘快照，替补槽的进程/内存态可能与 winner 不一致（头号 PoC）。
 - **judge 选型未定**：须用 ClawEval 人工 rubric 一致率校准；外部 judge API 地址待提供（reward 走 `JudgeClient` env 注入，代码零改动）。
-- **27B 成本数字待重算**；**全栈 64 卡 smoke 未跑**——Loss 链路三处接线 bug 已审计修复且纯逻辑单测通过（218 passed），但 replay 行真过 verl forward + log_probs 选回 + packing 断言不触发，仍待集群 1-step 全栈验证。`inference/VerlRolloutGenerateFn` 为占位（接 verl 原生 generate 是 Gap D）。
+- **27B 成本数字待重算**；**全栈 64 卡 smoke 未跑**——Loss 链路三处接线 bug 已审计修复且纯逻辑单测通过（约 200 测试函数），但 replay 行真过 verl forward + log_probs 选回 + packing 断言不触发，仍待集群 1-step 全栈验证。`inference/VerlRolloutGenerateFn` 为占位（接 verl 原生 generate 是 Gap D）。
 
 ---
 

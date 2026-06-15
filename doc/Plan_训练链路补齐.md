@@ -22,7 +22,7 @@
 | 20 实验 yaml | ✅ | `configs/phase1..6/`，校验测试覆盖 |
 | 沙箱连通（北京区） | ✅ | `rollout/sandbox_client.E2BSandbox`，REST + `X-Access-Token` |
 | **沙箱镜像层（agent harness）** | ✅ code | `docker/sandbox/Dockerfile`（Node24+OpenClaw+工具+persona 种子）、`bin/seed_workspace.sh`（确定性物化，已冒烟）、`agent_entry.sh`、`fs-seeds/`；待 build 验证（§Gap H） |
-| 单测基线 | ✅ | `175 passed / 1 skipped`（`.venv/bin/python -m pytest -q`） |
+| 单测基线 | ✅ | 约 200 测试函数 / 30 文件（以集群实跑为准） |
 
 **仓库规约**（实现时必须遵守）：
 
@@ -325,4 +325,4 @@ Gap E eval、Gap G 杂项：与主线并行，不阻塞 B1
 - [ ] D-2 dry-run：轨迹 → adapter → buffer → replay 采样全链路（无 GPU）
 - [ ] 集群 Hydra 组合无 `???` 残留（Phase 4/5 的待定参数除外）
 - [ ] 64 卡 1–2 step 全栈 smoke（`scripts/train.sh configs/phase1/b1.yaml`）
-- [ ] `.venv/bin/python -m pytest -q` 全量通过（≥175 passed）
+- [ ] `.venv/bin/python -m pytest -q` 全量通过（约 200 测试函数）

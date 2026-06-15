@@ -14,7 +14,7 @@
 | **插入点** | 每个 query 的 **winner 选出并 sync 之后**（`sync_to_winner` 后） |
 | **共享结构** | `ObservationReport` $R_t$ **一份两用**——Questioner 与 Reward 读同一份 |
 | **Observer** | 无人设；只读 winner 沙箱；由 actor 声明驱动收集 |
-| **Questioner** | 16 人设，**一会话抽 1 个、全程固定**；不碰沙箱 |
+| **Questioner** | 42 人设，**一会话抽 1 个、全程固定**；不碰沙箱 |
 | **Reward** | 复用 `trainer/model_reward.JudgeClient`；rubric 与 ClawEval 同构 |
 | **耐心** | `PatienceTracker`：$P_k = P_0 - d_0(2^k-1)$，失败路径 probabilistic redo |
 | **后端隔离** | `OBSERVER_*` / `USERSIM_*` / `JUDGE_*` 三套独立 env，抗 self-preference |
@@ -96,7 +96,7 @@ report = parse_observation_report(raw, fallback=...)
 | `str` | 下一条 query 文本 |
 | `None` | `<end_session>` 或 LLM 失败 |
 
-**16 人设**（`agents/personas.py`）：每人设含 `profession / preference / profile / observation_focus / patience(P0) / patience_decay(d0)`。`observation_focus` 编码「整体|细节 × 形式|内容」，决定**强调报告哪一面**——Observer 仍保持客观。
+**42 人设**（`agents/personas.json`）：每人设含 `profession / preference / profile / observation_focus / tone / patience(P0) / patience_decay(d0)`。`observation_focus` 编码「整体|细节 × 形式|内容」，决定**强调报告哪一面**——Observer 仍保持客观。
 
 **Env**：`USERSIM_API_BASE` / `USERSIM_MODEL` / `USERSIM_API_KEY`。
 
@@ -160,7 +160,8 @@ class PatienceTracker:
 ```text
 agents/
 ├── schema.py          ObservationReport, Persona
-├── personas.py        16 人设 + sample_persona()
+├── personas.json      42 人设（数据）
+├── personas.py        加载 + sample_persona()
 ├── observer.py        Observer.observe()
 ├── questioner.py      Questioner.next_query() + PatienceTracker
 ├── reward.py          score_followup() → JudgeClient
@@ -231,7 +232,7 @@ trainer/
 | 接 verl 原生 generate（`VerlRolloutGenerateFn`） | Gap D，占位 |
 | 集群 1-step 全栈 smoke | 待 64 GPU |
 | judge 与 ClawEval 人工 rubric 一致率校准 | `scripts/calibrate_judge.py` 就绪，等标注 |
-| 16 人设分布 vs 真实 follow-up 分布 | 已知局限，靠多样性机制缓解 |
+| 42 人设分布 vs 真实 follow-up 分布 | 已知局限，靠多样性机制缓解 |
 
 ---
 
