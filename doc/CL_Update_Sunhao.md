@@ -158,7 +158,14 @@ $$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket
 
 ### 冷启动处理
 
+**数据流程**：queries JSONL → `scripts/clean_queries.py`（去零宽+乱码过滤）→ `scripts/collect_cold.py`（多轮采样）→ cold buffer SQLite → `scripts/clean_buffer.py`（轨迹级清洗）→ 训练加载。
 
+1. **queries 清洗**（`data/cleaning.clean_query`）：去除零宽字符（U+2060/U+FEFF/U+00AD），乱码率超 20% 的 query 丢弃
+2. **轨迹采样**：`collect_cold.py` 用 observer + questioner 多轮构造，每条轨迹写入 BucketReplayBuffer
+3. **buffer 清洗**（`data/cleaning.clean_messages`）：逐消息去零宽 → 单消息乱码率超 20% 按策略处理（`drop_all` 丢弃整条/`drop_tail` 截断）→ 全轨迹乱码率超 5% 丢弃
+4. **训练加载**：`cl_main.py` 通过 `warmup_path` 加载清洗后的 buffer 快照（SQLite），训练启动时一次性灌入
+
+**运行时行为**：
 - Buffer 全空 → replay_ratio = 0，纯学新任务
 - 轨迹积累未达 warmup 阈值 → replay_ratio 线性爬升至目标值
 - 空桶 quota 暂不分配给其他桶，等轨迹到来时优先接纳

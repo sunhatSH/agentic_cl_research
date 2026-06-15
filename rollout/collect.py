@@ -37,6 +37,9 @@ class GenStep:
     text: str
     response_ids: list[int] = field(default_factory=list)
     logprobs: list[float] = field(default_factory=list)
+    # Actor-side usage from the API response (0 when not available).
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     # response_mask for these tokens is implicitly 1 (model-generated).
 
 
@@ -71,12 +74,23 @@ def parse_tool_call(text: str) -> tuple[str, str] | None:
     return str(obj["tool"]), str(obj["code"])
 
 
+_REACT_SYSTEM_PROMPT = (
+    "You are a coding assistant with access to a Python sandbox. "
+    "When you need to execute code, output it in this exact format:\n"
+    '<toolcall>{"tool": "python", "code": "your code here"}</toolcall>\n'
+    "The sandbox will run the code and return the output as a user message "
+    "prefixed with '[Sandbox Output]'. You can make multiple tool calls "
+    "across turns. When done, provide your final answer without <toolcall> tags."
+)
+
+
 def make_react_agent_fn(
     generate_fn: GenerateFn,
     *,
     tool_exec: ToolExec = default_tool_exec,
     max_turns: int = 6,
     default_bucket: str | None = None,
+    system_prompt: str | None = _REACT_SYSTEM_PROMPT,
 ):
     """Build an AgentFn for SessionSandboxPool that runs a native-collection ReAct loop.
 
@@ -84,6 +98,12 @@ def make_react_agent_fn(
       - generated tokens (mask=1) + their logprobs   -> trainable
       - observation tokens        (mask=0)            -> context only
     and records messages (assistant + tool) for transcript / bucket tagging.
+
+    Args:
+        system_prompt: Injected as the first system message so base models know
+            the <toolcall> format. Default: a minimal ReAct instruction. Set to
+            None to disable (for verl training where the model already knows the
+            format, or when the model's own system prompt covers tool use).
     """
 
     def agent_fn(
@@ -97,11 +117,15 @@ def make_react_agent_fn(
         # prefix; the returned trajectory records just THIS query's turns so the
         # pool can accumulate session_history without double-counting.
         prefix: list[dict[str, Any]] = list(history or [])
+        if system_prompt and not any(m.get("role") == "system" for m in prefix):
+            prefix.insert(0, {"role": "system", "content": system_prompt})
         turns: list[dict[str, Any]] = [{"role": "user", "content": query}]
         all_resp_ids: list[int] = []
         all_logprobs: list[float] = []
         response_mask: list[int] = []
         full_text_parts: list[str] = []
+        prompt_tokens_total = 0
+        completion_tokens_total = 0
 
         for _turn in range(max_turns):
             step = generate_fn(prefix + turns)
@@ -110,13 +134,19 @@ def make_react_agent_fn(
             all_logprobs.extend(step.logprobs)
             response_mask.extend([1] * len(step.response_ids))
             full_text_parts.append(step.text)
+            prompt_tokens_total += step.prompt_tokens
+            completion_tokens_total += step.completion_tokens
 
             call = parse_tool_call(step.text)
             if call is None:
                 break  # no tool call -> final answer
             tool, code = call
             obs, obs_ids = tool_exec(client, tool, code)
-            turns.append({"role": "tool", "content": obs})
+            # Use role='user' for sandbox observations (not role='tool').
+            # OpenAI-compatible APIs require that 'tool' role messages follow
+            # assistant messages with structured 'tool_calls'; our <toolcall>
+            # XML doesn't satisfy this. role='user' works universally.
+            turns.append({"role": "user", "content": f"[Sandbox Output]\n{obs}"})
             all_resp_ids.extend(obs_ids)
             all_logprobs.extend([0.0] * len(obs_ids))  # not policy tokens
             response_mask.extend([0] * len(obs_ids))    # masked out of loss
@@ -137,7 +167,8 @@ def make_react_agent_fn(
             logprobs=all_logprobs,
             bucket=bucket,
             next_state=new_state,
-            meta={"response_mask": response_mask, "num_turns": len(full_text_parts)},
+            meta={"response_mask": response_mask, "num_turns": len(full_text_parts),
+                  "prompt_tokens": prompt_tokens_total, "completion_tokens": completion_tokens_total},
         )
 
     return agent_fn
@@ -160,6 +191,8 @@ def trajectory_to_buffer_item(traj: Trajectory) -> tuple[dict[str, Any], str | N
         "original_logprobs": traj.logprobs,
         "success_rate": traj.meta.get("success_rate"),
         "num_turns": traj.meta.get("num_turns"),
+        "prompt_tokens": traj.meta.get("prompt_tokens", 0),
+        "completion_tokens": traj.meta.get("completion_tokens", 0),
     }
     return payload, traj.bucket, meta
 

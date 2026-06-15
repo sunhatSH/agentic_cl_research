@@ -109,11 +109,12 @@ cl:
       - OfficeQA
     bucket_task_counts: [54, 52, 38, 18, 12, 11, 10]
   weighting:
-    scheme: W0                    # W0 = same formula with gamma=delta=1 (flat U,
-                                  # priority retained); W2 = active U-shape.
-                                  # For truly priority-free weights use buffer.priority_type: uniform.
-    gamma: 0.88                   # first-end decay base; gamma^0=1.0 at block 0
-    delta: 0.88                   # last-end decay base;  delta^0=1.0 at block K_i (symmetric U)
+    scheme: W0                    # W0 = gamma=delta=1 (flat, priority-only).
+                                  # W2 = active U-shape (gamma=delta=0.88).
+                                  # Phase 3 R4-w is the ONLY config that uses W2;
+                                  # all earlier phases stay W0 to avoid confound.
+    gamma: 1.0                    # overridden to 1.0 by scheme=W0; 0.88 when W2
+    delta: 1.0                    # overridden to 1.0 by scheme=W0; 0.88 when W2
     segmenter: message_block      # primary: split by OpenAI chat message boundaries
                                   # fallback: equal_length when K_i==1
     # Action blocks are OpenAI chat messages, not XML tags. The dataset

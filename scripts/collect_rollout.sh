@@ -20,7 +20,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ---- config (override via env) -------------------------------------------
 MODEL_PATH="${MODEL_PATH:-/mnt/afs_toolcall/sunhao4/models/Qwen3.6-27B}"
-RAW="${RAW:-/mnt/afs_toolcall/sunhao4/datasets/juxiaolong_prefix/source/_stage_prefix_pass.jsonl}"
+QUERIES="${QUERIES:-/mnt/afs_toolcall/sunhao4/datasets/juxiaolong_prefix/queries.jsonl}"
 LIMIT="${LIMIT:-10000}"
 CONCURRENCY="${CONCURRENCY:-8}"
 BACKEND="${BACKEND:-e2b}"
@@ -82,7 +82,7 @@ run_actor() {  # $1 = local|remote
   outdir="$OUT_BASE/$actor"
   echo "[rollout.sh] === actor=$actor model=$model -> $outdir ==="
   "$PY" "$ROOT_DIR/scripts/collect_rollout.py" \
-    --raw "$RAW" --actor "$actor" --actor-base "$base" --actor-model "$model" --actor-key "$key" \
+    --queries "$QUERIES" --actor "$actor" --actor-base "$base" --actor-model "$model" --actor-key "$key" \
     --limit "$LIMIT" --backend "$BACKEND" --concurrency "$CONCURRENCY" \
     --out-dir "$outdir" 2>&1 | tee "$ROOT_DIR/logs/cold/rollout_$actor.log"
 }

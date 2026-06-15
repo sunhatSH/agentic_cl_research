@@ -87,7 +87,7 @@ Report(observer) = { intermediate, final, actor_claims, discrepancies, file_tree
 | **远程 actor + 真沙箱 + 多轮** | ✅ `limit=3 done=3 failed=0`，observer 探到真实 file_tree，questioner 生成带人设的追问 |
 | **本地 27B actor + 真沙箱 + 多轮** | ✅ `limit=2 done=2 failed=0` |
 
-**已知局限（如实记录）**：当前种子来自 `_stage_prefix_pass.jsonl`（验证用，非吴健正式 query），多为闲聊开场，actor 常不触发 `<toolcall>` → `bucket=None`、无沙箱执行动作。这是**种子质量**问题（吴健正式 query 到位后改善），非链路缺陷——沙箱/observer/questioner 经验证均正常工作。
+**已知局限（如实记录）**：当前种子来自验证用 queries JSONL（非吴健正式 query），多为闲聊开场，actor 常不触发 `<toolcall>` → `bucket=None`、无沙箱执行动作。这是**种子质量**问题（吴健正式 query 到位后改善），非链路缺陷——沙箱/observer/questioner 经验证均正常工作。
 
 ## 6. 数据隔离
 

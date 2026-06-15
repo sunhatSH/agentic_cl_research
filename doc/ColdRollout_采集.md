@@ -55,6 +55,9 @@ tokenhub（SenseTime 内网，OpenAI 兼容）：
 - `rollout/usersim_collect.py` — `run_usersim_session`：slots=1 单轨迹多轮，observer→questioner，无 winner/reward。
 - `scripts/collect_rollout.py` — 入口：抽种子→N 路并发跑 session→jsonl 落盘（每条 session = 轨迹+生成query+observer报告）。`--actor local|remote`。observer/questioner 从 env 解析，缺失 `exit 5`。
 - `scripts/collect_rollout.sh` — 启动器：source E2B 凭证→预检 3 远程模型→配 env→（local 路）起 vllm→跑两路到 `data/rollouts/{local,remote}/`。
+- `data/cleaning.py` — 文本清洗核心模块：零宽字符剥离 + 乱码检测 + 阈值过滤。`collect_rollout.py` 默认在采集时对 seed query 和轨迹消息做在线清洗（`--no-clean` 可跳过）。
+- `scripts/clean_queries.py` — 批量清洗 queries JSONL 文件（采集前预处理）。
+- `scripts/clean_buffer.py` — 批量清洗冷启动 buffer SQLite 快照（采集后后处理）。
 
 ## 6. 运行命令
 
@@ -65,6 +68,10 @@ bash scripts/collect_rollout.sh
 # 只跑远程（不占 GPU）：
 ACTORS=remote bash scripts/collect_rollout.sh
 # 小批验证：LIMIT=3 CONCURRENCY=2 ACTORS=remote bash scripts/collect_rollout.sh
+
+# 数据清洗（采集前/后各一步）
+python scripts/clean_queries.py --input datasets/queries.jsonl --output datasets/queries_clean.jsonl
+python scripts/clean_buffer.py --input logs/cold/buffer.sqlite --output logs/cold/buffer_clean.sqlite
 ```
 日志：`logs/cold/{vllm,rollout_local,rollout_remote}.log`。产物：`data/mock/rollouts/{local,remote}/rollouts_*.jsonl`。
 
@@ -85,12 +92,11 @@ ACTORS=remote bash scripts/collect_rollout.sh
 - ✅ 运行环境凑齐（vllm0.13 + torch2.9.1 + qwen3_5）。
 - ✅ **远程 actor 路 small-batch 验证通过**：`--actor remote --backend local --limit 2` → `done=2 failed=0`；产出含多轮、persona（如 "Dr. Lena the researcher"）、questioner 生成的下一轮 query、observer 5 字段报告。链路确认工作。
 - ⏳ 本地 27B actor 路 + e2b 真沙箱全量：待起 vllm 后跑（占 8 卡）。
-- ⏳ 8 机并行：`collect_rollout.py` 目前**无分片参数**，多机需补 `--node-rank/--num-nodes`（否则各机重复跑同样种子）。
+- ✅ 8 机并行：`collect_rollout.py` 已支持 `--node-rank/--num-nodes` 分片参数，各机按 rank 取不同种子子集。
 
 ## 8. 待办
 
 | # | 事项 |
 |---|------|
 | 1 | 起本地 vllm 跑 local actor 路（e2b 真沙箱，全量） |
-| 2 | 给 `collect_rollout.py` 加分片（8 机并行不重复） |
-| 3 | session 失败率监控（remote actor 限流时） |
+| 2 | session 失败率监控（remote actor 限流时） |

@@ -21,7 +21,7 @@
 #
 # Override via env:
 #   MODEL_PATH   actor weights        (default: local Qwen3.6-27B)
-#   RAW          raw seed jsonl
+#   QUERIES      queries JSONL path   (output of prepare_queries / data-filter)
 #   LIMIT        #sessions            (default 10000)
 #   GROUP_SIZE   slots per query      (default 8)
 #   ACTOR_TP     tensor-parallel size (default 8 = single 8-GPU node)
@@ -45,7 +45,7 @@ if [[ -z "${E2B_API_KEY:-}" && -f "$TENCENT_ENV" ]]; then
 fi
 
 MODEL_PATH="${MODEL_PATH:-/mnt/afs_toolcall/sunhao4/models/Qwen3.6-27B}"
-RAW="${RAW:-/mnt/afs_toolcall/sunhao4/datasets/juxiaolong_prefix/source/_stage_prefix_pass.jsonl}"
+QUERIES="${QUERIES:-/mnt/afs_toolcall/sunhao4/datasets/juxiaolong_prefix/queries.jsonl}"
 LIMIT="${LIMIT:-10000}"
 GROUP_SIZE="${GROUP_SIZE:-8}"
 BACKEND="${BACKEND:-e2b}"
@@ -55,6 +55,7 @@ SERVED_NAME="${SERVED_NAME:-cold-actor}"
 MAX_LEN="${MAX_LEN:-32768}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"
 DTYPE="${DTYPE:-bfloat16}"
+TOKENIZER="${TOKENIZER:-$MODEL_PATH}"   # tokenizer for token ID recovery from vllm logprobs
 # Pick the python that has vllm. Honor an explicit VLLM_PY; otherwise probe
 # common locations + PATH and pick the first whose `import vllm` succeeds, so
 # this works across images (modelscope py311, /opt/conda, venvs, ...).
@@ -80,11 +81,11 @@ echo "[cold.sh] python=$VLLM_PY"
 "$VLLM_PY" -c "import vllm; print('[cold.sh] vllm', vllm.__version__)" 2>/dev/null \
   || echo "[cold.sh] WARN: '$VLLM_PY' has no importable vllm -- server will likely fail"
 echo "[cold.sh] model=$MODEL_PATH tp=$ACTOR_TP port=$PORT backend=$BACKEND limit=$LIMIT"
-echo "[cold.sh] raw=$RAW out=$OUT"
+echo "[cold.sh] queries=$QUERIES out=$OUT"
 
 # --- sanity ----------------------------------------------------------------
 [[ -d "$MODEL_PATH" ]] || { echo "[cold.sh] ERROR: MODEL_PATH not found: $MODEL_PATH"; exit 2; }
-[[ -f "$RAW" ]]        || { echo "[cold.sh] ERROR: RAW not found: $RAW"; exit 2; }
+[[ -f "$QUERIES" ]]     || { echo "[cold.sh] ERROR: QUERIES not found: $QUERIES"; exit 2; }
 if [[ "$BACKEND" == "e2b" ]]; then
   [[ -n "${E2B_API_KEY:-}" && -n "${E2B_DOMAIN:-}" ]] || {
     echo "[cold.sh] ERROR: e2b backend needs E2B_API_KEY + E2B_DOMAIN in env"; exit 2; }
@@ -155,12 +156,13 @@ COLLECT_LOG="$ROOT_DIR/logs/cold/collect.log"
 echo "[cold.sh] collecting ... (progress also tee'd to $COLLECT_LOG)"
 cd "$ROOT_DIR"
 "$COLLECT_PY" scripts/collect_cold.py \
-  --raw "$RAW" \
+  --queries "$QUERIES" \
   --limit "$LIMIT" \
   --group-size "$GROUP_SIZE" \
   --backend "$BACKEND" \
   --actor-base "http://127.0.0.1:$PORT/v1" \
   --actor-model "$SERVED_NAME" \
+  --tokenizer "$TOKENIZER" \
   --out "$OUT" 2>&1 | tee "$COLLECT_LOG"
 COLLECT_RC=${PIPESTATUS[0]}   # collector's exit code, not tee's
 

@@ -134,7 +134,7 @@ reward:
 
 | | 格式 | 位置 |
 |--|------|------|
-| 输入 | OpenAI messages JSONL，10,774 条 | `datasets/_stage_prefix_pass.jsonl`（字段：`record_id`, `record.messages`, …） |
+| 输入 | Queries JSONL（`{"record_id": "...", "queries": [...]}`） | 上游 data-filter 产出 |
 | 输出 | verl `rl_dataset` 兼容 parquet | `datasets/train.parquet` / `datasets/val.parquet` |
 
 ### B.2 新建文件
@@ -168,7 +168,7 @@ data:
 
 ### B.5 验收
 
-- `python scripts/convert_dataset.py --input datasets/_stage_prefix_pass.jsonl --out-dir datasets/` 产出两个 parquet
+- `python scripts/convert_dataset.py --input datasets/queries.jsonl --out-dir datasets/` 产出两个 parquet
 - 打印统计：总数、各桶分布、checker 覆盖率
 - 单测覆盖：字段齐全、哈希切分稳定、空 messages 跳过
 

@@ -119,6 +119,8 @@ Buffer 每桶 **hard floor** `q_min = 2000`。7 桶合计：
 - `queries`：有序列表；长度 = 本会话的 query 数（见 §3 单/多 query）。
 - `checkers`：冷数据可留空；打分走 model judge（`trainer/model_reward.py`），与训练一致。
 
+**数据清洗**：queries 文件在进入采集前建议先用 `scripts/clean_queries.py` 清洗（去零宽字符 + 乱码过滤）；`collect_cold.py` / `collect_rollout.py` 默认也会在采集时对 seed query 和轨迹消息做在线清洗（`--no-clean` 可跳过）。采集完成后可用 `scripts/clean_buffer.py` 对 buffer 快照做批量后处理。详见 `data/cleaning.py`。
+
 ### 2.2 轨迹记录（进 buffer）
 
 每条 trajectory 一条记录（或嵌套在会话结果里），字段对齐 `rollout/session_pool.Trajectory` + `trainer/trajectory_adapter`：
@@ -155,7 +157,7 @@ Buffer 每桶 **hard floor** `q_min = 2000`。7 桶合计：
 
 ### 3.2 整体占比（会话条数，非轨迹数）
 
-生产用户数据 `_stage_prefix_pass` 多为长会话（平均 user 轮次高）。冷数据可适当缩短单会话 query 数，但 **类型占比** 建议：
+生产用户数据（queries JSONL）多为长会话（平均 user 轮次高）。冷数据可适当缩短单会话 query 数，但 **类型占比** 建议：
 
 | 类型 | 占冷启动 **会话** 比例 | 说明 |
 |------|------------------------|------|

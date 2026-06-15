@@ -55,9 +55,12 @@ def test_react_agent_collects_native_fields():
     assert len(mask) == len(traj.response_token_ids) == len(traj.logprobs)
     assert mask.count(0) >= 1  # at least one observation token, masked
     assert traj.bucket == "Finance"  # parsed from <task_domain>
-    # transcript has assistant + tool messages
+    # transcript has assistant + sandbox observation (user) messages
     roles = [m["role"] for m in traj.messages]
-    assert "assistant" in roles and "tool" in roles
+    assert "assistant" in roles
+    # sandbox observations use role='user' with '[Sandbox Output]' prefix
+    sandbox_msgs = [m for m in traj.messages if m["role"] == "user" and m["content"].startswith("[Sandbox Output]")]
+    assert len(sandbox_msgs) >= 1
 
 
 def test_trajectory_to_buffer_item_carries_logprobs():

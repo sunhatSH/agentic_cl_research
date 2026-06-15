@@ -32,39 +32,66 @@ from agents.base import resolve_observer_client, resolve_questioner_client
 from agents.observer import Observer
 from agents.personas import sample_persona
 from agents.questioner import Questioner
+from data.cleaning import clean_messages, clean_query
 from inference.generate import HTTPGenerateFn
 from rollout.collect import make_react_agent_fn
 from rollout.session_pool import SessionSandboxPool
 from rollout.usersim_collect import run_usersim_session
-from scripts.prepare_queries import iter_sessions, session_queries
 import random
 
 
-def iter_seeds(raw_path, limit):
+def iter_seeds(queries_path, limit):
+    """Yield (record_id, seed_query) from a queries JSONL file.
+
+    Input format: one JSON line per session, ``{"record_id": "...", "queries": ["q1", ...]}``.
+    Takes the FIRST query per session as the seed.
+    """
     n = 0
-    for obj in iter_sessions(raw_path):
-        qs = session_queries(obj.get("record", {}) or {})
-        if not qs:
-            continue
-        yield obj.get("record_id"), qs[0]
-        n += 1
-        if limit is not None and n >= limit:
-            return
+    with open(queries_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            queries = obj.get("queries") or []
+            if not queries:
+                continue
+            yield obj.get("record_id"), queries[0]
+            n += 1
+            if limit is not None and n >= limit:
+                return
 
 
-def _traj_to_dict(t):
+def _traj_to_dict(t, no_clean=False):
+    messages = t.messages
+    if not no_clean:
+        result = clean_messages(messages)
+        if result.dropped:
+            return None
+        messages = result.messages
     return {
         "trajectory_id": t.trajectory_id,
-        "messages": t.messages,
+        "messages": messages,
         "bucket": t.bucket,
         "response_token_ids": t.response_token_ids,
         "response_mask": t.meta.get("response_mask", []),
         "num_turns": t.meta.get("num_turns"),
+        "prompt_tokens": t.meta.get("prompt_tokens", 0),
+        "completion_tokens": t.meta.get("completion_tokens", 0),
     }
 
 
 def run_one_session(args, generate_fn, observer, questioner, record_id, seed, idx):
     """Run a single multi-turn session in its own sandbox. Returns a dict row."""
+    # Clean seed query before rollout.
+    if not args.no_clean:
+        cleaned = clean_query(seed)
+        if cleaned is None:
+            return None
+        seed = cleaned
     persona = sample_persona(random.Random(args.seed + idx))
     pool = SessionSandboxPool(slots=1, backend=args.backend, seed=args.seed + idx)
     agent_fn = make_react_agent_fn(generate_fn, max_turns=args.max_turns)
@@ -73,6 +100,13 @@ def run_one_session(args, generate_fn, observer, questioner, record_id, seed, id
         persona=persona, observer=observer, questioner=questioner,
         k_max=args.k_max, seed=args.seed + idx,
     )
+    trajs = []
+    for t in res.trajectories:
+        d = _traj_to_dict(t, no_clean=args.no_clean)
+        if d is not None:
+            trajs.append(d)
+    if not trajs:
+        return None
     return {
         "record_id": record_id,
         "seed_query": seed,
@@ -80,14 +114,14 @@ def run_one_session(args, generate_fn, observer, questioner, record_id, seed, id
         "num_turns": res.num_turns,
         "ended_by": res.ended_by,
         "generated_queries": res.generated_queries,
-        "trajectories": [_traj_to_dict(t) for t in res.trajectories],
+        "trajectories": trajs,
         "reports": [r.__dict__ for r in res.reports],
     }
 
 
 def main():
     ap = argparse.ArgumentParser(description="Multi-turn user-sim rollout collection (no reward).")
-    ap.add_argument("--raw", required=True)
+    ap.add_argument("--queries", required=True, help="queries JSONL path (output of prepare_queries / data-filter)")
     ap.add_argument("--actor", required=True, choices=["local", "remote"])
     ap.add_argument("--actor-base", required=True, help="actor OpenAI base (local vllm or tokenhub)")
     ap.add_argument("--actor-model", required=True)
@@ -104,6 +138,7 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--num-nodes", type=int, default=1, help="total shards (e.g. 8 nodes)")
     ap.add_argument("--node-rank", type=int, default=0, help="this shard's rank in [0,num_nodes)")
+    ap.add_argument("--no-clean", action="store_true", help="skip text cleaning (ZW strip + garble filter)")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -142,7 +177,7 @@ def main():
     print(f"[rollout] actor={args.actor} ({args.actor_model} @ {args.actor_base}) "
           f"backend={args.backend} conc={args.concurrency} -> {out_file}", flush=True)
 
-    seeds = list(iter_seeds(args.raw, args.limit))
+    seeds = list(iter_seeds(args.queries, args.limit))
     if args.num_nodes > 1:
         seeds = [s for i, s in enumerate(seeds) if i % args.num_nodes == args.node_rank]
         print(f"[rollout] shard {args.node_rank}/{args.num_nodes}: {len(seeds)} seeds", flush=True)
@@ -159,9 +194,12 @@ def main():
             rid = futs[fut]
             try:
                 row = fut.result()
-                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-                fh.flush()
-                done += 1
+                if row is None:
+                    failed += 1
+                else:
+                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    fh.flush()
+                    done += 1
             except Exception as e:  # noqa: BLE001
                 failed += 1
                 print(f"[rollout] session {rid} failed: {type(e).__name__}: {e}", flush=True)

@@ -66,12 +66,22 @@ class VerlRolloutGenerateFn:
 
 
 class HTTPGenerateFn:
-    """OpenAI-compatible single-step generate (W1 fallback, doc §3.3).
+    """OpenAI-compatible single-step generate with full actor-side data capture.
 
-    Used only when driving generation outside verl (e.g. local smoke against a
-    served policy). Returns generated text; token ids/logprobs are best-effort
-    (logprobs require the endpoint to return them). Prefer VerlRolloutGenerateFn
-    on the cluster so logprobs are native and consistent with training.
+    Designed for cold-start collection and off-cluster sampling. Captures ALL
+    data the actor produces in one generation step -- text, token IDs, logprobs,
+    and prompt/completion token counts from the ``usage`` field -- so downstream
+    consumers (buffer, metrics, weighting) have the same information they would
+    get from verl's native rollout.
+
+    When a ``tokenizer`` is provided, token text from the logprobs payload is
+    re-encoded to recover integer token IDs (vllm /chat/completions returns
+    token text + bytes but NOT token IDs). Without a tokenizer, IDs are
+    placeholder zeros but the count matches the real token count so that
+    ``response_mask`` length and ``TokenWeighting`` seq_len are correct.
+
+    Prefer VerlRolloutGenerateFn on the cluster so logprobs are native and
+    consistent with training.
     """
 
     def __init__(
@@ -80,6 +90,7 @@ class HTTPGenerateFn:
         model: str,
         api_key: str = "sk-local",
         *,
+        tokenizer: Any = None,
         temperature: float = 1.0,
         max_new_tokens: int = 1024,
         timeout: float = 120.0,
@@ -87,9 +98,39 @@ class HTTPGenerateFn:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
+        self.tokenizer = tokenizer
         self.temperature = temperature
         self.max_new_tokens = max_new_tokens
         self.timeout = timeout
+        # Accumulated actor-side stats across all calls (for logging/metrics).
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+
+    def _recover_token_ids(self, logprob_tokens: list[dict]) -> list[int]:
+        """Best-effort recover integer token IDs from the logprobs payload.
+
+        vllm returns ``{token: "Hello", logprob: ..., bytes: [...]}`` -- no
+        integer token ID. With a tokenizer we can encode each token's text back
+        to its ID. Without one we emit zeros (the count is still correct for
+        mask/weighting purposes; build_replay_rows re-tokenizes anyway).
+        """
+        if not logprob_tokens:
+            return []
+        if self.tokenizer is None:
+            return [0] * len(logprob_tokens)
+        ids: list[int] = []
+        for tok in logprob_tokens:
+            text = tok.get("token", "")
+            if not text:
+                ids.append(0)
+                continue
+            try:
+                # encode with add_special_tokens=False to get the raw token ID
+                encoded = self.tokenizer.encode(text, add_special_tokens=False)
+                ids.append(encoded[0] if encoded else 0)
+            except Exception:  # noqa: BLE001 -- degrade gracefully
+                ids.append(0)
+        return ids
 
     def __call__(self, messages: list[dict[str, Any]]) -> GenStep:
         import httpx
@@ -107,14 +148,34 @@ class HTTPGenerateFn:
             timeout=self.timeout,
         )
         resp.raise_for_status()
-        choice = resp.json()["choices"][0]
+        body = resp.json()
+        choice = body["choices"][0]
         text = choice["message"]["content"] or ""
 
-        # Best-effort token ids + logprobs from the OpenAI logprobs payload.
-        response_ids: list[int] = []
+        # --- actor-side usage stats ---
+        usage = body.get("usage") or {}
+        self.total_prompt_tokens += usage.get("prompt_tokens", 0)
+        self.total_completion_tokens += usage.get("completion_tokens", 0)
+
+        # --- token IDs + logprobs from the OpenAI logprobs payload ---
         logprobs: list[float] = []
         lp = choice.get("logprobs") or {}
-        for tok in lp.get("content", []) or []:
+        lp_tokens: list[dict] = lp.get("content") or []
+        for tok in lp_tokens:
             logprobs.append(float(tok.get("logprob", 0.0)))
-            response_ids.append(0)  # ids not exposed by chat API; placeholder
-        return GenStep(text=text, response_ids=response_ids, logprobs=logprobs)
+        response_ids = self._recover_token_ids(lp_tokens)
+
+        # When logprobs is empty (some endpoints don't return it), fall back
+        # to estimating token count from the generated text length.
+        if not response_ids and text:
+            # Use usage.completion_tokens when available for accuracy.
+            n_tokens = usage.get("completion_tokens") or max(1, len(text) // 4)
+            response_ids = [0] * n_tokens
+            logprobs = [0.0] * n_tokens
+        return GenStep(
+            text=text,
+            response_ids=response_ids,
+            logprobs=logprobs,
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+        )
