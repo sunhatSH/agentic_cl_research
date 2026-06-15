@@ -2,14 +2,14 @@
 
 Final formula (W2 main scheme, from ``doc/CL_Update_Sunhao.md``):
 
-    w_t^{(i)} = normalize( clip( priority_i * ( gamma^block(t) + delta^(K_i - block(t)) ) / 2,
+    w_t^{(i)} = normalize( clip( priority_i * ( gamma^block(t) + delta^(K_i - 1 - block(t)) ) / 2,
                                  q_5, q_95 ) )
 
 Two independent dimensions composed:
 A. Priority (trajectory-level)        -- one value per trajectory
-B. U-shaped block weight (token-level coarse) -- (gamma^block(t) + delta^(K_i - block(t))) / 2
+B. U-shaped block weight (token-level coarse) -- (gamma^block(t) + delta^(K_i - 1 - block(t))) / 2
    - First-end exponential: gamma^block(t)            (early decision points)
-   - Last-end exponential:  delta^(K_i - block(t))    (final answer + adjacent blocks)
+   - Last-end exponential:  delta^(K_i - 1 - block(t))    (final answer + adjacent blocks)
    - Middle blocks are relatively down-weighted.
    - K_i is the per-trajectory block count -- VARIES per trajectory (see below).
 
@@ -267,7 +267,7 @@ class TokenWeighting:
         parent_map: dict[int, int] | None = None,
         orig_k: int | None = None,
     ) -> list[float]:
-        """(gamma^block(t) + delta^(K_i - block(t))) / 2.
+        """(gamma^block(t) + delta^(K_i - 1 - block(t))) / 2.
 
         Division by 2 ensures gamma=delta=1 yields uniform weight 1.0 for all
         blocks (flat / equal-weight baseline W0). This makes gamma and delta

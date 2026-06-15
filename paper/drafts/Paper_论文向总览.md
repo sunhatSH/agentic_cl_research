@@ -86,7 +86,7 @@ $$L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_
 
 $$priority_i = f(\text{forgetting\_risk}_i,\ \text{rarity}_i,\ \text{diversity}_i,\ \text{within\_bucket\_difficulty}_i)$$
 
-起步融合权重 (0.4, 0.2, 0.2, 0.2)，forgetting_risk 主导。
+起步融合权重设计为 (0.4, 0.2, 0.2, 0.2)，forgetting_risk 主导。v1 实现中 diversity 信号因缺 embedding pipeline 暂禁用（权重置 0），其余三信号重归一化为 (0.5, 0.25, 0, 0.25)，仍保持 forgetting_risk 主导。
 
 ### 4.2 配额、淘汰、采样
 
@@ -107,7 +107,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 
 两维度合成：**A. trajectory 级 priority**（§4.1 四信号）× **B. token 级 U 形块权重**。
 
-- **按动作块切分**：`<think>/<toolcall>/<observation>/<final_answer>` 等结构标签划分为 $K_i$ 块（每条轨迹 $K_i$ 不同）；无法解析时回退等长切分（fallback_K=20），长块二次切分。
+- **按动作块切分**：理想按 `<think>/<toolcall>/<observation>/<final_answer>` 等结构标签划分为 $K_i$ 块（每条轨迹 $K_i$ 不同）。实测回流数据无此类 XML 标签，v1 实现改按 **message 边界**（role=assistant/tool 的对话轮）切块；仍无可切结构时回退等长切分（fallback_K=20），过长块二次切分。
 - **U 形动机（2026-06-08 反转）**：原方案是单调衰减 + final_answer 单点 boost；反转为 U 形，因为"末端的重要性不止 final_answer 一个 token 段，靠近末端的多个块（结论前总结、关键判断）都重要"，单点 boost 抓不住整段。首块=早期高方差分支决策，末块=结论生成段，中间执行细节相对降权。
 - **$\gamma=\delta=1$ 内置等权基线**：所有块权重恒为 1 → 退化为均权（W0），无需单独 scheme。Phase 3 对照 **W0（$\gamma=\delta=1$）vs W2（$\gamma=\delta=0.88$）**，唯一变量是超参值。
 - **clip 整体乘积**：极端值由 priority×块权重组合放大，必须对最终 $w_t^{(i)}$ 剪枝（非仅 priority）。
@@ -204,7 +204,7 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 
 ## 10. 局限与未决（Limitations）
 
-- **U 形 / priority 融合权重未实证调优**：$\gamma=\delta=0.88$、$\alpha=(0.4,0.2,0.2,0.2)$ 均为起步值，待 Phase 3 数据校准；短轨迹（小 $K_i$）下 U 形可能近乎消失，需更小 $\gamma$。
+- **U 形 / priority 融合权重未实证调优**：$\gamma=\delta=0.88$、设计 $\alpha=(0.4,0.2,0.2,0.2)$（v1 实跑 diversity 禁用 → $(0.5,0.25,0,0.25)$）均为起步值，待 Phase 3 数据校准；短轨迹（小 $K_i$）下 U 形可能近乎消失，需更小 $\gamma$。
 - **模拟用户分布失真 / 幻觉**：16 人设分布 ≠ 真实 follow-up 分布；观察不全时前提漂移以小概率回归（靠首轮真实锚点 + 前提成立率审计缓解）。
 - **winner-sync 进程态保真**：平台若只支持磁盘快照，替补槽的进程/内存态可能与 winner 不一致（头号 PoC）。
 - **judge 选型未定**：须用 ClawEval 人工 rubric 一致率校准；外部 judge API 地址待提供（reward 走 `JudgeClient` env 注入，代码零改动）。
