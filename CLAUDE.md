@@ -12,7 +12,7 @@ Continual Learning over Agentic LLM 的训练项目。仓库所有者：@孙豪�
 
 ### 当前阶段（交接背景，必读）
 
-代码已全部写完，在 CPU + 单卡 H800 上跑通 **170 单测**（唯一 skip = 全栈 GPU smoke，标 `@pytest.mark.gpu`）。**唯一阻塞是 64 卡集群 + 真实 Qwen3.6-27B 权重 + 数据**——全栈训练只能在多卡机器上做。
+代码已全部写完，在 CPU + 单卡 H800 上跑通 **200 单测**（唯一 skip = 全栈 GPU smoke，标 `@pytest.mark.gpu`）。**唯一阻塞是 64 卡集群 + 真实 Qwen3.6-27B 权重 + 数据**——全栈训练只能在多卡机器上做。
 
 跨机器 / 跨 session 接手时的权威顺序：
 
@@ -90,7 +90,7 @@ bash scripts/validate_sandbox_dockerfile.sh       # 校验镜像 Dockerfile 快�
 │   replay_batch.py   — driver 侧 replay batch 准备            │
 │   trajectory_adapter.py — verl rollout batch → buffer 轨迹   │
 │   domain_tagging.py — LLM 产出的 domain → 7 桶 label 路由     │
-│   model_reward.py   — LLM judge reward（默认关，用规则奖励） │
+│   model_reward.py   — LLM judge reward（外部冻结 judge，主路径）│
 │   replay_metrics.py — 论文证据钩子：buffer 动态/forgetting   │
 │   cl_rollout_manager.py — 自定义 rollout（verl 注入点，按需）│
 └──────────────────────────────────┬───────────────────────────┘
@@ -132,7 +132,7 @@ skills/                  — 可复用方法与工程规范（5 篇，见下）
 
 **关键设计约束**：`replay_buffer/` 必须与 verl 完全解耦——不 import verl、不依赖 Ray。`rollout/` 同样与 verl 解耦（`model_reward.py` 除外）。这保证 Buffer 可独立单测。
 
-**奖励 = 规则计算，不用 reward model**：`reward_model.enable` 保持 false，奖励走 `custom_reward_function`。`trainer/model_reward.py`（LLM judge）是可选路径，默认不进主路径。
+**奖励 = 外部冻结 LLM judge，不用规则奖励**：单个冻结 judge 对每条轨迹按统一尺度打分（抗 reward hacking、覆盖语义桶）。`custom_reward_function` 指向 `trainer/model_reward.py::compute_score`，judge 模型不写死、由 env 解析（`JUDGE_API_BASE` / `JUDGE_MODEL`，用 `scripts/serve_reward_model.sh` 本地 serve）。`reward_model.enable` 仍为 false——因为 judge 走**外部 serve**，不是 verl 内置 RM worker。规则 reward（旧 `rule_reward.py`）已废弃删除。
 
 ## 编码规范
 
@@ -202,7 +202,7 @@ agentic_cl_research/
 | `doc/ClawEval_Metadata.md` | ClawEval 评测数据集的任务分类、难度分布、工具能力层、模型排名 | 评测基准参考 |
 | `doc/VerlIntegration.md` | verl 集成指导：是否 fork、Replay Buffer 接入方式、推荐工程结构、风险点 | 实现路径参考 |
 | `doc/SandboxRollout.md` | 基于腾讯 Agent Runtime（E2B 兼容）的 trajectory 采集方案：每 query × M 个沙盒、snapshot fork/pause、advantage 选优胜 | rollout 工程方案 |
-| `doc/Progress.md` | 里程碑、模块完成度、20 实验状态、外部依赖阻塞、变更日志 | **进度单一来源** |
+| `doc/Progress.md` | 里程碑、模块完成度、21 实验状态、外部依赖阻塞、变更日志 | **进度单一来源** |
 | `doc/Migration_64GPU.md` | 跨机器 / 跨 session 交接：冷启动步骤、当前阻塞 | **接手必读** |
 | `doc/RunLog.md` | append-only 运行记录（smoke / 训练 / 评测 / bug） | 禁止删改历史 |
 | `doc/Plan_训练链路补齐.md` | 64 卡正式训练前残缺模块施工规格（Gap A–H） | 实现待办清单 |
@@ -257,7 +257,7 @@ $$L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_
 
 ### 实验路线
 
-Phase 1→2→4→5→6 + 独立 Phase 3，共 20 个训练，单实验 ~16 GPU-day (8×H100)。完整参数表见 `doc/CL_Update_Sunhao.md`。
+Phase 1→2→4→5→6 + 独立 Phase 3，共 21 个训练（R0 拆 10k/25k 容量消融），单实验 ~16 GPU-day (8×H100)。完整参数表见 `doc/CL_Update_Sunhao.md`。
 
 ### GPU 部署与精度
 
