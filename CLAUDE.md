@@ -208,6 +208,12 @@ agentic_cl_research/
 | `doc/Plan_训练链路补齐.md` | 64 卡正式训练前残缺模块施工规格（Gap A–H） | 实现待办清单 |
 | `doc/Sandbox_Agent架构.md` 等 `Sandbox_*.md` | OpenClaw agent harness + 腾讯沙箱管理/调度/冒烟手册 | rollout 落地手册 |
 | `doc/UserSim_多轮Query在线生成.md` | 多轮 query 在线生成（三 agent + 双参人设耐心机制） | 数据获取方案 |
+| `doc/UserSim_三Agent架构与技术设计.md` | observer/questioner/reward 三 agent 架构与接口契约 | UserSim 实现规格 |
+| `doc/ColdRollout_采集.md` | 冷启动多轮 rollout 采集运行手册（1 query=1 rollout，无奖励，observer+questioner） | 采集运行手册 |
+| `doc/RolloutCollect_技术报告.md` | 冷启动采集系统设计/实现/验证 + rollout 数据结构定义 | 采集系统报告 |
+| `doc/Buffer_冷启动数据需求.md` | replay buffer 冷启动预热的数据规格与需求 | 预热数据规格 |
+| `doc/BugLog_集群采集.md` | 集群采集 bug 库（append-only，禁删改历史） | 集群采集排障 |
+| `doc/集群推理采集_经验复盘.md` | 商汤 SenseCore 8×8 H800 上 27B 多轮采集踩坑复盘（不进论文） | 集群经验复盘 |
 | `paper/` | 论文产出独立目录：`drafts/`(Intro/Method 中英 + 总览)、`latex/`(投稿正文)、`assets/`(图)、`refs/`(.bib) | 论文产出 |
 
 阅读顺序建议：接手先读 `Migration_64GPU.md` → `Progress.md`；理解设计读 `ContinualLearning.md`（全貌）→ `CL_Update_Sunhao.md`（技术细节）→ `BucketDesign.md`（分桶论证）→ `ClawEval_Metadata.md`（评测数据）→ `VerlIntegration.md`（落地工程）。

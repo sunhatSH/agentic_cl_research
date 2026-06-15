@@ -2,7 +2,7 @@
 
 > 本文件是**交付状态**的单一来源。协作流程与分工见 [`ContinualLearning.md`](ContinualLearning.md)；技术设计见 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)。
 
-**最后更新：** 2026-06-10  
+**最后更新：** 2026-06-15  
 **当前分支：** `dev_train`  
 **verl pin：** `0.8.0`（见 `pyproject.toml`）
 
@@ -36,7 +36,7 @@
 | `eval/metrics.py` | 100% | Done |
 | `eval/run_eval.py` | 40% | 框架有，rollout / manifest 未接（manifest 接口待 P2.4 定形） |
 | `configs/` (20 yaml) | 100% | Done — 已重构为 verl Hydra key path，删除死配置 `cl_grpo` |
-| `tests/` | ~95% | 144 passed / 1 skipped（新增 replay_metrics 论文证据钩子 7 项） |
+| `tests/` | ~95% | 200 测试函数 / 30 文件（最近一次实跑约 200 passed / 1 GPU skip） |
 
 ---
 
@@ -94,6 +94,8 @@
 
 | 日期 | 事件 |
 |------|------|
+| 2026-06-15 | 多轮 user-sim 采集链路打通（`rollout/usersim_collect.py` + `scripts/collect_rollout.py`）：本地 27B + 远程 GPT 双 actor，observer+questioner 在线多轮，采集结果按 7 桶预热 replay buffer（`scripts/warmup_buffer.py`）并衔接训练。配套 [`ColdRollout_采集.md`](ColdRollout_采集.md) / [`RolloutCollect_技术报告.md`](RolloutCollect_技术报告.md)。 |
+| 2026-06-13 | 冷启动数据采集（`scripts/collect_cold.py`：本地 vllm 27B → 7 桶 replay buffer）；商汤 SenseCore 8 机×8 卡 H800 上 Qwen3.6-27B 多轮采集集群联调。新增 4 篇文档：[`ColdRollout_采集.md`](ColdRollout_采集.md)（运行手册，本阶段简化变体：1 query=1 rollout、无 GRPO/winner、无奖励，仅 observer+questioner）、[`RolloutCollect_技术报告.md`](RolloutCollect_技术报告.md)（系统设计 + rollout 数据结构定义）、[`BugLog_集群采集.md`](BugLog_集群采集.md)（集群采集 bug 库，append-only，首批 10 条）、[`集群推理采集_经验复盘.md`](集群推理采集_经验复盘.md)（踩坑复盘，不进论文）。 |
 | 2026-06-08 | 仓库骨架、设计文档迁入 `doc/` |
 | 2026-06-09 | `e29fd06` — Replay Buffer 核心、20 实验配置、52 单测 |
 | 2026-06-09 | M2 verl 集成代码：`CLTaskRunner`, buffer hooks, `doc/Progress.md` |
