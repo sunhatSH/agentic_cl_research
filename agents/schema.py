@@ -47,7 +47,7 @@ class ObservationReport:
 
 @dataclass
 class Persona:
-    """One user persona (§7.5). 16 of these live in ``agents/personas.py``.
+    """One user persona (§7.5). 42 of these live in ``agents/personas.json``.
 
     A session draws ONE persona at random and keeps it fixed for the whole
     session (§3.5). The Questioner reads it; the Observer is persona-free and
@@ -66,3 +66,6 @@ class Persona:
 
     patience_decay: float
     """Base decrement d0 (§3.6.5): how fast frustration escalates on failure."""
+
+    tone: str = "neutral"
+    """How the persona speaks (decoupled from patience): calm | neutral | hot."""

@@ -38,12 +38,14 @@ class MockChat:
 # --- personas (§3.5 / §7.5) --------------------------------------------------
 
 
-def test_persona_library_has_16():
-    assert len(PERSONAS) == 16
+def test_persona_library_is_valid():
+    assert len(PERSONAS) == 42
+    assert len({p.name for p in PERSONAS}) == len(PERSONAS)
     for p in PERSONAS:
         assert p.patience > 0
         assert p.patience_decay > 0
         assert p.observation_focus
+        assert p.tone in {"calm", "neutral", "hot"}
 
 
 def test_sample_persona_is_seeded():

@@ -1,23 +1,24 @@
-"""16 fixed user personas for the Questioner agent (doc §3.5 / §7.5 / O2).
+"""42 independent user personas for the Questioner agent (doc §3.5 / §7.5 / O2).
 
 The persona DATA lives in ``agents/personas.json`` (config decoupled from code);
-this module only loads + validates it and exposes the same public surface as
-before (``PERSONAS`` / ``sample_persona`` / ``DEFAULT_PATIENCE_DECAY``). Edit the
-JSON to add/tune personas -- no code change needed. Full reference table:
-``doc/UserSim_人设库.md``.
+this module only loads + validates it and exposes the public surface
+(``PERSONAS`` / ``sample_persona`` / ``DEFAULT_PATIENCE_DECAY``). Edit the JSON to
+add/tune personas -- no code change needed. Full reference: ``doc/UserSim_人设库.md``.
 
 A session draws ONE persona at random and keeps it fixed (session-level), which
 is one of the three anti-mode-collapse mechanisms (§3.5). Each persona carries:
   - profession / preference / profile / observation_focus  (voice + what it stresses)
+  - tone (calm|neutral|hot)                                (how it speaks, §C)
   - patience (P0) + patience_decay (d0)                    (failure path, §3.6.5)
 
-Two patience axes are deliberately decoupled (§3.6.5):
+Tone and patience are decoupled: a short-fused persona may still speak calmly.
+Two patience axes are also decoupled (§3.6.5):
   P0 = initial tolerance (willingness to give chances),
   d0 = escalation speed (temper). Retries-to-give-up ≈ log2(P0/d0).
 
-This is pure data + a seeded sampler, verl-free, unit-testable. The first three
-seed the same workspaces as docker/sandbox/fs-seeds (finance / sysops / office);
-the rest broaden coverage across the 7 capability buckets.
+This is pure data + a seeded sampler, verl-free, unit-testable. Personas span
+the 7 capability buckets; the first three seed the same workspaces as
+docker/sandbox/fs-seeds (finance / sysops / office).
 """
 
 from __future__ import annotations
@@ -44,7 +45,8 @@ def _load_personas(path: Path = _CONFIG_PATH) -> tuple[list[Persona], float]:
     """Load + validate the persona library from JSON.
 
     Returns (personas, default_patience_decay). A persona may omit
-    ``patience_decay``; it then falls back to the file-level default (§3.6.5).
+    ``patience_decay`` (falls back to file-level default, §3.6.5) and ``tone``
+    (defaults to "neutral").
     """
     with path.open(encoding="utf-8") as f:
         raw = json.load(f)
@@ -64,6 +66,7 @@ def _load_personas(path: Path = _CONFIG_PATH) -> tuple[list[Persona], float]:
                 observation_focus=entry["observation_focus"],
                 patience=float(entry["patience"]),
                 patience_decay=float(entry.get("patience_decay", default_decay)),
+                tone=entry.get("tone", "neutral"),
             )
         )
     return personas, default_decay
@@ -71,7 +74,8 @@ def _load_personas(path: Path = _CONFIG_PATH) -> tuple[list[Persona], float]:
 
 PERSONAS, DEFAULT_PATIENCE_DECAY = _load_personas()
 
-assert len(PERSONAS) == 16, "persona library must have exactly 16 entries (doc §3.5)"
+assert len(PERSONAS) >= 2, "persona library must be non-trivial (doc/UserSim_人设库.md)"
+assert len({p.name for p in PERSONAS}) == len(PERSONAS), "persona names must be unique"
 
 
 def sample_persona(rng: random.Random) -> Persona:
