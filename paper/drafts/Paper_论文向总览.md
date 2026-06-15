@@ -40,7 +40,7 @@
 | C4 | **沙箱 winner-sync 会话调度**：组内 8 槽位级一致，保证 advantage 只反映策略差异 | §6 |
 | C5 | **模拟用户在线生成多轮 query**（观察/出题/奖励三 agent）：根除静态多轮数据的前提漂移，构成弱对抗自适应课程 | §7 |
 
-> **数据归属边界（实现说明）**：本工作的输入仅为 **query 种子**（每会话首条真实 query，由数据侧 @吴健 提供）；**多轮后续 query 的在线生成、rollout 轨迹采集、以及最终入桶/训练消费的 rollout 数据结构，均为本系统（C4/C5）的产出**——"信号产出"这一半从 query 种子开始、到结构化轨迹结束，都在本工作范围内。冷启动采集阶段先跑 C5 的 **observer + questioner 子集（不含奖励模型、不做 GRPO 组，单 query 单 rollout）**，产出单轨迹多轮数据；完整训练态再启用奖励与 8 槽 winner-sync。详见 `doc/RolloutCollect_技术报告.md`。
+> **数据归属边界（实现说明）**：本工作的输入为 **query 种子 + 会话镜像**（每会话首条真实 query 及其对应沙箱镜像，由数据侧 @吴健 提供）；**多轮后续 query 的在线生成、rollout 轨迹采集、以及最终入桶/训练消费的 rollout 数据结构，均为本系统（C4/C5）的产出**——"信号产出"这一半从 query 种子开始、到结构化轨迹结束，都在本工作范围内。冷启动采集阶段先跑 C5 的 **observer + questioner 子集（不含奖励模型、不做 GRPO 组，单 query 单 rollout）**，产出单轨迹多轮数据；完整训练态再启用奖励与 8 槽 winner-sync。详见 `doc/RolloutCollect_技术报告.md`。
 
 ### 1.3 与已有工作的关系（一句话定位）
 
@@ -224,7 +224,7 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 | **方法·三 agent 技术设计** | [`UserSim_三Agent架构与技术设计.md`](../../doc/UserSim_三Agent架构与技术设计.md) |
 | 实验·评测 | [`ClawEval_Metadata.md`](../../doc/ClawEval_Metadata.md) |
 | 系统·落地 | [`VerlIntegration.md`](../../doc/VerlIntegration.md)、[`Plan_训练链路补齐.md`](../../doc/Plan_训练链路补齐.md) |
-| 协作总览 / 进度 | [`ContinualLearning.md`](../../doc/ContinualLearning.md)、[`Progress.md`](../../doc/Progress.md) |
+| 进度 | [`Progress.md`](../../doc/Progress.md) |
 | **论文主旨 + Introduction 初稿** | [`Paper_Intro_draft_CN.md`](Paper_Intro_draft_CN.md) / [`Paper_Intro_draft_EN.md`](Paper_Intro_draft_EN.md)（单主旨框架：一个核心信息 + 部件降格为手段） |
 | **论文 Method 散文初稿** | [`Paper_Method_draft_CN.md`](Paper_Method_draft_CN.md)（中文）/ [`Paper_Method_draft_EN.md`](Paper_Method_draft_EN.md)（英文投稿用） |
 

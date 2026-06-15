@@ -144,7 +144,7 @@ ruff check . && black --check .
 | 依赖 | 负责人 | 没有它会怎样 |
 |------|--------|--------------|
 | Qwen3.6-27B 真实权重 | @孙豪 配置路径 | 无法加载 actor，连 smoke 都起不来 |
-| 训练数据（含 `messages`/`bucket`/`success_rate`） | @吴健 / @郑乃榕 | buffer 入桶 & priority 信号缺失，replay 退化 |
+| 训练数据（含 `messages`/`bucket`/`success_rate` + 会话镜像） | @吴健 / @郑乃榕 | buffer 入桶 & priority 信号缺失，replay 退化 |
 | 沙盒 rollout 环境 | @郑乃榕 | 无真实 trajectory |
 | ClawEval 195 manifest | @杨益博 | 无法评测遗忘度（接口已定形，缺数据） |
 | verl 完整 Hydra defaults | @孙豪 | `validate_config` 报缺字段 |

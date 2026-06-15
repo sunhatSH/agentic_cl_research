@@ -1,5 +1,26 @@
 # Continual Learning Replay Buffer 桶结构设计
 
+## 速查
+
+> 以下为本设计的结论摘要，详细论证见后续各节。
+
+1. **按能力/领域分桶**，不按难度分桶（难度会漂移）
+2. **每桶保底配额**，防高频任务挤空低频桶
+3. **桶内淘汰**，禁止跨桶挤出
+4. **Priority 不用 reward 绝对值**（reward 整体上升会系统性淘汰旧轨迹，buffer 退化为滑动窗口）
+
+7 桶 = Workflow[54] / SysOps[52] / Dialogue[38] / Finance[18] / Communication[12] / Knowledge[11] / OfficeQA[10]（OfficeQA 单独成桶，不并入 Knowledge；不纳入 multimodal）
+
+Quota：$q_i = q_{min} + (C - B\cdot q_{min})\cdot n_i^{0.5}/\sum_j n_j^{0.5}$（25k 示例：Workflow≈4319 → OfficeQA≈2995）
+
+Priority = forgetting_risk(0.5) + rarity(0.25) + difficulty(0.25)（v1 diversity 禁用）
+
+采样：两级（采桶=比例+均匀混合 → 桶内=priority 加权随机，非 top-k）
+
+**一句话**：能力分桶保覆盖 → 保底 quota 防挤空 → 抗遗忘 priority 保质量 → 桶内淘汰防侵占 → 两级采样保有效性
+
+---
+
 ## 目标
 
 本设计的目标是在模型持续学习新任务时，尽量避免遗忘旧任务能力。由于遗忘通常表现为某一类能力整体退化，而不是单纯丢失若干高 reward 样本，因此 Replay Buffer 的设计应优先服务于“能力保持”，而不是服务于“保留历史最高 reward 轨迹”。

@@ -191,33 +191,47 @@ agentic_cl_research/
 
 ## 文档结构与关系
 
-所有设计文档位于 `doc/`（按主题分组的导航见 [`doc/README.md`](doc/README.md)）：
+所有设计文档位于 `doc/`（三级索引见 [`doc/README.md`](doc/README.md)）：
 
-| 文件 | 内容 | 定位 |
-|------|------|------|
-| `doc/CL_Update_Sunhao.md` | CL 总设计：Loss 公式、Replay Buffer、实验路线、评测指标、参考文献 | **主文档**，其他文档的上下文依赖 |
-| `doc/BucketDesign.md` | Replay Buffer 7 桶结构的详细论证（为什么这样分桶、为什么不用难度分桶、quota 推导过程） | `CL_Update_Sunhao.md` 中 Replay Buffer 部分的完整展开 |
-| `doc/BucketDesign_compressed.md` | `BucketDesign.md` 的精简版，仅保留结论和公式 | 快速查阅版 |
-| `doc/ContinualLearning.md` | CL Loop 全流程概述：数据获取、更新策略、工具环境、评测 | 多人协作总览，各模块负责人分工 |
-| `doc/ClawEval_Metadata.md` | ClawEval 评测数据集的任务分类、难度分布、工具能力层、模型排名 | 评测基准参考 |
-| `doc/VerlIntegration.md` | verl 集成指导：是否 fork、Replay Buffer 接入方式、推荐工程结构、风险点 | 实现路径参考 |
-| `doc/SandboxRollout.md` | 基于腾讯 Agent Runtime（E2B 兼容）的 trajectory 采集方案：每 query × M 个沙盒、snapshot fork/pause、advantage 选优胜 | rollout 工程方案 |
-| `doc/Progress.md` | 里程碑、模块完成度、21 实验状态、外部依赖阻塞、变更日志 | **进度单一来源** |
-| `doc/Migration_64GPU.md` | 跨机器 / 跨 session 交接：冷启动步骤、当前阻塞 | **接手必读** |
-| `doc/RunLog.md` | append-only 运行记录（smoke / 训练 / 评测 / bug） | 禁止删改历史 |
-| `doc/Plan_训练链路补齐.md` | 64 卡正式训练前残缺模块施工规格（Gap A–H） | 实现待办清单 |
-| `doc/Sandbox_Agent架构.md` 等 `Sandbox_*.md` | OpenClaw agent harness + 腾讯沙箱管理/调度/冒烟手册 | rollout 落地手册 |
-| `doc/UserSim_多轮Query在线生成.md` | 多轮 query 在线生成（三 agent + 双参人设耐心机制） | 数据获取方案 |
-| `doc/UserSim_三Agent架构与技术设计.md` | observer/questioner/reward 三 agent 架构与接口契约 | UserSim 实现规格 |
-| `doc/UserSim_人设库.md` | 42 个 Questioner 人设表 + 设计轴（观察偏好/耐心/语气） | 人设参考 |
-| `doc/ColdRollout_采集.md` | 冷启动多轮 rollout 采集运行手册（1 query=1 rollout，无奖励，observer+questioner） | 采集运行手册 |
-| `doc/RolloutCollect_技术报告.md` | 冷启动采集系统设计/实现/验证 + rollout 数据结构定义 | 采集系统报告 |
-| `doc/Buffer_冷启动数据需求.md` | replay buffer 冷启动预热的数据规格与需求 | 预热数据规格 |
-| `doc/BugLog_集群采集.md` | 集群采集 bug 库（append-only，禁删改历史） | 集群采集排障 |
-| `doc/集群推理采集_经验复盘.md` | 商汤 SenseCore 8×8 H800 上 27B 多轮采集踩坑复盘（不进论文） | 集群经验复盘 |
-| `paper/` | 论文产出独立目录：`drafts/`(Intro/Method 中英 + 总览)、`latex/`(投稿正文)、`assets/`(图)、`refs/`(.bib) | 论文产出 |
+**① 信源（论文与代码的上游依据，长期维护）**
 
-阅读顺序建议：接手先读 `Migration_64GPU.md` → `Progress.md`；理解设计读 `ContinualLearning.md`（全貌）→ `CL_Update_Sunhao.md`（技术细节）→ `BucketDesign.md`（分桶论证）→ `ClawEval_Metadata.md`（评测数据）→ `VerlIntegration.md`（落地工程）。
+| 文件 | 内容 |
+|------|------|
+| `doc/CL_Update_Sunhao.md` | **主文档**：CL Loss / Replay Buffer / 实验路线 / 评测 / 文献 |
+| `doc/BucketDesign.md` | 7 桶结构论证（开头含速查节） |
+| `doc/VerlIntegration.md` | verl 0.8.0 集成指导 |
+| `doc/UserSim_多轮Query在线生成.md` | 三 agent 多轮构造设计规格 |
+| `doc/UserSim_三Agent架构与技术设计.md` | observer/questioner/reward 接口契约 |
+| `doc/UserSim_人设库.md` | 42 个人设表 + 设计轴 |
+| `doc/ClawEval_Metadata.md` | 评测基准数据 |
+
+**② 运行手册（操作向，按需查阅）**
+
+| 文件 | 内容 |
+|------|------|
+| `doc/Migration_64GPU.md` | 跨机器交接 + 冷启动步骤 |
+| `doc/Plan_训练链路补齐.md` | 64 卡前 Gap A–H 施工规格 |
+| `doc/Sandbox_Agent架构.md` | 动作内/推理外 + OpenClaw |
+| `doc/Sandbox_管理调度指南.md` | 16×8 winner-sync 调度 |
+| `doc/SandboxRollout.md` | 平台 Tool/Instance API 参考 |
+| `doc/Sandbox_腾讯云操作手册.md` | 腾讯云控制台操作步骤 |
+| `doc/Sandbox_冒烟指南.md` | 沙箱冒烟精简步骤 |
+| `doc/ColdRollout_采集.md` | 冷启动采集运行手册 |
+| `doc/Buffer_冷启动数据需求.md` | replay buffer 冷启动预热数据规格 |
+
+**③ 过程记录（append-only / 一次性，不主动维护）**
+
+| 文件 | 内容 |
+|------|------|
+| `doc/Progress.md` | 交付状态单一来源 |
+| `doc/RunLog.md` | 运行记录（禁删改历史） |
+| `doc/汇报_技术总报告.md` | 一次性汇报稿 |
+| `doc/RolloutCollect_技术报告.md` | 采集系统设计/验证报告 |
+| `doc/BugLog_集群采集.md` | 集群 bug 库（append-only） |
+| `doc/集群推理采集_经验复盘.md` | 踩坑复盘（不进论文） |
+| `paper/` | 论文产出：`drafts/`(Intro/Method 中英 + 总览)、`latex/`、`assets/`、`refs/` |
+
+阅读顺序建议：接手先读 `Migration_64GPU.md` → `Progress.md`；理解设计读 `CL_Update_Sunhao.md`（技术细节）→ `BucketDesign.md`（分桶论证）→ `ClawEval_Metadata.md`（评测数据）→ `VerlIntegration.md`（落地工程）。
 
 ## 可复用方法（skills/）
 
@@ -306,6 +320,6 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 | 模块 | 负责人 |
 |------|--------|
 | CL 更新策略 / 调研 | @孙豪 |
-| 用户数据获取 | @吴健 |
+| 用户数据获取（query 种子 + 会话镜像） | @吴健 |
 | 工具环境（Agent Framework） | @郑乃榕 |
 | 评测 | @杨益博 |

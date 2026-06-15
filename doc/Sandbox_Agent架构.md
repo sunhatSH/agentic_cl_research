@@ -3,7 +3,7 @@
 > **定位**：回答「沙箱里跑什么、推理在哪、镜像装什么、起实例前要做什么、用户文件系统怎么随机化」。
 > 调度（16×8 / winner 同步）见 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)；平台 API 见 [`SandboxRollout.md`](SandboxRollout.md)；运维见 [`Sandbox_腾讯云操作手册.md`](Sandbox_腾讯云操作手册.md)。
 
-**最后更新**：2026-06-10 ｜ 决策：agent harness = **OpenClaw**（敲定 `ContinualLearning.md §3` 中 openclaw/hermes/模拟工具 的待选项）
+**最后更新**：2026-06-10 ｜ 决策：agent harness = **OpenClaw**（敲定待选项）
 
 ---
 

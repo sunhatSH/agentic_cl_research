@@ -9,10 +9,10 @@
 
 | 模块 | 负责人 | 边界 |
 |------|--------|------|
-| **query / 种子** | @吴健 | 仅提供 query 数据（每会话首条 query 作种子）。**只给 query，不碰 rollout。** |
+| **query / 种子 + 镜像** | @吴健 | 提供每会话首条 query 作种子，**以及该会话对应的沙箱镜像文件**（即会话的初始环境快照）。**只给 query+镜像，不碰 rollout。** |
 | **冷启动 + 后续 rollout 全链路** | **@孙豪（本工作）** | observer/questioner agent、沙箱 rollout、采集脚本、**最终 rollout 数据结构**、入桶与训练衔接 |
 
-即：**query 是输入（吴健提供），rollout 轨迹及其数据结构是本系统的产出**。下游训练（replay buffer 预热 / verl）消费的是本系统定义的数据结构（§3），而非吴健的 query 原始格式。
+即：**query + 镜像是输入（吴健提供），rollout 轨迹及其数据结构是本系统的产出**。下游训练（replay buffer 预热 / verl）消费的是本系统定义的数据结构（§3），而非吴健的 query 原始格式。
 
 ## 1. 系统形态（冷启动阶段）
 
@@ -51,6 +51,7 @@ actor（被采集策略）有两套并跑，**数据严格分目录**：
 session = {
   record_id:          str          # 来自种子数据的 join key
   seed_query:         str          # q1，真实回流种子（吴健 query 的首条）
+  sandbox_image:      str          # 会话对应的沙箱镜像标识（吴健提供，用于初始化环境）
   persona:            str          # 会话级随机人设（42 选 1）
   num_turns:          int
   ended_by:           str          # k_budget | end_session | agent_error

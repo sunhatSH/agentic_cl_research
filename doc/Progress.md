@@ -1,6 +1,6 @@
 # 项目进度
 
-> 本文件是**交付状态**的单一来源。协作流程与分工见 [`ContinualLearning.md`](ContinualLearning.md)；技术设计见 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)。
+> 本文件是**交付状态**的单一来源。技术设计见 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)。
 
 **最后更新：** 2026-06-15  
 **当前分支：** `dev_train`  
@@ -84,7 +84,7 @@
 | 完整 verl Hydra 配置 | @孙豪 | `base.yaml` 已对齐 key path；集群上仍需与 verl `ppo_trainer` defaults 组合补全 fsdp/optim/rollout engine 等字段 |
 | ClawEval 195 任务 manifest | @杨益博 | `eval/run_eval.py` |
 | 沙盒 rollout 环境 | @郑乃榕 | 真实 trajectory |
-| 用户 query / workspace | @吴健 | 训练数据源 |
+| 用户 query / workspace / 镜像 | @吴健 | 训练数据源（每会话首条 query + 对应沙箱镜像） |
 | 多轮种子筛选 + 单/多轮配比（UserSim O1） | @吴健 | `datasets/queries.jsonl` 种子质量 |
 | GPU 集群 | — | B1 实测 |
 
