@@ -148,7 +148,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 
 | agent | 人设 | 职责 |
 |-------|------|------|
-| **观察 agent** | 无（客观） | 从 actor 输出判断要收集什么，主动收集中间+最终结果，产出客观报告 $R_t$ |
+| **观察 agent** | 无（客观） | 从 actor 输出判断要收集什么，主动收集中间+最终结果，产出客观报告 $R_t$。**训练时必须独立于 actor**：线上推理可 actor 自观察（无 reward，无 hacking 风险），但训练中 actor 自观察可学到"声称完成但未交付"的策略骗取高分（reward hacking）；独立 Observer 作为第三方取证，结构上杜绝此攻击面 |
 | **出题 agent** | 有（42 选 1，会话级随机） | 以人设视角读 $R_t$，模拟真实用户出下一 query |
 | **奖励模型** | 无（冻结 judge） | 以 $R_t$ 中实际产出/效果 + rubric 打 reward |
 

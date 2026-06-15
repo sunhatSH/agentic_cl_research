@@ -58,7 +58,7 @@ SessionSandboxPool（16 会话 × 8 槽，或采集阶段 slots=1）
 
 **职责**：从 winner 轨迹 + 只读沙箱产出 `ObservationReport`。
 
-| 字段 | 含义 |
+**为什么训练时必须用独立 Observer 而非 actor 自观察**：线上推理/部署时，actor 与 agent 合一执行观察与动作（self-observation 无害——没有 reward 信号可 hack）；但在训练中，若让 actor 自行观察自己的产出并直接输入 reward 计算，actor 可以学到"产出看起来完成但实际未交付"的策略（reward hacking）——因为观察者与执行者是同一模型，没有独立的验证环节。引入独立的 Observer agent（使用不同模型与后端）作为第三方取证，将"声称"与"实际"的验证解耦，从结构上杜绝这一攻击面。| 字段 | 含义 |
 |------|------|
 | `intermediate[]` | 中间结果 `{desc, source, value_excerpt}` |
 | `final[]` | 最终交付 `{path, kind, content_excerpt}` |
