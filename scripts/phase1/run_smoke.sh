@@ -30,6 +30,8 @@ export HF_DATASETS_CACHE="/tmp/hf_datasets_cache"
 export HF_HOME="/tmp/hf_home"
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
+# Qwen3.6 架构 qwen3_5 需要 transformers>=5.8（vllm019_venv 默认版本不认）
+"$PY" -m pip install -q "transformers==5.8.0"
 # Qwen3.6 GDN：训练内 vllm rollout 也要绕 FlashInfer 死锁（配置已带 additional_config，
 # 这里再兜底一个 env，万一 engine_kwargs 没透传到 vllm）
 export VLLM_GDN_PREFILL_BACKEND="${VLLM_GDN_PREFILL_BACKEND:-triton}"

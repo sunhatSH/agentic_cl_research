@@ -168,7 +168,7 @@ class OpenAIJudgeClient:
                 "model": self.model,
                 "messages": messages,
                 "temperature": self.temperature,
-                "max_tokens": 256,
+                "max_tokens": 2048,
             },
             headers={"Authorization": f"Bearer {self.api_key}"},
             timeout=self.timeout,

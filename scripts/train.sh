@@ -7,6 +7,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/load_training_env.sh"
+
 CONFIG="${1:?Usage: $0 <config.yaml> [extra args]}"
 shift
 

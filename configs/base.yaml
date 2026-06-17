@@ -138,4 +138,4 @@ trainer:
   total_training_steps: 100       # verl: total_training_steps (was total_steps)
   save_freq: 25
   test_freq: 25
-  logger: ['console', 'wandb']
+  logger: ['console', 'swanlab']   # SWANLAB_API_KEY via scripts/load_training_env.sh
