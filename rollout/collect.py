@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from rollout.session_pool import Trajectory
-from trainer.domain_tagging import parse_domain
+from trainer.domain_tagging import build_domain_instruction, parse_domain
 
 _TOOLCALL_RE = re.compile(r"<toolcall>\s*(\{.*?\})\s*</toolcall>", re.S)
 
@@ -81,6 +81,12 @@ _REACT_SYSTEM_PROMPT = (
     "The sandbox will run the code and return the output as a user message "
     "prefixed with '[Sandbox Output]'. You can make multiple tool calls "
     "across turns. When done, provide your final answer without <toolcall> tags."
+    # The buffer routes every trajectory into one of 7 capability buckets via a
+    # <task_domain> tag parsed from the trajectory text (trainer.domain_tagging).
+    # Without this instruction the model never emits the tag, so parse_domain
+    # returns None and ingest_trajectories SKIPS every trajectory (B12). Append
+    # the canonical domain-tagging instruction so cold rollouts are bucketable.
+    "\n\n" + build_domain_instruction()
 )
 
 

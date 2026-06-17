@@ -107,8 +107,36 @@ verl 的 `setup.py` 声明 `VLLM_REQUIRES = ["vllm>=0.8.5,<=0.12.0"]`。如果�
 - `/mnt/afs_toolcall/sunhao4/agentic_cl_research/scripts/vllm_serve_qwen35.py` — key remap patch 脚本，不再需要
 - `/mnt/afs_toolcall/sunhao4/agentic_cl_research/scripts/_vllm_qwen35_patch.py` — Worker patch 模块，不再需要
 
+## 遇到的额外问题
+
+### 僵尸 GPU context
+
+**症状**：vllm Worker 进程异常退出后，`nvidia-smi` 仍显示已死进程占用 GPU 显存（75GB/卡）。`/proc/<pid>` 目录不存在，`kill -9` 无效，`nvidia-smi --gpu-reset` 返回 "Not Supported"（即使有 sudo）。唯一恢复方式：**重启机器**。
+
+**根因**：NVIDIA 驱动不会自动回收已退出进程的 CUDA context。vllm 的 `multiproc_executor` spawn Worker 后，如果 Worker 在模型加载阶段 crash（例如 architecture 不支持），CUDA context 就泄漏了。反复尝试不同配置会累积泄漏。
+
+**预防**：
+- 启动 vllm 前先用 `python -c "from vllm.model_executor.models import ModelRegistry; ..."` 确认架构支持
+- 不要连续尝试会 crash 的 vllm 配置
+- 启动脚本必须 `trap cleanup EXIT`，cleanup 里 kill 整个进程组
+- 从 tmux 退出 vllm 时先 Ctrl+C 优雅退出，不要直接 `tmux kill-session`
+
+### vllm 0.19 multiprocessing spawn 必须 if __name__ == '__main__'
+
+**症状**：`RuntimeError: An attempt has been made to start a new process before the current process has finished its bootstrapping phase`
+
+**根因**：vllm 0.19 的 Worker 通过 `multiprocessing.spawn` 启动，子进程会重新 import 主脚本。如果 LLM 初始化代码不在 `if __name__ == "__main__"` 守卫下，子进程会递归创建 LLM，导致死循环。
+
+**解决**：所有调用 `vllm.LLM` 或 `vllm.entrypoints` 的脚本必须用 `if __name__ == "__main__":` 包裹。
+
+### vllm 0.19 强制 spawn，忽略 VLLM_WORKER_MULTIPROC_METHOD
+
+**日志**：`We must use the spawn multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. Reasons: CUDA is initialized`
+
+vllm 0.19 在 CUDA 已初始化的情况下强制使用 spawn。这是与 0.13 的关键区别——0.13 支持 fork，0.19 不再支持。
+
 ## 后续
 
-- GPU 当前被僵尸 CUDA context 占满（4×75GB），需管理员介入释放
-- 释放后启动 vllm 0.19 + Qwen3.6-27B 进行推理验证
-- 验证通过后即可跑通采集流程
+- vllm 0.19 + Qwen3.6-27B 推理验证进行中
+- 验证通过后跑通采集流程
+- verl 全栈 smoke 依赖推理验证结果
