@@ -19,6 +19,24 @@
 
 ## 记录（最新在最上面）
 
+### 2026-06-16 10:50 | 4×H800 本机 | commit c36626f
+- 动作：vllm 版本升级 0.13.0 → 0.19.0，解决 Qwen3.6-27B 不兼容问题
+- 结果：✅ vllm 0.19.0 安装成功 + verl import 正常 + 沙箱连通；❌ GPU 被僵尸 CUDA context 占满无法启动 vllm
+- 产物：`/mnt/afs_toolcall/sunhao4/envs/vllm019_venv/`（新 venv），`doc/vllm_upgrade_0.19.md`（技术文档）
+- 解释：Qwen3.6-27B 是 hybrid linear/full attention 模型，vllm 0.13 不支持 `Qwen3_5ForConditionalGeneration`。升级到 0.19 后 ModelRegistry 已包含该架构。verl 安装时不能带 `[vllm]` extra（会降级到 0.12）。GPU 僵尸进程 PID 869795/881008/892490/901013 占用 4×75GB 显存，需管理员介入释放。
+
+### 2026-06-16 10:30 | 4×H800 本机 | commit c36626f
+- 动作：验证腾讯沙箱 E2B 后端连通性
+- 结果：✅ `sandbox_smoke.py --backend e2b` 跑通，sandbox execute + GRPO advantage + domain tagging 正常
+- 产物：无持久产物（smoke 测试）
+- 解释：E2B_API_KEY / E2B_DOMAIN 凭证有效，沙箱可创建实例并执行代码。
+
+### 2026-06-16 10:20 | 4×H800 本机 | commit c36626f
+- 动作：从原始数据生成 queries.jsonl
+- 结果：✅ 10774 sessions / 143655 queries → queries_clean.jsonl（20 条脏 query 丢弃）
+- 产物：`/mnt/afs_toolcall/sunhao4/datasets/juxiaolong_prefix/queries_clean.jsonl`
+- 解释：`prepare_queries.py` 提取用户 query，`clean_queries.py` 清洗零宽字符。
+
 ### 2026-06-13 | 64 卡集群（8×8 H800，单节点交互） | commit <pending>
 - 动作：搭建**冷启动多轮 rollout 采集**链路（observer + questioner，**无奖励**）。新增 `rollout/usersim_collect.py`（slots=1 单轨迹多轮，无 winner/reward）、`scripts/collect_rollout.py`（双 actor 入口，N 路并发，jsonl 落盘）、`scripts/collect_rollout.sh`（启动器：预检远程→起 vllm→两路采集）。模型：远程 actor=gpt-5 / observer=gpt-4.1-mini / questioner=claude-sonnet-4-6（三者不同），本地 actor=Qwen3.6-27B；两套 actor 数据分目录 `data/rollouts/{local,remote}/`。
 - 远程 API：tokenhub（`https://tokenhub.sensetime.com/v1`），key 取自 `apodex_research/configs/env_deepseek_v4_pro.env`（本仓库无真实 key）。**硬约束（孙豪）：远程不可用即中止**（observer/questioner 缺则多轮无法进行），启动器预检 3 模型任一非 200 即 exit 5。
