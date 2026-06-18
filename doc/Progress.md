@@ -2,7 +2,7 @@
 
 > 本文件是**交付状态**的单一来源。技术设计见 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)。
 
-**最后更新：** 2026-06-15  
+**最后更新：** 2026-06-19  
 **当前分支：** `dev_train`  
 **verl pin：** `0.8.0`（见 `pyproject.toml`）
 
@@ -94,8 +94,9 @@
 
 | 日期 | 事件 |
 |------|------|
-| 2026-06-15 | 多轮 user-sim 采集链路打通（`rollout/usersim_collect.py` + `scripts/collect_rollout.py`）：本地 27B + 远程 GPT 双 actor，observer+questioner 在线多轮，采集结果按 7 桶预热 replay buffer（`scripts/warmup_buffer.py`）并衔接训练。配套 [`ColdRollout_采集.md`](ColdRollout_采集.md) / [`RolloutCollect_技术报告.md`](RolloutCollect_技术报告.md)。 |
-| 2026-06-13 | 冷启动数据采集（`scripts/collect_cold.py`：本地 vllm 27B → 7 桶 replay buffer）；商汤 SenseCore 8 机×8 卡 H800 上 Qwen3.6-27B 多轮采集集群联调。新增 4 篇文档：[`ColdRollout_采集.md`](ColdRollout_采集.md)（运行手册，本阶段简化变体：1 query=1 rollout、无 GRPO/winner、无奖励，仅 observer+questioner）、[`RolloutCollect_技术报告.md`](RolloutCollect_技术报告.md)（系统设计 + rollout 数据结构定义）、[`BugLog_集群采集.md`](BugLog_集群采集.md)（集群采集 bug 库，append-only，首批 10 条）、[`集群推理采集_经验复盘.md`](集群推理采集_经验复盘.md)（踩坑复盘，不进论文）。 |
+| 2026-06-19 | 沙箱接口/实现解耦 + 多 Agent harness + observer 取证缺陷定位（本机，无 GPU/E2B）：<br>• **沙箱后端可插拔**：`rollout/sandbox_client.py` 封闭工厂 → 开放注册表（`SandboxClient` Protocol = 接口契约；`register_backend`/`make_sandbox` 按名选后端）；新增 `AliyunSandbox`（阿里云 无影 AgentBay）**留空 stub** —— 换/加沙箱厂商**零改 rollout loop**。配套 `tests/test_sandbox_client.py`(+3)、`pyproject.toml`、`scripts/{sandbox_smoke,collect_rollout,collect_cold}.py`、`configs/base.yaml`。<br>• **observer 实运行取证缺陷**（runtime 证据确认）：主训练路径 `observe()` 没传沙箱、`LocalSandbox` 无持久 FS、只列文件路径不读内容 → observer 退化为"actor 自述复读机"，反 reward-hacking 落空。结论 + 修复计划记入 `CLAUDE.md` TODO#5，**当日即落地 diff-driven**：observer 以沙箱 before/after **内容级 diff** 为 ground truth、actor 声称仅作交叉核对，`LocalSandbox` 改持久 workdir，本机已验证 diff 能读到内容并暴露"声称≠实际"（二进制格式解析 / `watch_dir` / 真实后端连通待集群）。<br>• 新增 [`接口使用_Sandbox与三Agent.md`](接口使用_Sandbox与三Agent.md)（接口怎么用速查 + `ObservationReport`(报告)/`actor_claims`(声明) 消费 + diff-driven 设计）与 `scripts/agents_harness.py`（observer+questioner+reward **离线 harness**，simulated/collect 两模式、mock/real 可切，已本机跑通）。<br>• **协作（其他 Agent，今日）**：文档归档整理（一次性技术报告/汇报/复盘 `doc/` → `paper/refs/` 4 篇 + `scripts/README.md`/`configs/run/README.md`）；`Migration_64GPU.md` +133（集群冷启动/启动指南）、`VerlIntegration.md` 更新；集群启动配置（judge endpoint / B1 no-agent / run_phases mock）；健壮性：`trainer/cl_loss.py` `no_padding_2_padding` 失败转 WARNING（防静默错误 replay loss）、`trainer/verl_async_runner.py` Ray actor 解包失败改 fail-fast；`.gitignore` 补 `.hypothesis/`/`*.so`/`node_modules/`；`base.yaml` 20→21 实验。 |
+| 2026-06-15 | 多轮 user-sim 采集链路打通（`rollout/usersim_collect.py` + `scripts/collect_rollout.py`）：本地 27B + 远程 GPT 双 actor，observer+questioner 在线多轮，采集结果按 7 桶预热 replay buffer（`scripts/warmup_buffer.py`）并衔接训练。配套 [`ColdRollout_采集.md`](ColdRollout_采集.md) / [`RolloutCollect_技术报告.md`](../paper/refs/RolloutCollect_技术报告.md)（已归档到 `paper/refs/`）。 |
+| 2026-06-13 | 冷启动数据采集（`scripts/collect_cold.py`：本地 vllm 27B → 7 桶 replay buffer）；商汤 SenseCore 8 机×8 卡 H800 上 Qwen3.6-27B 多轮采集集群联调。新增 4 篇文档：[`ColdRollout_采集.md`](ColdRollout_采集.md)（运行手册，本阶段简化变体：1 query=1 rollout、无 GRPO/winner、无奖励，仅 observer+questioner）、[`RolloutCollect_技术报告.md`](../paper/refs/RolloutCollect_技术报告.md)（已归档到 `paper/refs/`）（系统设计 + rollout 数据结构定义）、[`BugLog_集群采集.md`](BugLog_集群采集.md)（集群采集 bug 库，append-only，首批 10 条）、[`集群推理采集_经验复盘.md`](../paper/refs/集群推理采集_经验复盘.md)（已归档到 `paper/refs/`）（踩坑复盘，不进论文）。 |
 | 2026-06-08 | 仓库骨架、设计文档迁入 `doc/` |
 | 2026-06-09 | `e29fd06` — Replay Buffer 核心、20 实验配置、52 单测 |
 | 2026-06-09 | M2 verl 集成代码：`CLTaskRunner`, buffer hooks, `doc/Progress.md` |

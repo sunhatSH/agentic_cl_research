@@ -148,7 +148,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 
 | agent | 人设 | 职责 |
 |-------|------|------|
-| **观察 agent** | 无（客观） | 从 actor 输出判断要收集什么，主动收集中间+最终结果，产出客观报告 $R_t$。**训练时必须独立于 actor**：线上推理可 actor 自观察（无 reward，无 hacking 风险），但训练中 actor 自观察可学到"声称完成但未交付"的策略骗取高分（reward hacking）；独立 Observer 作为第三方取证，结构上杜绝此攻击面 |
+| **观察 agent** | 无（客观） | 以**沙箱 before/after 内容级 diff** 为 ground truth 收集中间+最终结果（actor 声称仅交叉核对，2026-06-19 起 diff-driven），产出客观报告 $R_t$。**训练时必须独立于 actor**：线上推理可 actor 自观察（无 reward，无 hacking 风险），但训练中 actor 自观察可学到"声称完成但未交付"的策略骗取高分（reward hacking）；独立 Observer 作为第三方取证，结构上杜绝此攻击面 |
 | **出题 agent** | 有（42 选 1，会话级随机） | 以人设视角读 $R_t$，模拟真实用户出下一 query |
 | **奖励模型** | 无（冻结 judge） | 以 $R_t$ 中实际产出/效果 + rubric 打 reward |
 
@@ -197,6 +197,7 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 | 精度 | **BF16 全栈** + FP32 主权重 + FP32 Adam m/v；FP8 不进主路径（Phase 5 可选 FP8 rollout-only） |
 | 训练框架 | verl 0.8.0，pip 安装不 fork，唯一注入点 `actor.set_loss_fn(cl_loss)` |
 | 工程解耦 | `replay_buffer/` 不 import verl/Ray，可独立单测 |
+| 沙箱厂商无关 | rollout 沙箱走**接口/实现解耦的注册表**（`SandboxClient` 协议 + `register_backend`）：后端 `local`（dev）/ `e2b`（腾讯）/ `aliyun`（Alibaba AgentBay，留空待实现）按名互换、rollout loop 零改动；三 Agent 配 `scripts/agents_harness.py` **离线 harness**（无 GPU 跑通 observer/questioner/reward 回路，利于复现） |
 
 > ⚠️ `CL_Update_Sunhao.md` 中按 70B 估算的显存/耗时数字待按 27B 重算（标记 C2）。落地施工图见 [`Plan_训练链路补齐.md`](../../doc/Plan_训练链路补齐.md)，状态见 [`Progress.md`](../../doc/Progress.md)。
 
@@ -206,6 +207,7 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 
 - **U 形 / priority 融合权重未实证调优**：$\gamma=\delta=0.88$、设计 $\alpha=(0.4,0.2,0.2,0.2)$（v1 实跑 diversity 禁用 → $(0.5,0.25,0,0.25)$）均为起步值，待 Phase 3 数据校准；短轨迹（小 $K_i$）下 U 形可能近乎消失，需更小 $\gamma$。
 - **模拟用户分布失真 / 幻觉**：42 人设分布 ≠ 真实 follow-up 分布；观察不全时前提漂移以小概率回归（靠首轮真实锚点 + 前提成立率审计缓解）。
+- **观察 grounding 强度 = 取证能力**：反 reward-hacking 的强度上限 = observer 能取到的证据强度。**已落地 diff-driven**（2026-06-19）：observer 以沙箱 before/after **内容级 diff** 为 ground truth、actor 声称仅交叉核对，本机已验证 diff 能读到内容并暴露"声称值 ≠ 实际"（详见 [`Observer_DiffDriven_技术报告.md`](../refs/Observer_DiffDriven_技术报告.md)）。**残余局限**：二进制产物（xlsx/png）需格式解析才能核对单元格数值；瞬态/被覆盖的中间产物需 `watch_dir` 事件流（当前只看净变化）；真实 e2b/aliyun 后端连通 + 8 槽 FS 级 baseline 正确性待集群验证。
 - **winner-sync 进程态保真**：平台若只支持磁盘快照，替补槽的进程/内存态可能与 winner 不一致（头号 PoC）。
 - **judge 选型未定**：须用 ClawEval 人工 rubric 一致率校准；外部 judge API 地址待提供（reward 走 `JudgeClient` env 注入，代码零改动）。
 - **27B 成本数字待重算**；**全栈 64 卡 smoke 未跑**——Loss 链路三处接线 bug 已审计修复且纯逻辑单测通过（约 200 测试函数），但 replay 行真过 verl forward + log_probs 选回 + packing 断言不触发，仍待集群 1-step 全栈验证。`inference/VerlRolloutGenerateFn` 为占位（接 verl 原生 generate 是 Gap D）。

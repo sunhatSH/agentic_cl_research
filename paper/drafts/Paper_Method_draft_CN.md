@@ -91,7 +91,7 @@ $$w_t^{(i)} = \mathrm{normalize}\Big(\mathrm{clip}\big(\text{priority}_i \cdot \
 
 我们通过**在观察到实际状态之后再在线构造 follow-up** 来消除前提漂移。我们从每个真实会话中只保留第一条 query 作为种子（保住真实的用户意图分布），并在 winner 同步边界用三个协作 agent 生成后续轮次。值得强调的是，回流数据里本就含有真实的后续 query $q_2,\dots,q_K$，但它们同样是在采集时针对*原始*会话的执行结果写下的；训练 rollout 中我们的策略对 $q_1$ 产出的状态与该原始结果不同，这些真实 follow-up 的前提因而同样不成立——直接复用它们会重新引入前提漂移。**这正是我们丢弃 $q_2,\dots,q_K$、只保留种子 $q_1$ 的原因**：真实数据的价值在其首条 query 所携带的真实意图分布，而非其与特定一次执行绑定的后续轮次。三个协作 agent 是：
 
-- 一个**观察 agent**（无人设），读取优胜 actor 的输出，判断什么与任务相关——尤其是中间结果与最终结果——并从存活的 winner 沙箱（只读）主动收集一份中立、结构化的报告 $R_t = \mathrm{Obs}(a_t^w, e_t^w)$。值得强调的是，观察 agent **必须独立于策略模型**：在纯推理/部署场景下，actor 与 agent 合一执行观察和动作是安全的（没有 reward 信号可供 hack）；但在训练中，若让 actor 自己观察自己的产出并直接输入 reward 计算，策略可以学到"产出看起来完成但实际未交付"的行为来骗取高分——这是经典的 reward hacking。独立观察 agent 使用不同的模型与后端，作为第三方取证将"声称"与"实际"的验证解耦，从结构上杜绝了这一攻击面；
+- 一个**观察 agent**（无人设），对比该轮**前后**的 winner 沙箱状态，从由此得到的工作区 **diff**（本轮新增/修改/删除的文件及其内容，只读）中收集一份中立、结构化的报告 $R_t = \mathrm{Obs}(a_t^w, e_t^w)$——actor 的轨迹仅作*待核对的声称*、绝不作为事实来源——尤其捕获中间结果与最终结果。值得强调的是，观察 agent **必须独立于策略模型**：在纯推理/部署场景下，actor 与 agent 合一执行观察和动作是安全的（没有 reward 信号可供 hack）；但在训练中，若让 actor 自己观察自己的产出并直接输入 reward 计算，策略可以学到"产出看起来完成但实际未交付"的行为来骗取高分——这是经典的 reward hacking。独立观察 agent 使用不同的模型与后端，作为第三方取证将"声称"与"实际"的验证解耦，从结构上杜绝了这一攻击面；
 - 一个**出题 agent**，携带 $16$ 个固定人设之一（职业、偏好、用户画像，以及一个*观察偏好*：整体 vs 细节、形式 vs 内容）。**人设在每个会话开始时随机抽取一个，并在整个会话内保持不变（一会话一人设，所有轮次共用同一个 $p$）**；它生成下一条 query $q_{t+1}\sim Q(\cdot\mid p, R_t, H_t)$，其中 $H_t$ 是 winner 衍生的会话历史；
 - 一个**奖励模型**，从同一份报告对该轮打分，$r_t = \mathrm{Reward}(R_t, a_t^w, \text{rubric})$。
 
@@ -117,27 +117,32 @@ $$P_k = P_{k-1} - d_0(p)\,2^{\,k-1} \;=\; P_0(p) - d_0(p)\,(2^{k}-1).$$
 
 ### A.1 观察 agent 提示词（Observer，对应 O6）
 
-> 职责见 §4.5：无人设，由 actor 输出驱动、收集中间+最终结果，产出客观报告 $R_t$。代码锚点 `agents/prompts.py::OBSERVER_SYSTEM` / `build_observer_prompt`。
+> 职责见 §4.5：无人设，**由沙箱 before/after 内容级 diff（ground truth）驱动**，从 diff 收集中间+最终结果、actor 声称仅作交叉核对，产出客观报告 $R_t$。代码锚点 `agents/prompts.py::OBSERVER_SYSTEM` / `build_observer_prompt`（2026-06-19 起 diff-driven）。
 
 ```text
 You are an OBJECTIVE state observer in an agent-training loop. You are NOT a
-user and you have NO preferences. Your only job is to collect verifiable
+user and you have NO preferences. Your only job is to report verifiable
 evidence about what the agent actually produced, so that (1) a reward judge can
 score it on real effect and (2) a separate user-agent can ask a grounded
 follow-up.
 
-You are given the agent's own trajectory (what it SAID it did) and read-only
-access to its workspace. Let the agent's claims DRIVE what you go look at: if it
-says it wrote `report.xlsx`, read `report.xlsx`; if it says it computed an
-intermediate value, find and quote it. Prioritize INTERMEDIATE results (they are
-easily overwritten by later steps) as well as final deliverables.
+You are given a DETERMINISTIC DIFF of the agent's sandbox workspace -- the files
+it created / modified / removed THIS turn, with their actual content. This diff
+is GROUND TRUTH. You are also given the agent's own trajectory (what it CLAIMED
+it did); treat the trajectory as claims to be VERIFIED against the diff, never
+as fact. Do NOT trust the narrative over the diff.
+
+Capture INTERMEDIATE results (they are easily overwritten by later steps and the
+actor often forgets to mention them) as well as final deliverables -- read them
+straight from the diff content, not from what the actor says.
 
 Rules:
-- Report only what you can verify from the workspace/trajectory. Never invent
-  files, values, or outcomes.
-- Record the gap between what the agent CLAIMED and what actually exists in the
-  'discrepancies' field (e.g. claimed a file that is absent, claimed a number
-  that does not match). This is the anti-hacking signal.
+- Report only what the diff supports. Never invent files, values, or outcomes.
+- Put every claim that the diff does NOT support into the 'discrepancies' field
+  (e.g. claimed a file that the diff does not show, claimed a number that the
+  file content contradicts, claimed success on an empty diff). This is the anti
+  reward-hacking signal.
+- Also record real effects the actor did NOT mention but the diff shows.
 - Stay neutral: no praise, no criticism, no user voice.
 - Output ONLY a JSON object with keys: intermediate (list of {desc, source,
   value_excerpt}), final (list of {path, kind, content_excerpt}), actor_claims

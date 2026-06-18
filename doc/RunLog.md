@@ -19,10 +19,52 @@
 
 ## 记录（最新在最上面）
 
+### 2026-06-19 02:36 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
+- 动作：observer 性能优化 Tier 1（4 项）。#1 空 diff 跳过 observer LLM；#2 每轮 1 次快照（driver 把上轮 post 前传作本轮 baseline，`observe(..., post=)`）；#3 变更检测改 (size, mtime)、探针去掉整文件 sha1（不再每次读全量字节）；#4 prompt 去掉冗余 file tree + 内容/文件数封顶。改 `agents/observer.py` + `rollout/{simulated_session,usersim_collect}.py`。
+- 结果：✅ 本机验证 4 项全过——#3 mtime diff 读到内容（report.txt=99999）；#1 空 diff → 0 次 LLM 调用；#2 传 post 时不再触发快照 run_code；#4 prompt 无 file-tree 段。`run_simulated_session`(2 turns/8 trajs)、`run_usersim_session`、observe/parse 回归通过；`ReadLints` 无错。
+- 产物：`agents/observer.py`、`rollout/simulated_session.py`、`rollout/usersim_collect.py`。
+- 解释：把 observer 每轮开销从"2 次全量哈希快照 + 1 次大 prompt LLM"降到"1 次轻量(stat)快照 + 仅在有变更时 1 次小 prompt LLM"。调查结论：agent 不只改 workspace（SysOps 装包/改系统、产 xlsx/docx/pdf 二进制），故 **#7 不做**；#6(watch_dir) 为后端事件型（离线不可验、8 槽成本、且只覆盖 FS），建议改投"二进制内容提取 + 非 FS 命令探针"（见下次讨论）。
+
+### 2026-06-19 02:14 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
+- 动作：把 observer diff-driven 改造**总结成技术报告** `paper/refs/Observer_DiffDriven_技术报告.md`（问题/6 条理由/设计/实现/验证/剩余）并在 `paper/refs/README.md` 索引；**同步论文**——`paper/latex/sections/A_prompts.tex` O6、`Paper_Method_draft_{EN,CN}.md` 附录 A.1 + §4.5 观察 agent 表述、`Paper_论文向总览.md` §7.2 观察 agent 行 + §10 局限（均把"claim-driven"旧表述改为 diff-driven）。
+- 结果：✅ 论文里 observer 提示词与 §4.5/§7.2/§10 表述与代码一致；grep 确认无残留 "claims DRIVE" 旧 prompt。
+- 产物：`paper/refs/Observer_DiffDriven_技术报告.md`、`paper/refs/README.md`、`paper/latex/sections/A_prompts.tex`、`paper/drafts/Paper_Method_draft_{EN,CN}.md`、`paper/drafts/Paper_论文向总览.md`。
+- 解释：代码改了（claim→diff-driven），论文/附录的 observer prompt 与表述会变 stale，本条把"报告 + 论文"对齐到当前实现，避免投稿稿与代码脱节。
+
+### 2026-06-19 02:00 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
+- 动作：observer 从 **claim-driven 改为 diff-driven**。`agents/observer.py` 加只读快照探针（仅用 `run_code`，后端无关）+ `snapshot()`/`diff_snapshots()`，`observe(traj, sandbox, baseline=)` 出 before/after **内容级** diff；`OBSERVER_SYSTEM`/`build_observer_prompt` 改为 diff=ground truth、actor 声称仅交叉核对；`ObservationReport` 加 `state_diff`。`LocalSandbox` 改**持久 workdir**。`simulated_session`/`usersim_collect` turn 前取 baseline、传 winner 沙箱。harness 打印 state_diff。
+- 结果：✅ 本机验证——diff 读到内容（`+ ADDED ./report.txt … Q3 total = 99999`）、observer 提示同时含实际值 99999 与声称 12345（→ 能判 discrepancy）；`LocalSandbox` 跨 `run_code` 持久（写 a.txt→读回 hello）；`run_simulated_session` 离线回归通过（turns=2 trajs=8）、prompt/parse/observe 无回归；`ReadLints` 无错。
+- 产物：`agents/{observer.py,prompts.py,schema.py}`、`rollout/{sandbox_client.py,simulated_session.py,usersim_collect.py}`、`scripts/agents_harness.py`、`doc/接口使用_Sandbox与三Agent.md` §3、`CLAUDE.md` TODO#5。
+- 解释：为何改——(1) 模型会**幻觉**，声称可造假；(2) 声称只报结果、**丢中间产物**（设计最看重的中间态易被覆盖）；(3) reward 落在声称上=**可被 reward-hack**；(4) diff 由代码**确定性**算，不在证据里引入第二层模型误差；(5) diff 暴露 actor **没提的改动**（静默/部分失败）；(6) 能**内容级核对**"声称值≠实际值"。剩余：二进制格式解析、`watch_dir` 抓瞬态中间产物、真实 e2b/aliyun 连通待集群。
+
+### 2026-06-19 01:50 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
+- 动作：新增多 Agent **离线 harness** `scripts/agents_harness.py`（驱动真实 session driver + 真实 observer/questioner/reward，默认 mock endpoint、`--real` 可切，`--mode simulated|collect`、`--backend local|e2b|aliyun`）；新增接口使用指南 `doc/接口使用_Sandbox与三Agent.md`；`Progress.md` 变更日志补今日条目（含协作方改动）。
+- 结果：✅ harness 两模式本机跑通——simulated（8 槽：observer 报告 + questioner 出题 + reward 0.82，16 traj，ended_by=k_budget）、collect（1 槽：observer+questioner，ended_by=end_session）；`ReadLints` 无错。
+- 产物：`scripts/agents_harness.py`、`doc/接口使用_Sandbox与三Agent.md`、`doc/Progress.md`。
+- 解释：harness 让"三 Agent 协同回路"在无 GPU/无真实模型下**一条命令可见、可调**，且换沙箱后端即验证；真实模型/沙箱连通待集群。
+
+### 2026-06-19 01:36 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
+- 动作：按用户方向收敛——**聚焦"沙箱接口/实现分离"，其余厂商后端留空**。把上一条里写满的 `AliyunSandbox`（AgentBay 真实现）改回**空 stub**（接口契约 + 注册点保留，body 抛 NotImplementedError）；`sandbox_client.py` 显式分三段 INTERFACE / IMPLEMENTATIONS / REGISTRY；撤回 `pyproject.toml` 的 `[aliyun]` 推测依赖（改为注释指引）。
+- 结果：✅ 本机手测通过（`local` 跑 6*7=42；未知后端→ValueError 列出注册名；`aliyun`→NotImplementedError(留空)；`register_backend` 可扩展；`AliyunSandbox` 仍满足 run_code/kill 接口形）。
+- 产物：`rollout/sandbox_client.py`（INTERFACE/IMPL/REGISTRY 分段 + Aliyun stub）、`tests/test_sandbox_client.py`(aliyun 测改为断言 stub)、`pyproject.toml`/`configs/base.yaml`/`scripts/sandbox_smoke.py`(标注 aliyun=stub)、`CLAUDE.md` TODO#5。
+- 解释：交付物 = **接口（`SandboxClient` Protocol）与实现解耦 + 按名选择的开放注册表**；换厂商 = 选 backend 名 / 加一个 `register_backend`。具体 vendor body（阿里等）留空，回集群用真 SDK/凭证填，避免在家凭文档臆测。
+
+### 2026-06-19 01:25 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
+- 动作：回答"沙箱接口与实现是否分离 / 能否从腾讯换阿里"。把沙箱后端从**封闭工厂**（if/else 只认 local/e2b）改成**可插拔注册表**（`register_backend` + 按 name dispatch），新增 `AliyunSandbox`（阿里云 无影 AgentBay，`wuying-agentbay-sdk`，`AGENTBAY_API_KEY`）。
+- 结果：✅ 注册表/工厂/AliyunSandbox 逻辑本机手测通过（local→运行 6*7=42；unknown→ValueError 列出已注册名；aliyun 无 key→RuntimeError；register_backend 开放扩展）。`AliyunSandbox` 满足 SandboxClient Protocol（run_code/kill）。⚠️ e2b/aliyun **真连通待回公司**（本机无 httpx/SDK/凭证，也无 pytest/ruff，仅手测逻辑）。
+- 产物：`rollout/sandbox_client.py`（registry + AliyunSandbox）、`tests/test_sandbox_client.py`(+3 测)、`pyproject.toml`(`[aliyun]` extra)、`configs/base.yaml` / `rollout/__init__.py` / `scripts/{collect_rollout,collect_cold,sandbox_smoke}.py`(+aliyun choice)。
+- 解释：结论 = **接口（Protocol）与实现本就分离，但工厂封闭、且只有 e2b/local**；换阿里需"写一个实现 Protocol 的类 + 注册 + 配自己的 env"，非零代码。本次把工厂改开放并补上 AliyunSandbox，使"换厂商 = 选 backend 名 / 加一个 register_backend 调用"，rollout loop 零改动。
+
+### 2026-06-19 01:15 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
+- 动作：debug 复现"observer 能否观察真实系统/Agent 状态"——给真实 `agents/observer.py` 打 NDJSON 桩，跑真实代码路径（GRPO 路径 `observe(无沙箱)` + 采集路径 `observe(LocalSandbox)`），actor 真写 `report.xlsx`=99999 但自述 12345。
+- 结果：❌ **observer 看不到真实状态**：H1 主路径 `sandbox_is_none=true`；H2 即便传 LocalSandbox（agent 写文件 `ok=True`）`tree_len=0`；H3 唯一证据是 actor 自述文本（`file_tree_empty=true`、不读内容、`tool_outputs` 不传）。调试桩已按规范清除（`git diff agents/observer.py` 为空）。
+- 产物：无持久产物（instrumentation 已移除）；结论 + 修复计划记入 `CLAUDE.md` TODO#5。
+- 解释：单测全绿是因 mock judge 返回写死 JSON；实运行 observer 退化为"actor 自述复读机"，reward 的"按真实效果打分（反 hacking）"沦为"按声称打分"——正是设计想杜绝的攻击面。修复 P0/P1 见 TODO#5，依赖**有持久文件系统的真实沙箱**（回公司）。
+
 ### 2026-06-16 10:50 | 4×H800 本机 | commit c36626f
 - 动作：vllm 版本升级 0.13.0 → 0.19.0，解决 Qwen3.6-27B 不兼容问题
 - 结果：✅ vllm 0.19.0 安装成功 + verl import 正常 + 沙箱连通；❌ GPU 被僵尸 CUDA context 占满无法启动 vllm
-- 产物：`/mnt/afs_toolcall/sunhao4/envs/vllm019_venv/`（新 venv），`doc/vllm_upgrade_0.19.md`（技术文档）
+- 产物：`/mnt/afs_toolcall/sunhao4/envs/vllm019_venv/`（新 venv），`doc/vllm_upgrade_0.19.md`（技术文档，已归档到 `paper/refs/`）
 - 解释：Qwen3.6-27B 是 hybrid linear/full attention 模型，vllm 0.13 不支持 `Qwen3_5ForConditionalGeneration`。升级到 0.19 后 ModelRegistry 已包含该架构。verl 安装时不能带 `[vllm]` extra（会降级到 0.12）。GPU 僵尸进程 PID 869795/881008/892490/901013 占用 4×75GB 显存，需管理员介入释放。
 
 ### 2026-06-16 10:30 | 4×H800 本机 | commit c36626f

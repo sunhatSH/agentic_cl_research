@@ -71,66 +71,101 @@ bash scripts/validate_sandbox_dockerfile.sh       # 校验镜像 Dockerfile 快�
 
 ## 代码架构
 
+模块依赖概览（mermaid 流程图，箭头方向 = 依赖/数据流向）：
+
+```mermaid
+flowchart TB
+    subgraph CFG["配置层 configs/"]
+        BASE["base.yaml"]
+        CLST["cluster.yaml"]
+        PHASE["phaseN/exp.yaml"]
+    end
+
+    subgraph SRC["脚本层 scripts/"]
+        RUNSH["run.sh / phaseN/run.sh"]
+        EVALSH["eval.sh"]
+    end
+
+    subgraph TRN["训练层 trainer/"]
+        MAIN["cl_main.py"]
+        VRN["verl_runner.py<br/>CLTaskRunner"]
+        CLOSS["cl_loss.py"]
+        ADPT["trajectory_adapter.py"]
+        DTAG["domain_tagging.py"]
+        MRW["model_reward.py"]
+        RMET["replay_metrics.py"]
+        RMGR["cl_rollout_manager.py"]
+    end
+
+    subgraph BUF["缓冲层 replay_buffer/（纯 Python，与 verl 解耦）"]
+        BBUF["BucketReplayBuffer"]
+        PRI["priority.py"]
+        SMP["sampler.py"]
+        WGT["weighting.py"]
+        EVIC["eviction.py"]
+        STO["store.py"]
+    end
+
+    subgraph ROL["采样层 rollout/ + agents/ + inference/"]
+        SCH["scheduler.py"]
+        COL["collect.py"]
+        SCL["sandbox_client.py"]
+        AGS["agents/"]
+        INF["inference/"]
+        SBX["docker/sandbox/"]
+    end
+
+    subgraph EVL["评测层 eval/"]
+        CEVAL["ClawEval"]
+    end
+
+    subgraph VRL["基础框架 verl 0.8.0（pip 安装，不 fork）"]
+        PPO["RayPPOTrainer<br/>set_loss_fn + buffer hooks"]
+        ALM["AgentLoopManager"]
+        PLOSS["ppo_loss"]
+    end
+
+    CFG -->|"OmegaConf 继承"| MAIN
+    SRC -->|"启动"| MAIN
+    SRC -->|"评测"| EVL
+
+    MAIN -->|"构建 CLTaskRunner"| VRN
+    VRN -->|"set_loss_fn + hooks"| PPO
+    VRN -->|"buffer.sample/add"| BBUF
+    BBUF --> PRI
+    BBUF --> SMP
+    BBUF --> WGT
+    BBUF --> EVIC
+    BBUF --> STO
+
+    PPO -->|"train_batch"| PLOSS
+    CLOSS -->|"partial 构建"| PLOSS
+
+    VRN --- CLOSS
+    VRN --- ADPT
+    VRN --- RMET
+    ADPT --> DTAG
+    MRW -->|"JUDGE_API"| JUDGE["外部 LLM Judge"]
+
+    VRN --- RMGR
+    RMGR -->|"override"| ALM
+    %% verl AgentLoopManager → rollout/ → agents/ → sandbox
+    ALM -->|"generate_sequences"| SCH
+    SCH --> AGS
+    SCH --> INF
+    SCH --> SCL
+    SCL --> SBX
+    COL -->|"轨迹入库"| BBUF
+
+    EVL -->|"评测 checkpoint"| VRN
 ```
-┌──────────────────────────────────────────────────────────────┐
-│ verl 0.8.0 (pip install, 不 fork)                            │
-│   RayPPOTrainer → set_loss_fn(cl_loss) + buffer hooks        │
-│                      ← 唯一注入点，零源码改动                 │
-└──────────────────────────────────┬───────────────────────────┘
-                                   │ inject_cl_loss / install_buffer_hooks
-┌──────────────────────────────────▼───────────────────────────┐
-│ trainer/  （基于 verl，与 rollout 共用 buffer）              │
-│   cl_main.py        — 入口：parse yaml → run_cl_ppo()        │
-│   verl_runner.py    — 构建 RayPPOTrainer，安装 CL hook       │
-│                       (inject_cl_loss / install_buffer_hooks)│
-│   verl_async_runner.py — Fully-Async-Policy 分离训练 scaffold│
-│   cl_loss.py        — make_cl_loss()：按 is_replay 分流，     │
-│                       replay 行不污染 PPO 分母                │
-│   replay_forward.py — 携梯度 replay batch 构建（拼接设计）   │
-│   replay_batch.py   — driver 侧 replay batch 准备            │
-│   trajectory_adapter.py — verl rollout batch → buffer 轨迹   │
-│   domain_tagging.py — LLM 产出的 domain → 7 桶 label 路由     │
-│   model_reward.py   — LLM judge reward（外部冻结 judge，主路径）│
-│   replay_metrics.py — 论文证据钩子：buffer 动态/forgetting   │
-│   cl_rollout_manager.py — 自定义 rollout（verl 注入点，按需）│
-└──────────────────────────────────┬───────────────────────────┘
-                                   │ 使用
-┌──────────────────────────────────▼───────────────────────────┐
-│ replay_buffer/ （纯 Python，不依赖 verl / Ray）              │
-│   BucketReplayBuffer  — 顶层接口：add / sample / stats        │
-│     ├── priority.py    — 4 信号融合的 trajectory 优先级       │
-│     ├── sampler.py     — 采桶 → 桶内 priority 加权随机        │
-│     ├── weighting.py   — W0(均权) / W2(U 形块权重)            │
-│     ├── eviction.py    — 桶内淘汰策略                         │
-│     └── store.py       — 内存存储 + 索引 + SQLite 快照        │
-└──────────────────────────────────────────────────────────────┘
 
-┌──────────────────────────────────────────────────────────────┐
-│ rollout/ （采样侧，与 verl 解耦；详见 doc/Sandbox_*.md）     │
-│   sandbox_client.py — 厂商隔离沙箱客户端 + GRPO group 采样   │
-│   sandbox_env.py    — 腾讯沙箱 Instance 注入环境变量加载     │
-│   session_pool.py   — session 级沙箱编排（snapshot fork）    │
-│   simulated_session.py — UserSim Algorithm 1 在线会话构造    │
-│   scheduler.py      — N session 并行，每个 = 8-slot GRPO 组   │
-│   collect.py        — 轨迹采集：框架原生字段（非 proxy）     │
-│ agents/  （UserSim 三 agent，与 verl 解耦，可 mock 单测）    │
-│   observer.py       — 观察 agent（无人设，客观状态报告）    │
-│   questioner.py     — 出题 agent（42 人设）+ 耐心机制        │
-│   reward.py         — observation-grounded reward（复用 judge）│
-│   personas.py / prompts.py / schema.py / base.py            │
-│ inference/ — 单步生成边界（VerlRolloutGenerateFn / HTTP）    │
-│ docker/sandbox/     — agent harness = OpenClaw 沙箱镜像层    │
-│   （Node24 + OpenClaw + 工具 + persona 种子文件系统）        │
-└──────────────────────────────────────────────────────────────┘
-
-configs/base.yaml        — 所有实验共享的基础配置（OmegaConf 继承）
-                           key 已对齐 verl Hydra path（actor_rollout_ref.*）
-configs/phase<N>/<exp>.yaml — 按 phase 隔离，每个 yaml 只 override 变化的字段
-configs/sandbox_*.json   — 腾讯沙箱 Tool / runtime env 配置
-skills/                  — 可复用方法与工程规范（5 篇，见下）
-```
-
-**关键设计约束**：`replay_buffer/` 必须与 verl 完全解耦——不 import verl、不依赖 Ray。`rollout/` 同样与 verl 解耦（`model_reward.py` 除外）。这保证 Buffer 可独立单测。
+- 箭头方向：**数据/控制流方向**。例如 `trainer/ → verl/` 表示 trainer 注入 loss 和 hooks 到 verl 框架中。
+- `replay_buffer/` 标注"与 verl 解耦"——纯 Python 模块，不 import verl、不依赖 Ray，可在 CPU 单机上独立单测。
+- `rollout/`、`agents/`、`inference/` 同样与 verl 解耦（`model_reward.py` 除外），依赖 E2B 腾讯沙箱做工具执行。
+- 配置采用三层继承：`base.yaml → cluster.yaml → phaseN/exp.yaml`（或 `run/exp.yaml`），OmegaConf 合并。
+- `skills/` — 可复用方法与工程规范（5 篇，见下表）。
+- **接口怎么用 / observer 报告与声明怎么消费 → 先读 [`doc/接口使用_Sandbox与三Agent.md`](doc/接口使用_Sandbox与三Agent.md)**：每个接口在哪、签名、谁产出谁消费——Sandbox 后端（`SandboxClient` 契约 + `make_sandbox`/`register_backend` 注册表，换/加厂商零改调用方）、三 Agent 的 `ObservationReport`（**报告**）/`actor_claims`（**声明**）/`Questioner`/`score_followup`，以及"claim-driven → 沙箱 API diff-driven"取证设计（§3）。**改这些接口或用这些报告/声明前必读。**
 
 **奖励 = 外部冻结 LLM judge，不用规则奖励**：单个冻结 judge 对每条轨迹按统一尺度打分（抗 reward hacking、覆盖语义桶）。`custom_reward_function` 指向 `trainer/model_reward.py::compute_score`，judge 模型不写死、由 env 解析（`JUDGE_API_BASE` / `JUDGE_MODEL`，用 `scripts/serve_reward_model.sh` 本地 serve）。`reward_model.enable` 仍为 false——因为 judge 走**外部 serve**，不是 verl 内置 RM worker。规则 reward（旧 `rule_reward.py`）已废弃删除。
 
@@ -214,6 +249,7 @@ agentic_cl_research/
 | `doc/Sandbox_Agent架构.md` | 动作内/推理外 + OpenClaw |
 | `doc/Sandbox_管理调度指南.md` | 16×8 winner-sync 调度 |
 | `doc/SandboxRollout.md` | 平台 Tool/Instance API 参考 |
+| `doc/接口使用_Sandbox与三Agent.md` | **接口怎么用速查**：Sandbox 后端（`SandboxClient`/registry）+ 三 Agent 报告(`ObservationReport`)/声明(`actor_claims`)；含 claim→diff 驱动设计 |
 | `doc/Sandbox_腾讯云操作手册.md` | 腾讯云控制台操作步骤 |
 | `doc/Sandbox_冒烟指南.md` | 沙箱冒烟精简步骤 |
 | `doc/ColdRollout_采集.md` | 冷启动采集运行手册 |
@@ -225,10 +261,8 @@ agentic_cl_research/
 |------|------|
 | `doc/Progress.md` | 交付状态单一来源 |
 | `doc/RunLog.md` | 运行记录（禁删改历史） |
-| `doc/汇报_技术总报告.md` | 一次性汇报稿 |
-| `doc/RolloutCollect_技术报告.md` | 采集系统设计/验证报告 |
 | `doc/BugLog_集群采集.md` | 集群 bug 库（append-only） |
-| `doc/集群推理采集_经验复盘.md` | 踩坑复盘（不进论文） |
+| `paper/refs/` | 归档文档：一次性的技术报告 / 汇报稿 / 升级记录 / 踩坑复盘 |
 | `paper/` | 论文产出：`drafts/`(Intro/Method 中英 + 总览)、`latex/`、`assets/`、`refs/` |
 
 阅读顺序建议：接手先读 `Migration_64GPU.md` → `Progress.md`；理解设计读 `CL_Update_Sunhao.md`（技术细节）→ `BucketDesign.md`（分桶论证）→ `ClawEval_Metadata.md`（评测数据）→ `VerlIntegration.md`（落地工程）。
@@ -292,7 +326,7 @@ Phase 1→2→4→5→6 + 独立 Phase 3，共 21 个训练（R0 拆 10k/25k 容
 
 $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac{\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}}{2},\; q_5,\; q_{95}\big)\Big)$$
 
-两维度：Priority（trajectory 级）× **U 形块权重**（首尾两端高、中间低；起步 $\gamma=\delta=0.88$）。块按**动作块**（`<think>` / `<toolcall>` / `<observation>` / `<final_answer>` 等结构标签）划分，$K_i$ 因 trajectory 而异——具体标签集合与切分规则待数据到位后定，代码 fallback 用等长 $K=20$。Phase 3 对照 W0（均权）vs W2（主方案）。
+两维度：Priority（trajectory 级）× **U 形块权重**（首尾两端高、中间低；起步 $\gamma=\delta=0.88$）。块按**OpenAI chat message 边界**（`assistant` 消息 / `tool` 消息）划分——数据集采用 OpenAI tool-use 格式，不含 XML 标签（`configs/base.yaml:125` 已确认）。$K_i$ 因 trajectory 而异，代码 fallback 用等长 $K=20$。Phase 3 对照 W0（均权）vs W2（主方案）。
 
 > **2026-06-08 反转**：原方案为单调块衰减 + final_answer boost；改为 U 形是因为"末端的重要性不止 final_answer 一个 token 段，靠近末端的多个块都重要"，单点 boost 抓不住整段。详见 `doc/CL_Update_Sunhao.md`。
 
@@ -323,3 +357,44 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 | 用户数据获取（query 种子 + 会话镜像） | @吴健 |
 | 工具环境（Agent Framework） | @郑乃榕 |
 | 评测 | @杨益博 |
+
+## TODO（下次上集群后处理）
+
+> 这些阻断了正式训练，需要回到集群环境执行。
+
+1. **项目迁移：把泽寰的 AFS 路径全部改成自己的**
+   - `run_phases.sh:19-21`：`PROJECT_DIR / LIGHTLLM_DIR / VERL_DIR` 三个变量中的 `wuzehuan` → 你的 AFS 目录或项目本地路径
+   - `start_train.sh:19-21`：同上
+   - `configs/run/b1.yaml` 和 `configs/run/r4.yaml`：`defaults` 中 `_generated_ppo_trainer.yaml` 的 `wuzehuan` 路径
+   - 方案 A（推荐）：把 verl/LightLLM 拷到自己 AFS 目录；方案 B：继续走泽寰的只读共享
+
+2. **拷贝 `_generated_ppo_trainer.yaml` 并更新 run/*.yaml**
+   - `cp /mnt/afs_toolcall/wuzehuan/Documents/verl/verl/trainer/config/_generated_ppo_trainer.yaml configs/_generated_ppo_trainer.yaml`
+   - 然后改 `configs/run/b1.yaml` 和 `configs/run/r4.yaml` 的 `defaults` 为 `../_generated_ppo_trainer`
+
+3. **清理 `run_phases.sh` 中硬编码的 `SWANLAB_API_KEY`**
+   - 第 43 行：`export SWANLAB_API_KEY="${SWANLAB_API_KEY:-GDGemFX7c2ruxYtRWzVh0}"`
+   - 密钥不应在脚本中出现，只放 `.env`。回公司后删掉这行默认值。
+
+4. **确认 Phase 4/5 参数就绪后再启用对应的 run.sh**
+   - C1-C4 / S1-S2 配置中的 `???` 需要 Phase 2/3 结果确定后填入
+
+5. **Observer 已从 claim-driven 改为 diff-driven（2026-06-19 实现，本机已验证）—— 真实后端连通待集群**
+   > 历史问题（runtime 证据确认）：observer 结构上看不到真实效果，退化为"actor 自述复读机"。**已修**：observer 现以**沙箱 before/after diff（含文件内容）为 ground truth**，actor 声称仅作交叉核对；`LocalSandbox` 已改持久 workdir，本机即可验证（已证 diff 能读到内容、能暴露"声称 12345 vs 实际 99999"）。剩余见下方"剩余/待集群"。
+   - **根因（已确认，非猜测）**：
+     - `rollout/simulated_session.py:118` 主训练路径 `observer.observe(winner.messages)` **没传沙箱** → `file_tree` 永远空，observer 只复读 actor 自述（与设计 `doc/UserSim_三Agent架构与技术设计.md` §2 的 `observe(..., sandbox=w)` 不符）。
+     - `LocalSandbox.run_code` 每次用全新 `tempfile.TemporaryDirectory()` → **文件系统不持久**（agent 自身多步之间也丢状态），所以 `os.walk('.')` 永远在空目录跑。
+     - observer 只 `os.walk` 列**文件路径**、**从不读文件内容**；`build_observer_prompt` 的 `tool_outputs` 是**死参数** → "声称值 ≠ 实际值"这类反 reward-hacking 判定**结构上不可能发生**。
+   - **已完成（2026-06-19）**：
+     - ✅ observer **diff-driven**：`agents/observer.py` 加只读快照探针（仅用 `run_code`，后端无关）+ `snapshot()`/`diff_snapshots()`，`observe(traj, sandbox, baseline=)` 产出 before/after 内容级 diff；`OBSERVER_SYSTEM` 改为"diff=ground truth，声称仅核对"，`ObservationReport.state_diff` 携带确定性证据。机制 + "能否 diff 到内容"详见 [`doc/接口使用_Sandbox与三Agent.md`](doc/接口使用_Sandbox与三Agent.md) §3。
+     - ✅ `LocalSandbox` 持久 workdir（state 跨 `run_code` 不丢；agent 多步 + observer diff 本机可验证）。
+     - ✅ `simulated_session` / `usersim_collect` 已接：turn 前 `observer.snapshot` 取 baseline、传 winner 沙箱。
+   - **剩余 / 待集群**：
+     - 二进制产物（xlsx/png）目前只记 size+sha，不做格式解析 → 需 openpyxl 等内容级提取才能核对"声称的单元格数值"。
+     - 瞬态/被覆盖的中间产物：当前是 before/after 快照（只看净变化），未上 `watch_dir` 事件流。
+     - 8 槽路径 baseline 取 slot0（依赖"turn 开始时各槽位级一致"）——真实 e2b winner-sync 下成立，local mock 不做 FS 级 sync，故 8 槽 local 仅近似；真实后端连通（e2b/aliyun）+ 全栈验证待集群。
+     - P1：questioner 区分"satisfied(`<end_session>`)" vs "API 失败"（现在异常吞成 None 静默结束）；persona `tone` 注入 questioner prompt；follow-up 轮 8 槽 reward 闭环；启动校验三端点存在且不同。
+   - **第三方取证手段（回公司可直接用）**：
+     - 系统/沙箱状态：E2B `sandbox.files.read`/`files.list`/`watch_dir` 或 AgentBay `session.file_system`/`session.command.execute_command`（确定性快照/差分，模型只负责归纳）。
+     - Agent 轨迹状态（可选增强）：OpenTelemetry GenAI 语义约定 + Langfuse / Arize Phoenix / OpenLLMetry。
+   - **已就绪（本次 session 完成，2026-06-19）**：沙箱**接口/实现已解耦**——`SandboxClient` Protocol = 接口契约，`register_backend`/`make_sandbox` = 按名选择的注册表；`local`/`e2b`(腾讯) 为真实现，**其余厂商（如 `AliyunSandbox`/AgentBay）留空 stub**（接口+注册点就绪、body 待回集群用真 SDK/凭证填）。observer 修复时系统/沙箱取证可用 e2b（或实现后的 aliyun）后端文件 API。

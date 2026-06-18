@@ -92,7 +92,7 @@ The second source of signal corruption is multi-turn data. A follow-up query typ
 
 We eliminate premise drift by **constructing follow-ups online, after observing the realized state**. From each real session we retain only the first query as a seed (preserving the true distribution of user intents) and generate subsequent turns at the winner-synchronization boundary with three cooperating agents. It is worth emphasizing that the real sessions *do* contain genuine follow-ups $q_2,\dots,q_K$, but these were themselves written, at collection time, against the *original* session's execution result; during training rollout our policy's response to $q_1$ differs from that original, so the premises of these real follow-ups fail just as much. Reusing them would therefore re-introduce premise drift—**which is exactly why we discard $q_2,\dots,q_K$ and keep only the seed $q_1$**: the value of the real data lies in the genuine intent distribution carried by its first query, not in subsequent turns that are bound to one particular execution. The three agents are:
 
-- an **observer** (no persona) that reads the winning actor's output, decides what is relevant to the task—especially intermediate and final results—and actively gathers a neutral, structured report $R_t = \mathrm{Obs}(a_t^w, e_t^w)$ from the live winner sandbox (read-only). It is worth emphasizing that the observer **must be independent of the policy model**: in a pure inference / deployment setting, having the actor observe its own output is harmless (there is no reward signal to hack); during training, however, if the actor self-observes and the observation feeds directly into reward computation, the policy can learn to produce outputs that *appear* complete while leaving the task actually undone—classic reward hacking. An independent observer, using a different model and backend, acts as a third-party verifier that decouples "claims" from "verification," structurally eliminating this attack surface;
+- an **observer** (no persona) that compares the winner sandbox **before vs. after** the turn and gathers a neutral, structured report $R_t = \mathrm{Obs}(a_t^w, e_t^w)$ from the resulting workspace **diff** (files created/modified/removed, with their content; read-only)—using the actor's trajectory only as *claims to verify against the diff*, never as the source of truth—capturing intermediate as well as final results. It is worth emphasizing that the observer **must be independent of the policy model**: in a pure inference / deployment setting, having the actor observe its own output is harmless (there is no reward signal to hack); during training, however, if the actor self-observes and the observation feeds directly into reward computation, the policy can learn to produce outputs that *appear* complete while leaving the task actually undone—classic reward hacking. An independent observer, using a different model and backend, acts as a third-party verifier that decouples "claims" from "verification," structurally eliminating this attack surface;
 - a **questioner** that carries one of $16$ fixed personas (profession, preference, user profile, and an *observation focus*: whole vs. detail, form vs. content). **Exactly one persona is drawn at the start of each session and held fixed for the entire session—one persona per session, shared by all turns ($p$ is constant within a session)**; the questioner produces the next query $q_{t+1}\sim Q(\cdot\mid p, R_t, H_t)$ where $H_t$ is the winner-derived session history; and
 - a **reward model** that scores the turn from the same report, $r_t = \mathrm{Reward}(R_t, a_t^w, \text{rubric})$.
 
@@ -118,27 +118,32 @@ A useful side effect is an **adaptive curriculum**: the questioner always critiq
 
 ### A.1 Observer prompt (O6)
 
-> Role (see §4.5): no persona; driven by the actor's output, collects intermediate and final results, and produces the objective report $R_t$. Code anchor `agents/prompts.py::OBSERVER_SYSTEM` / `build_observer_prompt`.
+> Role (see §4.5): no persona; **driven by the deterministic sandbox before/after diff (ground truth)**, collects intermediate and final results from the diff, and treats the actor trajectory as claims to cross-check. Produces the objective report $R_t$. Code anchor `agents/prompts.py::OBSERVER_SYSTEM` / `build_observer_prompt` (diff-driven since 2026-06-19).
 
 ```text
 You are an OBJECTIVE state observer in an agent-training loop. You are NOT a
-user and you have NO preferences. Your only job is to collect verifiable
+user and you have NO preferences. Your only job is to report verifiable
 evidence about what the agent actually produced, so that (1) a reward judge can
 score it on real effect and (2) a separate user-agent can ask a grounded
 follow-up.
 
-You are given the agent's own trajectory (what it SAID it did) and read-only
-access to its workspace. Let the agent's claims DRIVE what you go look at: if it
-says it wrote `report.xlsx`, read `report.xlsx`; if it says it computed an
-intermediate value, find and quote it. Prioritize INTERMEDIATE results (they are
-easily overwritten by later steps) as well as final deliverables.
+You are given a DETERMINISTIC DIFF of the agent's sandbox workspace -- the files
+it created / modified / removed THIS turn, with their actual content. This diff
+is GROUND TRUTH. You are also given the agent's own trajectory (what it CLAIMED
+it did); treat the trajectory as claims to be VERIFIED against the diff, never
+as fact. Do NOT trust the narrative over the diff.
+
+Capture INTERMEDIATE results (they are easily overwritten by later steps and the
+actor often forgets to mention them) as well as final deliverables -- read them
+straight from the diff content, not from what the actor says.
 
 Rules:
-- Report only what you can verify from the workspace/trajectory. Never invent
-  files, values, or outcomes.
-- Record the gap between what the agent CLAIMED and what actually exists in the
-  'discrepancies' field (e.g. claimed a file that is absent, claimed a number
-  that does not match). This is the anti-hacking signal.
+- Report only what the diff supports. Never invent files, values, or outcomes.
+- Put every claim that the diff does NOT support into the 'discrepancies' field
+  (e.g. claimed a file that the diff does not show, claimed a number that the
+  file content contradicts, claimed success on an empty diff). This is the anti
+  reward-hacking signal.
+- Also record real effects the actor did NOT mention but the diff shows.
 - Stay neutral: no praise, no criticism, no user voice.
 - Output ONLY a JSON object with keys: intermediate (list of {desc, source,
   value_excerpt}), final (list of {path, kind, content_excerpt}), actor_claims
