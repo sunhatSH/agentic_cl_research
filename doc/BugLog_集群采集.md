@@ -1,7 +1,7 @@
 # 集群采集 Bug 库（持续追加）
 
 > **用途**：商汤 SenseCore（8 机×8 卡 H800）上做 Qwen3.6-27B 多轮 rollout 采集时遇到的 **bug → 解法** 速查库。**持续追加**——以后发现新 bug 继续往文档末尾加，不删改历史条目。
-> **配套详情**：更详细的根因分析与排查教训见 `doc/集群推理采集_经验复盘.md`（条目末尾标注对应章节）。
+> **配套详情**：更详细的根因分析与排查教训见 `../paper/refs/集群推理采集_经验复盘.md`（条目末尾标注对应章节）。
 > **起始日期**：2026-06-13（首批 10 条：已解决 9 + 诊断中 1）。
 
 ## 格式约定
@@ -42,7 +42,7 @@
 | **解法** | `chmod 600 ~/.ssh/id_rsa ~/.ssh/id_ed25519`。私钥必须 600（目录 700 / root:root）。权限正确时改 `authorized_keys` 实时生效，无需重启 sshd。 |
 | **状态** | 已解决 |
 
-> 配套：`集群推理采集_经验复盘.md` §三（权限）、§四（按报错措辞分方向）。
+> 配套：`../paper/refs/集群推理采集_经验复盘.md` §三（权限）、§四（按报错措辞分方向）。
 
 ---
 
@@ -55,7 +55,7 @@
 | **解法** | 统一用 `/mnt/afs_code/ds32_env/bin/python`（唯一支持 qwen3_5 的环境）起 vllm。 |
 | **状态** | 已解决 |
 
-> 配套：`集群推理采集_经验复盘.md` §五（环境凑齐）。
+> 配套：`../paper/refs/集群推理采集_经验复盘.md` §五（环境凑齐）。
 
 ---
 
@@ -68,7 +68,7 @@
 | **解法** | 用 `ds32_env` 的 vllm0.16rc（自带 `qwen3_5.py`），可正确 `Resolved architecture: Qwen3_5ForConditionalGeneration`。新架构先查建模文件是否存在再选版本，不在旧 vllm 上硬凑 transformers。 |
 | **状态** | 已解决 |
 
-> 配套：`集群推理采集_经验复盘.md` §五。
+> 配套：`../paper/refs/集群推理采集_经验复盘.md` §五。
 
 ---
 
@@ -81,7 +81,7 @@
 | **解法** | 用配套的 `ds32_env`（vllm0.16rc，版本组合自洽）。 |
 | **状态** | 已解决 |
 
-> 配套：`集群推理采集_经验复盘.md` §五。
+> 配套：`../paper/refs/集群推理采集_经验复盘.md` §五。
 
 ---
 
@@ -94,7 +94,7 @@
 | **解法** | 不在 quarkfs 上凑包；装到全新空目录 / 直接用配套环境（`ds32_env`）。 |
 | **状态** | 已知规避 |
 
-> 配套：`集群推理采集_经验复盘.md` §五（要点 3）。
+> 配套：`../paper/refs/集群推理采集_经验复盘.md` §五（要点 3）。
 
 ---
 
@@ -107,7 +107,7 @@
 | **解法** | `export PATH=$(dirname $PY):$PATH`（`$PY` = 所用 python 绝对路径）。 |
 | **状态** | 已解决 |
 
-> 配套：`集群推理采集_经验复盘.md` §七点五（次要坑 ninja）。
+> 配套：`../paper/refs/集群推理采集_经验复盘.md` §七点五（次要坑 ninja）。
 
 ---
 
@@ -120,7 +120,7 @@
 | **解法** | `export FLASHINFER_WORKSPACE_BASE=/tmp/...`（控制变量是 `_BASE`，**不是** `FLASHINFER_WORKSPACE_DIR`）。连带把其它缓存也指向 `/tmp` 本地盘并按 rank 隔离：`VLLM_CACHE_ROOT` / `TRITON_CACHE_DIR` / `TORCHINDUCTOR_CACHE_DIR` / `XDG_CACHE_HOME`（用 `/tmp/vcache_r${RANK}/...`，注意是 `/tmp` overlay 本地盘，不是 `/root`）。已验证 flock 错误归零、压测不崩、推理非空。 |
 | **状态** | 已解决 |
 
-> 排查教训：看 traceback **最内层文件路径**定位模块（是 flashinfer 不是 vllm/triton），别凭猜设缓存 env。smoke(limit=2) 没触发 gdn kernel 首次 JIT，8 机大量请求才触发——小批过≠大规模稳，长稳必压测。配套：`集群推理采集_经验复盘.md` §七点五。
+> 排查教训：看 traceback **最内层文件路径**定位模块（是 flashinfer 不是 vllm/triton），别凭猜设缓存 env。smoke(limit=2) 没触发 gdn kernel 首次 JIT，8 机大量请求才触发——小批过≠大规模稳，长稳必压测。配套：`../paper/refs/集群推理采集_经验复盘.md` §七点五。
 
 ---
 
@@ -133,7 +133,7 @@
 | **解法** | `collect_rollout.py` 启动时先 ping actor，打一个真实请求，空/不通直接 `sys.exit(6)`：`probe = generate_fn([{"role":"user","content":"ping"}]); if not (probe.text or "").strip(): sys.exit(6)`。 |
 | **状态** | 已解决 |
 
-> 教训：`done` 计数会骗人；判断采集真在产数据靠**抽查轨迹 assistant 是否非空 + GPU 利用率**。GPU 0% + 采集“在跑” = 必定空跑。配套：`集群推理采集_经验复盘.md` §七点六、§七点七（体检清单）。
+> 教训：`done` 计数会骗人；判断采集真在产数据靠**抽查轨迹 assistant 是否非空 + GPU 利用率**。GPU 0% + 采集“在跑” = 必定空跑。配套：`../paper/refs/集群推理采集_经验复盘.md` §七点六、§七点七（体检清单）。
 
 ---
 

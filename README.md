@@ -6,30 +6,26 @@ Continual Learning over Agentic LLM 的训练项目——在 GRPO 上叠加 Repl
 
 ```
 .
-├── CLAUDE.md                # AI 协作指南
+├── CLAUDE.md                # AI 协作指南（含完整架构图）
 ├── README.md                # 本文件
 ├── pyproject.toml           # 项目元数据与依赖
-├── doc/                     # 设计文档
-│   ├── CL_Update_Sunhao.md      # 主文档：Loss、Buffer、实验路线、评测、参考文献
-│   ├── BucketDesign.md          # 7 桶结构详细论证
-│   ├── BucketDesign_compressed.md
-│   ├── ContinualLearning.md     # CL Loop 全流程
-│   ├── ClawEval_Metadata.md     # 评测基准
-│   └── VerlIntegration.md       # verl 集成路径
+├── agents/                  # UserSim 三 agent（observer/questioner/reward）
+├── bin/                     # 数据管道工具 + 编译工具（clean_zerowidth / detact / pipeline_cpp）
+├── configs/                 # 21+ 实验 yaml（按 phase 分子目录 + 3 层继承）
+│   ├── base.yaml            #   共享默认配置
+│   ├── cluster.yaml         #   集群 64 卡引擎层 overlay
+│   ├── run/                 #   集群可运行配置（base + cluster + 实验语义）
+│   └── phase<N>/            #   各 phase 实验定义
+├── doc/                     # 设计文档（21 篇，三级索引见 doc/README.md）
+├── docker/                  # 镜像构建（sandbox agent runtime / vllm019 / lightllm）
+├── eval/                    # ClawEval 评测（195 纯文本任务）
+├── inference/               # 单步生成边界（VerlRolloutGenerateFn / HTTP）
+├── paper/                   # 论文产出（drafts / latex / refs / assets）
 ├── replay_buffer/           # 7 桶 Buffer（与 verl 解耦的纯 Python 模块）
-│   ├── bucket.py            # 顶层 Buffer + quota 分配
-│   ├── priority.py          # 抗遗忘 priority（4 信号融合，非 reward 绝对值）
-│   ├── eviction.py          # 桶内淘汰（hard floor + soft target）
-│   ├── sampler.py           # 两级采样（采桶 + 桶内 priority 加权）
-│   ├── weighting.py         # token-level w_t（W0 / W2）
-│   └── store.py             # 主存储 + 索引
-├── trainer/                 # CL Loss 与训练入口（基于 verl，零源码改动）
-│   ├── cl_loss.py           # cl_loss(config, model_output, data, dp_group)
-│   └── cl_main.py           # 训练入口
-├── configs/                 # 20 个实验的 yaml（B1, K*, R*, C*, S*）
-├── eval/                    # ClawEval 评测（195 文本任务）
-├── scripts/                 # 训练 / 评测启动脚本
-└── tests/                   # 单元测试 + verl 兼容性 smoke
+├── rollout/                 # 采样侧：沙箱客户端 / 会话池 / 轨迹采集
+├── scripts/                 # 训练 / 沙箱 / 数据 / 评测启动脚本（35 个）
+├── skills/                  # 可复用方法论（5 篇工程规范）
+└── tests/                   # ~200 单元测试 + verl 兼容性 smoke
 ```
 
 ## 快速开始
@@ -39,7 +35,7 @@ Continual Learning over Agentic LLM 的训练项目——在 GRPO 上叠加 Repl
 pip install -e ".[dev]"
 
 # 跑 baseline (Phase 1)
-bash scripts/train.sh configs/b1.yaml
+bash scripts/train.sh configs/phase1/b1.yaml
 
 # 评测 ckpt
 bash scripts/eval.sh ckpts/b1-step-100
@@ -68,7 +64,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
                            └── Phase 6 (X1-X7)  按需探索
 ```
 
-共 20 个核心训练。详见 `doc/CL_Update_Sunhao.md`。
+共 21 个核心训练（B1 + K1-5/K2-R = 6 + R0-10k/R0-25k/R3-6/R4-w/R4-k = 8 + C1-4 = 4 + S1-2 = 2，Phase 6 按需）。详见 `doc/CL_Update_Sunhao.md`。
 
 ## 分工
 

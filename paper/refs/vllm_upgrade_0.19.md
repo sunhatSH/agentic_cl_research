@@ -1,3 +1,6 @@
+> ⚠️ 本文档原位于 `doc/`，于 2026-06-19 整理时移至 `paper/refs/`（一次性 vLLM 升级记录，当前已生效）。
+> vLLM 集成说明见 `doc/VerlIntegration.md`。
+
 # vllm 版本升级与 Qwen3.6-27B 兼容性解决记录
 
 > 日期：2026-06-16

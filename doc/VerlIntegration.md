@@ -195,44 +195,67 @@ verl 提供了 `recipe/` 目录用于自定义训练流程；`main_ppo.py` 入�
 
 ---
 
-## 三、推荐工程结构
+## 三、推荐工程结构（当前项目快照）
 
 ```
 agentic_cl_research/
-├── replay_buffer/                       # 自己写，纯 Python，与 verl 解耦
-│   ├── __init__.py
-│   ├── bucket.py                        # 7 桶结构 + quota 分配（保底 + 平方根加权）
-│   ├── priority.py                      # 4 信号 priority 融合（forgetting/rarity/diversity/difficulty）
-│   ├── eviction.py                      # 桶内淘汰策略（hard floor + soft target）
-│   ├── sampler.py                       # 两级采样（采桶混合 quota+均匀，桶内 priority 加权）
-│   ├── weighting.py                     # token-level w（priority × U 形块权重 (γ^block + δ^(K_i-block))/2 + clip + normalize；按动作块切分，K_i 待数据）
-│   └── store.py                         # 主存储 + 索引（内存 dict / SQLite / LMDB 选其一）
-├── trainer/
-│   ├── __init__.py
-│   ├── cl_loss.py                       # 自定义 cl_loss(config, model_output, data, dp_group)
-│   └── cl_main.py                       # 训练入口，组装 RayPPOTrainer + buffer + loss 注入
-├── configs/                             # 20 个实验的 yaml（按 phase 分子目录）
-│   ├── base.yaml                        # 共享配置（模型、rollout、entropy_coeff=0.001）
-│   ├── phase1/b1.yaml                   # Phase 1 baseline
-│   ├── phase2/k1..k5.yaml, k2-r.yaml   # Phase 2 KL 系列
-│   ├── phase3/r0-10k.yaml, r0-25k.yaml, r3..r6.yaml, r4-w.yaml, r4-k.yaml  # Phase 3 Replay 系列
-│   ├── phase4/c1..c4.yaml              # Phase 4 组合
-│   ├── phase5/s1.yaml, s2.yaml         # Phase 5 rollout 规模
-│   └── phase6/                          # Phase 6 按需探索
-├── eval/                                # 评测脚本（接 ClawEval）
-├── scripts/
-│   ├── train.sh                         # 训练启动：bash scripts/train.sh configs/b1.yaml
-│   └── eval.sh                          # 评测启动：bash scripts/eval.sh ckpts/b1-step-100
-├── tests/                               # 单元测试（replay_buffer 可独立测试，不依赖 verl/Ray）
+├── replay_buffer/           # 纯 Python，与 verl 解耦
+│   ├── bucket.py            # 7 桶结构 + quota 分配
+│   ├── priority.py          # 4 信号 priority 融合
+│   ├── eviction.py          # 桶内淘汰
+│   ├── sampler.py           # 两级采样
+│   ├── weighting.py         # W0/W2 U 形权重
+│   └── store.py             # 内存 + SQLite 快照
+├── trainer/                 # 基于 verl，零源码改动
+│   ├── cl_main.py           # 入口：load_config → build_buffer → run_cl_ppo
+│   ├── verl_runner.py       # CLTaskRunner: init_workers → inject_cl_loss → install_buffer_hooks → fit
+│   ├── verl_async_runner.py # Fully-Async 分离训练 scaffold
+│   ├── cl_loss.py           # make_cl_loss() + compute_replay_loss
+│   ├── replay_forward.py    # 携梯度 replay batch 构建
+│   ├── replay_batch.py      # driver 侧 replay batch 准备
+│   ├── trajectory_adapter.py# verl rollout batch → buffer 轨迹
+│   ├── domain_tagging.py    # LLM domain → 7 桶路由
+│   ├── model_reward.py      # LLM judge reward（外部冻结 judge）
+│   ├── replay_metrics.py    # buffer 动态 / forgetting 指标
+│   └── cl_rollout_manager.py# 自定义 rollout（AgentLoopManager）
+├── agents/                  # UserSim 三 agent（与 verl 解耦）
+│   ├── observer.py / questioner.py / reward.py
+│   ├── personas.py / personas.json（42 人设）
+│   └── prompts.py / schema.py / base.py
+├── rollout/                 # 采样侧，与 verl 解耦
+│   ├── sandbox_client.py    # E2B 沙箱客户端
+│   ├── sandbox_env.py       # 环境变量注入
+│   ├── session_pool.py      # 会话级沙箱编排
+│   ├── scheduler.py         # 16×8 + winner-sync
+│   ├── simulated_session.py # UserSim 算法
+│   └── collect.py           # 轨迹采集
+├── inference/               # 单步生成边界
+│   └── generate.py           # VerlRolloutGenerateFn
+├── configs/                 # 21 个实验 + 3 层继承
+│   ├── base.yaml            # 共享默认值
+│   ├── cluster.yaml         # 64 卡集群引擎层
+│   ├── run/{b1,r4}.yaml     # 集群可运行配置
+│   └── phase<N>/*.yaml      # 各 phase 实验定义
+├── eval/                    # ClawEval 评测
+├── scripts/                 # 35 个启动脚本
+│   ├── train.sh / eval.sh   # 通用入口
+│   ├── start_train.sh / run_phases.sh  # 集群训练
+│   ├── collect_cold.py / collect_rollout.py / prepare_queries.py / convert_dataset.py # 数据
+│   ├── serve_reward_model.sh / mock_judge.py / calibrate_judge.py  # Judge
+│   ├── build_sandbox_image.sh / sandbox_smoke.py / validate_sandbox_dockerfile.sh # 沙箱
+│   ├── warmup_buffer.py / clean_buffer.py / clean_queries.py  # 工具
+│   └── phase<N>/run.sh      # Phase 快捷方式
+├── docker/sandbox/          # OpenClaw 沙箱镜像
+├── skills/                  # 5 篇工程规范
+├── tests/                   # ~200 单测
+├── paper/                   # 论文产出
+├── bin/                     # 数据管道工具
 │
-│ ─── 运行时产物（gitignored，不提交）───
-├── ckpts/                               # 训练 checkpoint 输出
-│   └── <实验名>-step-<N>/              #   如 b1-step-100/、r4-step-50/
-├── buffer_dumps/                        # Replay Buffer 序列化快照（断点恢复用）
-├── logs/                                # 训练日志
-├── wandb/                               # W&B 实验追踪本地缓存
-└── eval/results/                        # 评测输出结果
+│ ─── 运行时产物（gitignored）───
+├── ckpts/ / buffer_dumps/ / logs/ / wandb/ / eval/results/
 ```
+
+> ⚠️ 本结构与当前仓库实际保持一致。`scripts/train.sh` 的正确用法为 `bash scripts/train.sh configs/phase1/b1.yaml`（非 `configs/b1.yaml`）。
 
 ### 模型与 checkpoint 路径约定
 

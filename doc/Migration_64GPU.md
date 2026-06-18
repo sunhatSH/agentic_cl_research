@@ -164,3 +164,136 @@ ruff check . && black --check .
 - [x] 约 200 passed / 1 skipped 基线（新机器实跑此数即「未搬坏」；以集群实跑为准）
 
 > 新 session 的第一条 RunLog 应是：「在 64 卡机器 `git pull` 后复现 `pytest -q` 结果」。
+
+---
+
+## 附录：集群提交快速参考
+
+> 本节合并自原 `doc/集群训练启动指南.md`（2026-06-19 整理时归档）。覆盖首次提交训练任务前的准备与平台操作。
+
+### A.1 前置条件
+
+| 依赖 | 位置 | 状态 |
+|------|------|------|
+| 代码 | AFS: `/mnt/afs_toolcall/sunhao4/agentic_cl_research` | ✅ `dev_train` 已 push |
+| 模型权重 | AFS: `/mnt/afs_agents/share_models/Qwen/Qwen3.6-27B` | 脚本自动 cp 到 `/tmp/qwen36` |
+| Judge 端点 | `.env` → tokenhub `gpt-5.1` | ✅ 已配置 |
+| 腾讯/E2B 凭证 | `docker/sandbox/tencent.env` | ✅ 已填写 |
+| 镜像 | `qwen36-lightllm` 或基础镜像 + 脚本兜底 pip | 见 §A.3 |
+
+### A.2 环境变量（脚本自动加载）
+
+两个 `.env` 文件由 `start_train.sh` / `run_phases.sh` 自动 source：
+
+**`.env`（训练密钥 + Judge）：**
+```bash
+SWANLAB_API_KEY=GDGemFX7c2ruxYtRWzVh0
+JUDGE_API_BASE=https://tokenhub.sensetime.com/v1
+JUDGE_MODEL=gpt-5.1
+JUDGE_API_KEY=sk-kU1ImyE0MxqWCZuQzy3Ea0tujm7lkRUSA8CCw4rMtp8zRUtL
+```
+
+**`docker/sandbox/tencent.env`（腾讯沙箱凭证，R4 实验用）：**
+```bash
+TENCENT_UIN=100048510516
+TENCENTCLOUD_SECRET_ID=AKIDGgxFSVOI9pOmYWWO9MWZUFoEY1QQRK3e
+TENCENTCLOUD_SECRET_KEY=...
+TENCENTCLOUD_REGION=ap-beijing
+E2B_API_KEY=ark_87a5eaa569e168f6dd2c03fe0690b3b7ca5c60c1
+E2B_DOMAIN=ap-beijing.tencentags.com
+AGS_ROLE_NAME=AgentOS-260506-test
+```
+
+### A.3 镜像
+
+推荐使用项目自建镜像（已固化运行时依赖，免去启动时 pip install）：
+
+```
+registry.cn-tj-01.sensecore.cn/ccr-devsfttj/verl:cu129_lightllm_sandbox_megatron0.14.0_vllm0.13.0R3_torch2.9.0_fa3_te2.5.0_0211
+```
+
+若用其他基础镜像，脚本会自动执行兜底 `pip install`（约 2 分钟）。
+
+### A.4 平台提交命令
+
+平台需注入 `RANK`、`MASTER_ADDR`、`MASTER_PORT` 三个环境变量，脚本内部按 `RANK` 区分 head/worker 节点。
+
+| 字段 | 值 |
+|------|-----|
+| **启动命令** | `bash /mnt/afs_toolcall/sunhao4/agentic_cl_research/scripts/start_train.sh` |
+| **节点数** | 8 |
+| **每节点 GPU** | 8（共 64 卡） |
+| **镜像** | 见 §A.3 |
+
+B1 是纯 RL 遗忘基线（无 KL、无 replay、**无 agentic rollout**），最简配置，用来验证全栈链路。
+
+跑别的实验（如 R4）：
+```bash
+bash /mnt/afs_toolcall/sunhao4/agentic_cl_research/scripts/start_train.sh configs/run/r4.yaml
+```
+
+串跑多 phase：
+```bash
+# 默认：b1 + r4
+bash /mnt/afs_toolcall/sunhao4/agentic_cl_research/scripts/run_phases.sh
+# 自定义顺序
+bash /mnt/afs_toolcall/sunhao4/agentic_cl_research/scripts/run_phases.sh configs/run/b1.yaml configs/run/r4.yaml
+```
+
+**平台环境变量注入**：脚本已通过 `RANK` 区分角色：`RANK=0` → 启动 ray head → 跑训练 → ray stop；`RANK≠0` → 启动 ray worker → `--block`。无需额外设置。
+
+### A.5 脚本内部流程
+
+```
+1. source .env           → JUDGE_API_BASE / JUDGE_MODEL / JUDGE_API_KEY / SWANLAB_API_KEY
+2. source tencent.env    → E2B / 腾讯云凭证（R4 沙箱 rollout 用）
+3. useradd sunhao4       → 集群容器内建用户（AFS 权限）
+4. pip install 兜底       → 镜像已含则秒过
+5. cp 模型到 /tmp/qwen36 → 各节点本地盘读，避 AFS 带宽抢占
+6. torch.distributed barrier → 等所有节点就绪
+7. RANK=0: ray head + 训练 + ray stop
+   RANK≠0: ray worker --block
+```
+
+### A.6 实验快速对照
+
+| 实验 | 配置 | KL | Replay | Agentic Rollout | 说明 |
+|------|------|:--:|:------:|:---------------:|------|
+| **B1** | `configs/run/b1.yaml` | ❌ | ❌ | ❌ | 纯 RL 遗忘基线 |
+| **R4** | `configs/run/r4.yaml` | ❌ | ✅ (λ=0.5) | ✅ (e2b) | 7 桶 + 抗遗忘 |
+
+配置继承链：`ppo_trainer.yaml` → `base.yaml` → `cluster.yaml` → 各实验 yaml
+
+### A.7 注意事项
+
+**Judge 端点：**
+- 当前使用 **gpt-5.1**（tokenhub 网关），`max_tokens` 已从 256 提至 2048
+- gpt-5.1 实测 `reasoning_tokens=0`（网关行为），256 理论够用但 2048 更安全
+- 若 judge 不可达：`parse_judge_output` 返回全 0（completion=0, safety=0, robustness=0），**不报错**，但 reward 全零 → 训练无信号。务必在日志里确认 `judge_error=0`
+
+**Mock Judge 逻辑：**
+- `start_train.sh`：`JUDGE_MODEL == "mock-judge"` 才启动 mock（当前 `gpt-5.1` → 不启动）
+- 如需回退 mock：在 `.env` 里把 `JUDGE_MODEL` 改回 `mock-judge`
+
+**B1 不走沙箱：**
+- `b1.yaml` 显式设 `rollout.agent: null`，覆盖 `cluster.yaml` 的 agentic rollout
+- R4 仍走 e2b 腾讯沙箱（`sandbox_backend: e2b`）
+
+**AFS 限制：**
+- `HF_HOME` / `HF_DATASETS_CACHE` 指向 `/tmp`（AFS 不支持 `fcntl.flock`）
+- Triton / FlashInfer 编译缓存同样指向 `/tmp`（`_node_worker.sh` 已处理）
+
+### A.8 验证 Checklist
+
+提交前在本地确认：
+- [ ] `git pull` 拿到最新 `dev_train`
+- [ ] `.env` 含 `JUDGE_API_BASE` / `JUDGE_MODEL` / `JUDGE_API_KEY`
+- [ ] `docker/sandbox/tencent.env` 含 E2B 凭证（R4 需要）
+- [ ] 模型权重 `/mnt/afs_agents/share_models/Qwen/Qwen3.6-27B` 存在
+- [ ] `curl -sS https://tokenhub.sensetime.com/v1/models -H "Authorization: Bearer sk-..."` 返回 200
+
+提交后确认：
+- [ ] rank0 日志出现 `ray status` 输出
+- [ ] rank0 日志无 `judge_error=1.0`（说明 judge 端点正常）
+- [ ] 训练 step 0 产出 `actor/pg_loss` 等指标
+- [ ] swanlab 面板可见 loss 曲线
