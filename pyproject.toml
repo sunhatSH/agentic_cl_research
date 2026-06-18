@@ -39,6 +39,10 @@ dev = [
     "black>=24.0",
     "mypy>=1.8",
 ]
+# NOTE: vendor sandbox backends beyond local/e2b are stubs for now
+# (rollout.sandbox_client.AliyunSandbox is 留空). When the Alibaba AgentBay
+# backend is implemented on the cluster, add its SDK here, e.g.:
+#   aliyun = ["wuying-agentbay-sdk"]
 
 [tool.setuptools.packages.find]
 where = ["."]

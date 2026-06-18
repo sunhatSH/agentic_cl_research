@@ -1,4 +1,4 @@
-# Base configuration shared by all 20 experiments.
+# Base configuration shared by all 21 experiments.
 #
 # Each experiment yaml inherits from this file and overrides only the fields
 # that vary in its ablation row. Inheritance is resolved in trainer/cl_main.py
@@ -36,7 +36,7 @@ actor_rollout_ref:
     # agent:
     #   agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
     #   sessions_per_step: 16       # 16 sessions in parallel (x n slots = 128)
-    #   sandbox_backend: e2b        # 'e2b' (Tencent) on cluster, 'local' for dev
+    #   sandbox_backend: e2b        # 'e2b' (Tencent) on cluster, 'local' for dev; 'aliyun' (AgentBay) = stub/留空
 
   # Reference policy pi_ref -- pi_0 (initial) or pi_{t-1} (prev stage ckpt).
   ref:

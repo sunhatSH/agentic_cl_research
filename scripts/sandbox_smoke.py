@@ -8,6 +8,8 @@ Backends:
   --backend local  (default) runs Python in a local subprocess (no network/SDK).
   --backend e2b     uses the real Tencent Agent Runtime (needs E2B_API_KEY /
                     E2B_DOMAIN + network); identical loop, one-line swap.
+  --backend aliyun  Alibaba 无影 AgentBay slot -- interface/registry ready, the
+                    vendor impl is a STUB (留空) to fill in on the cluster.
 
 This is a stand-in policy (mock model). On the cluster the policy is the real
 Qwen3.6-27B; everything else (parsing, sandbox exec, GRPO, domain tag) is reused.
@@ -87,7 +89,7 @@ def rollout_group(query: str, expected: int, m: int, backend: str, seed: int = 0
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--backend", default="local", choices=["local", "e2b"])
+    ap.add_argument("--backend", default="local", choices=["local", "e2b", "aliyun"])
     ap.add_argument("-m", "--group-size", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()

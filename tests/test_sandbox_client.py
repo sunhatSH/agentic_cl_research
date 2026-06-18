@@ -5,9 +5,11 @@ from __future__ import annotations
 import pytest
 
 from rollout.sandbox_client import (
+    ExecResult,
     LocalSandbox,
     grpo_advantages,
     make_sandbox,
+    register_backend,
     select_winner,
 )
 
@@ -70,6 +72,35 @@ def test_make_sandbox_e2b_without_credentials_raises(monkeypatch):
     monkeypatch.delenv("E2B_DOMAIN", raising=False)
     with pytest.raises(RuntimeError, match="E2B_API_KEY"):
         make_sandbox("e2b")
+
+
+def test_make_sandbox_aliyun_is_registered_but_stubbed():
+    # 'aliyun' is wired into the registry (the interface/extension point is ready),
+    # but the vendor implementation is intentionally left blank (留空) for now, so
+    # instantiating it fails fast with NotImplementedError.
+    with pytest.raises(NotImplementedError):
+        make_sandbox("aliyun")
+
+
+def test_make_sandbox_unknown_lists_registered_backends():
+    # The ValueError enumerates the registry, proving make_sandbox dispatches by name.
+    with pytest.raises(ValueError, match="aliyun"):
+        make_sandbox("does_not_exist")
+
+
+def test_register_backend_is_open_for_extension():
+    # A new vendor plugs in with one register_backend() call -- no edit to the loop.
+    class _CustomSandbox:
+        def run_code(self, code, language="python"):
+            return ExecResult("custom-ok", "", True)
+
+        def kill(self):
+            pass
+
+    register_backend("custom_vendor", lambda **kw: _CustomSandbox())
+    sb = make_sandbox("custom_vendor")
+    assert isinstance(sb, _CustomSandbox)
+    assert sb.run_code("anything").stdout == "custom-ok"
 
 
 def test_e2b_kill_deletes_bare_sandbox_id(monkeypatch):

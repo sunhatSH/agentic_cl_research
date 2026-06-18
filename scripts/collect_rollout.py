@@ -127,7 +127,7 @@ def main():
     ap.add_argument("--actor-model", required=True)
     ap.add_argument("--actor-key", default="sk-local")
     ap.add_argument("--limit", type=int, default=10000)
-    ap.add_argument("--backend", default="e2b", choices=["e2b", "local"])
+    ap.add_argument("--backend", default="e2b", choices=["e2b", "aliyun", "local"])
     ap.add_argument("--concurrency", type=int, default=8, help="parallel sessions (sandboxes)")
     ap.add_argument("--k-max", type=int, default=3, help="follow-up turns upper bound")
     ap.add_argument("--max-turns", type=int, default=6, help="ReAct turn cap per rollout")

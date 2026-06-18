@@ -91,7 +91,7 @@ def main() -> None:
     ap.add_argument("--queries", required=True, help="queries JSONL path (output of prepare_queries / data-filter)")
     ap.add_argument("--limit", type=int, default=10000, help="number of sessions/seeds to collect")
     ap.add_argument("-m", "--group-size", type=int, default=8, help="slots (rollouts) per query")
-    ap.add_argument("--backend", default="e2b", choices=["e2b", "local"])
+    ap.add_argument("--backend", default="e2b", choices=["e2b", "aliyun", "local"])
     ap.add_argument("--actor-base", default="http://127.0.0.1:8000/v1", help="local vllm OpenAI base")
     ap.add_argument("--actor-model", default="cold-actor", help="vllm --served-model-name")
     ap.add_argument("--max-turns", type=int, default=6, help="ReAct turn cap per rollout")
