@@ -118,8 +118,13 @@ def make_cl_fully_async_trainer_cls(buffer: Any, cfg: Any):
     # subclassing an actor class directly. Inherit from the UNDERLYING plain
     # class, then re-apply @ray.remote (matching verl's num_cpus=10).
     base_cls = getattr(getattr(FullyAsyncTrainer, "__ray_metadata__", None), "modified_class", None)
-    if base_cls is None:  # pragma: no cover - fallback for other Ray versions
-        base_cls = FullyAsyncTrainer
+    if base_cls is None:
+        raise TypeError(
+            f"Cannot unwrap Ray actor class {FullyAsyncTrainer}. "
+            "`__ray_metadata__.modified_class` not found. "
+            "Check verl's fully_async_trainer for the underlying plain class, "
+            "or update the extraction path for the installed Ray/verl version."
+        )
 
     class CLFullyAsyncTrainer(base_cls):
         async def init_workers(self):

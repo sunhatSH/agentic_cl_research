@@ -15,8 +15,16 @@ dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
 .coverage
 htmlcov/
+
+# Compiled objects (unstripped tools)
+*.o
+*.so
+
+# Node (sandbox docker may npm install at project root in docker build)
+node_modules/
 
 # Env / secrets
 .env

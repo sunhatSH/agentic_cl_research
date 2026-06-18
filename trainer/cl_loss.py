@@ -19,6 +19,7 @@ See ``doc/VerlIntegration.md`` section 3.2.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from trainer.replay_forward import (
@@ -27,6 +28,8 @@ from trainer.replay_forward import (
     REPLAY_WEIGHTS_KEY,
     select_replay_rows,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _get_non_tensor(data, key: str, default=None):
@@ -95,6 +98,12 @@ def _to_dense_response_logprobs(log_probs, data):
     try:
         return no_padding_2_padding(log_probs, data)
     except Exception:  # noqa: BLE001 -- mocks / dense inputs fall through unchanged
+        logger.warning(
+            "no_padding_2_padding failed — returning unconverted log_probs "
+            "to replay loss. This is expected during mock tests but may "
+            "produce silently wrong replay loss on the cluster.",
+            exc_info=True,
+        )
         return log_probs
 
 
