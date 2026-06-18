@@ -210,10 +210,17 @@ turn 后：snapshot_post = files.list(...) + 内容哈希
 3. ✅ `Observer` diff 采集：只读快照探针（仅用 `run_code`，后端无关）→ `diff_snapshots(pre, post)` 出 added/modified/removed + 内容摘要 → 进 `OBSERVER_SYSTEM` 当 ground truth；`ObservationReport.state_diff` 携带确定性证据。
 4. ✅ 提示词：diff = 事实，actor 声称仅交叉核对，`discrepancies` 收"声称不被 diff 支持"的项。
 
+**已实现（2026-06-19 第二批）：**
+5. ✅ **性能 Tier1**：空 diff 跳过 observer LLM；每轮 1 次快照（上轮 post 前传作 baseline）；变更检测改 `(size, mtime)` 去掉整文件 sha1；prompt 去冗余 file tree + 封顶。
+6. ✅ **(a) 二进制内容提取适配器**：快照对二进制只标记，diff 后**只对本轮变更的** xlsx/xlsm/docx/pptx/pdf 跑沙箱内提取（openpyxl/python-docx/python-pptx/pdfplumber）→ 文本进 diff（`kind=binary→text`）；缺库/解析失败优雅降级为标记，不崩。
+7. ✅ **(b) 非 FS 状态命令探针（SysOps）**：`snapshot_system` 取 `{pip, ports(LISTEN), procs}`，`diff_system` 出"本轮装的包 / 开的端口 / 起的进程"；不采集 env 值（防泄密）。
+8. ✅ **observer LLM 可选**：`Observer(use_llm=False)` 默认**确定性建报告、零模型调用**（取证证据已是文本）；`use_llm=True` 才调模型做归纳/discrepancy。确定性取证层（快照+diff+提取+sysops）**始终运行**——这正是避免"把原始证据塞给 reward 模型去观察"的高消耗。
+
 **剩余（待集群 / 后续）：**
-- 二进制产物（xlsx/png）仅 size+sha，需 openpyxl 等**格式解析**才能核对"声称的单元格数值"。
-- 瞬态/被覆盖的中间产物：当前 before/after 快照只看**净变化**，未上 `watch_dir` 事件流。
-- 真实后端（`e2b`/`aliyun`）连通 + 8 槽 winner-sync 下的 FS 级 baseline 正确性（local mock 仅近似）待集群验证。
+- 二进制提取真值验证需 openpyxl/pptx 等库 + 真实文件（本机无库，已验证 fallback 不崩）。
+- 瞬态/被覆盖的中间产物：当前 before/after 快照只看**净变化**，未上 `watch_dir` 事件流（Tier2 #6，按调查降级）。
+- 真实后端（`e2b`/`aliyun`）连通 + 8 槽 winner-sync 下 FS/SYS baseline 正确性（local mock 仅近似）待集群验证。
+- discrepancy（声称 vs 实际）在 `use_llm=False` 下留给 reward judge（其 R_t 已含 `state_diff`），不在 observer 重复一遍模型判断。
 
 > 用 §1 的 `e2b`（真后端能读内容）或实现后的 `aliyun` 即可上真实沙箱；本机用 `local`（持久 workdir）已能验证 diff 逻辑。详见 `CLAUDE.md` TODO#5。
 

@@ -63,7 +63,8 @@ def test_observer_parses_json_report():
         '"final": [{"path": "out.csv", "kind": "csv", "content_excerpt": "a,b"}], '
         '"actor_claims": "wrote out.csv", "discrepancies": "", "file_tree": "out.csv"}'
     )
-    obs = Observer(client=MockChat(raw))
+    # use_llm=True: opt into the model path (default observer is deterministic).
+    obs = Observer(client=MockChat(raw), use_llm=True)
     report = obs.observe([{"role": "assistant", "content": "done, wrote out.csv"}])
     assert report.final[0]["path"] == "out.csv"
     assert report.intermediate[0]["value_excerpt"] == "42"
@@ -71,10 +72,26 @@ def test_observer_parses_json_report():
 
 
 def test_observer_falls_back_on_bad_json():
-    obs = Observer(client=MockChat("not json at all"))
+    obs = Observer(client=MockChat("not json at all"), use_llm=True)
     report = obs.observe([{"role": "assistant", "content": "I did stuff"}])
     # actor text preserved even when the model output is unparseable
     assert "I did stuff" in report.actor_claims
+
+
+def test_observer_deterministic_report_no_llm():
+    # Default (use_llm=False): forensics-only, NO model call; final filled from diff.
+    class Boom:
+        def chat(self, messages, *, max_tokens=512):
+            raise AssertionError("observer must not call the LLM when use_llm=False")
+
+    obs = Observer(client=Boom())
+    pre = {"fs": {}, "sys": {}}
+    post = {"fs": {"./out.csv": {"size": 3, "mtime": 2.0, "ext": ".csv", "text": "a,b"}}, "sys": {}}
+    report = obs.observe(
+        [{"role": "assistant", "content": "wrote out.csv"}], baseline=pre, post=post
+    )
+    assert any(f["path"] == "./out.csv" for f in report.final)
+    assert "out.csv" in report.state_diff and "a,b" in report.state_diff
 
 
 def test_parse_observation_report_extracts_embedded_json():

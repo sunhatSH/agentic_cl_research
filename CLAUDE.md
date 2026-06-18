@@ -389,9 +389,13 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
      - ✅ observer **diff-driven**：`agents/observer.py` 加只读快照探针（仅用 `run_code`，后端无关）+ `snapshot()`/`diff_snapshots()`，`observe(traj, sandbox, baseline=)` 产出 before/after 内容级 diff；`OBSERVER_SYSTEM` 改为"diff=ground truth，声称仅核对"，`ObservationReport.state_diff` 携带确定性证据。机制 + "能否 diff 到内容"详见 [`doc/接口使用_Sandbox与三Agent.md`](doc/接口使用_Sandbox与三Agent.md) §3。
      - ✅ `LocalSandbox` 持久 workdir（state 跨 `run_code` 不丢；agent 多步 + observer diff 本机可验证）。
      - ✅ `simulated_session` / `usersim_collect` 已接：turn 前 `observer.snapshot` 取 baseline、传 winner 沙箱。
+   - **已完成（2026-06-19 第二批）**：
+     - ✅ 性能 Tier1（空 diff 跳过 LLM / 每轮 1 次快照 / (size,mtime) 去 sha1 / prompt 瘦身）。
+     - ✅ (a) **二进制内容提取**：diff 后只对变更的 xlsx/docx/pptx/pdf 跑沙箱内提取→文本进 diff（缺库降级不崩）。
+     - ✅ (b) **SysOps 命令探针**：`snapshot_system`/`diff_system` 取本轮装的包/开的端口/起的进程（不采集 env 值）。
+     - ✅ **observer LLM 可选**：`Observer(use_llm=False)` 默认确定性建报告零模型调用；确定性取证层始终运行——避免"让 reward 去观察"的高消耗。
    - **剩余 / 待集群**：
-     - 二进制产物（xlsx/png）目前只记 size+sha，不做格式解析 → 需 openpyxl 等内容级提取才能核对"声称的单元格数值"。
-     - 瞬态/被覆盖的中间产物：当前是 before/after 快照（只看净变化），未上 `watch_dir` 事件流。
+     - 二进制提取真值验证需库+真实文件（本机仅验 fallback）；瞬态中间产物 `watch_dir`（Tier2 #6，已降级）。
      - 8 槽路径 baseline 取 slot0（依赖"turn 开始时各槽位级一致"）——真实 e2b winner-sync 下成立，local mock 不做 FS 级 sync，故 8 槽 local 仅近似；真实后端连通（e2b/aliyun）+ 全栈验证待集群。
      - P1：questioner 区分"satisfied(`<end_session>`)" vs "API 失败"（现在异常吞成 None 静默结束）；persona `tone` 注入 questioner prompt；follow-up 轮 8 槽 reward 闭环；启动校验三端点存在且不同。
    - **第三方取证手段（回公司可直接用）**：

@@ -165,12 +165,19 @@ def _run(args: argparse.Namespace) -> int:
         raise SystemExit(f"persona {args.persona!r} not found; options e.g. {[p.name for p in PERSONAS[:5]]}")
 
     if args.real:
-        missing = [v for v in ("OBSERVER_API_BASE", "USERSIM_API_BASE") if not os.environ.get(v)]
+        missing = [v for v in ("USERSIM_API_BASE",) if not os.environ.get(v)]
+        if args.use_llm:
+            missing += [v for v in ("OBSERVER_API_BASE",) if not os.environ.get(v)]
         if missing:
-            print(f"[harness] --real but missing env {missing}; agents will degrade to minimal reports.")
-        observer, questioner, judge = Observer(), Questioner(), None
+            print(f"[harness] --real but missing env {missing}; agents will degrade.")
+        observer = Observer(use_llm=args.use_llm)
+        questioner, judge = Questioner(), None
     else:
-        observer = Observer(client=ScriptedChat(default=_mock_observer_report()))
+        # Observer LLM is optional; default deterministic forensics (no model call).
+        observer = Observer(
+            client=ScriptedChat(default=_mock_observer_report()) if args.use_llm else None,
+            use_llm=args.use_llm,
+        )
         questioner = Questioner(
             client=ScriptedChat(replies=["Looks good, can you also add a Q4 column?"], default=END_SESSION)
         )
@@ -224,6 +231,8 @@ def main() -> int:
     ap.add_argument("--backend", choices=["local", "e2b", "aliyun"], default="local")
     ap.add_argument("--real", action="store_true",
                     help="resolve observer/questioner/reward from env (OBSERVER_*/USERSIM_*/JUDGE_*) instead of mocks")
+    ap.add_argument("--use-llm", action="store_true",
+                    help="enable the OPTIONAL observer LLM (default: deterministic forensics, no model call)")
     ap.add_argument("--seed-query", default="Make a short report of the Q3 total and save it to report.txt.")
     ap.add_argument("--persona", default=None, help="fixed persona name (default: sampled)")
     ap.add_argument("--k-max", type=int, default=3, help="follow-up budget upper bound (K ~ U{1..k_max})")
