@@ -29,21 +29,25 @@ from agents.schema import ObservationReport, Persona
 
 OBSERVER_SYSTEM = (
     "You are an OBJECTIVE state observer in an agent-training loop. You are NOT "
-    "a user and you have NO preferences. Your only job is to collect verifiable "
+    "a user and you have NO preferences. Your only job is to report verifiable "
     "evidence about what the agent actually produced, so that (1) a reward judge "
     "can score it on real effect and (2) a separate user-agent can ask a "
     "grounded follow-up.\n\n"
-    "You are given the agent's own trajectory (what it SAID it did) and read-only "
-    "access to its workspace. Let the agent's claims DRIVE what you go look at: "
-    "if it says it wrote `report.xlsx`, read `report.xlsx`; if it says it computed "
-    "an intermediate value, find and quote it. Prioritize INTERMEDIATE results "
-    "(they are easily overwritten by later steps) as well as final deliverables.\n\n"
+    "You are given a DETERMINISTIC DIFF of the agent's sandbox workspace -- the "
+    "files it created / modified / removed THIS turn, with their actual content. "
+    "This diff is GROUND TRUTH. You are also given the agent's own trajectory "
+    "(what it CLAIMED it did); treat the trajectory as claims to be VERIFIED "
+    "against the diff, never as fact. Do NOT trust the narrative over the diff.\n\n"
+    "Capture INTERMEDIATE results (they are easily overwritten by later steps and "
+    "the actor often forgets to mention them) as well as final deliverables -- "
+    "read them straight from the diff content, not from what the actor says.\n\n"
     "Rules:\n"
-    "- Report only what you can verify from the workspace/trajectory. Never invent "
-    "files, values, or outcomes.\n"
-    "- Record the gap between what the agent CLAIMED and what actually exists in "
-    "the 'discrepancies' field (e.g. claimed a file that is absent, claimed a "
-    "number that does not match). This is the anti-hacking signal.\n"
+    "- Report only what the diff supports. Never invent files, values, or outcomes.\n"
+    "- Put every claim that the diff does NOT support into the 'discrepancies' "
+    "field (e.g. claimed a file that the diff does not show, claimed a number that "
+    "the file content contradicts, claimed success on an empty diff). This is the "
+    "anti reward-hacking signal.\n"
+    "- Also record real effects the actor did NOT mention but the diff shows.\n"
     "- Stay neutral: no praise, no criticism, no user voice.\n"
     "- Output ONLY a JSON object with keys: intermediate (list of "
     '{desc, source, value_excerpt}), final (list of {path, kind, content_excerpt}), '
@@ -53,24 +57,34 @@ OBSERVER_SYSTEM = (
 
 
 def build_observer_prompt(
-    *, actor_trajectory: str, file_tree: str, tool_outputs: str = ""
+    *, actor_trajectory: str, state_diff: str = "", file_tree: str = "", tool_outputs: str = ""
 ) -> list[dict[str, str]]:
-    """Messages for the Observer. Inputs come from the live winner instance.
+    """Messages for the Observer (diff-driven).
 
     Args:
-        actor_trajectory: the winner actor's output text (its claims = the lead).
-        file_tree: depth-truncated workspace tree (fallback evidence).
-        tool_outputs: optional raw stdout/stderr from read-only probe commands.
+        actor_trajectory: the winner actor's output text -- CLAIMS, to cross-check.
+        state_diff: deterministic before/after sandbox diff (GROUND TRUTH evidence).
+        file_tree: workspace path listing (fallback evidence).
+        tool_outputs: optional raw stdout/stderr from extra read-only probes.
     """
-    parts = [
-        "# Agent trajectory (what it claims it did)\n" + actor_trajectory.strip(),
-        "# Workspace file tree\n" + file_tree.strip(),
-    ]
+    parts: list[str] = []
+    if state_diff.strip():
+        parts.append(
+            "# Workspace evidence (sandbox diff -- GROUND TRUTH, authoritative)\n"
+            + state_diff.strip()
+        )
+    parts.append(
+        "# Agent trajectory (what it CLAIMS it did -- cross-check, do NOT trust over the diff)\n"
+        + actor_trajectory.strip()
+    )
+    if file_tree.strip():
+        parts.append("# Workspace file tree\n" + file_tree.strip())
     if tool_outputs.strip():
         parts.append("# Read-only probe outputs\n" + tool_outputs.strip())
     parts.append(
-        "# Output\nReturn the JSON observation report. Collect intermediate AND "
-        "final results; fill 'discrepancies' with any claim-vs-reality gaps."
+        "# Output\nReturn the JSON observation report. Treat the workspace diff as "
+        "ground truth; populate intermediate AND final from it; put any claim not "
+        "supported by the diff into 'discrepancies'."
     )
     return [
         {"role": "system", "content": OBSERVER_SYSTEM},

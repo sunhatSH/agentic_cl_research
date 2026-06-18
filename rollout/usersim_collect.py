@@ -71,9 +71,13 @@ def run_usersim_session(
     pool.spawn()
     query: str | None = seed_query
     turn = 0
+    prev_post: dict | None = None  # #2: previous turn's post-snapshot = this turn's baseline
     try:
         while query is not None:
             turn += 1
+            sandbox = pool._slots[0].client if pool._slots else None
+            # #2: reuse last turn's post as baseline; only snapshot fresh on turn 1.
+            baseline = prev_post if prev_post is not None else observer.snapshot(sandbox)
             # slots=1 -> exactly one trajectory.
             trajs = pool.run_query(query, agent_fn)
             pool.query_index += 1
@@ -87,9 +91,10 @@ def run_usersim_session(
             pool.session_history.extend(traj.messages)
             # advance the (single) slot state already handled by run_query.
 
-            # Observe the trajectory -> objective report (drives questioner).
-            sandbox = pool._slots[0].client if pool._slots else None
-            report = observer.observe(traj.messages, sandbox)
+            # Observe (diff-driven): one post-snapshot, carried forward as next baseline (#2).
+            post = observer.snapshot(sandbox)
+            report = observer.observe(traj.messages, baseline=baseline, post=post)
+            prev_post = post
             result.reports.append(report)
 
             if turn > k:

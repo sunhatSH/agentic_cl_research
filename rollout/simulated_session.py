@@ -100,9 +100,15 @@ def run_simulated_session(
     pool.spawn()
     query: str | None = seed_query
     turn = 0
+    prev_post: dict | None = None  # #2: prior winner's post-snapshot = next turn's baseline
     try:
         while query is not None:
             turn += 1
+            # #2: reuse prior winner's post as baseline; snapshot fresh only on turn 1
+            # (all 8 slots are bit-identical at turn start, synced to the prior winner).
+            baseline = prev_post if prev_post is not None else (
+                observer.snapshot(pool._slots[0].client) if pool._slots else None
+            )
             trajs = pool.run_query(query, agent_fn)
             result.trajectories.extend(trajs)
             pool.query_index += 1
@@ -111,11 +117,16 @@ def run_simulated_session(
             if winner_idx is None:
                 result.ended_by = "scorer_error"
                 break
+            # capture the winner's live sandbox BEFORE sync (real backends may
+            # recycle loser slots during winner-sync).
+            winner_client = pool._slots[winner_idx].client if winner_idx < len(pool._slots) else None
             pool.sync_to_winner(winner_idx, trajs)
             winner = trajs[winner_idx]
 
-            # Observe winner -> objective report (drives reward + questioner).
-            report = observer.observe(winner.messages)
+            # Observe winner (diff-driven): one post-snapshot, carried forward as baseline (#2).
+            post = observer.snapshot(winner_client)
+            report = observer.observe(winner.messages, baseline=baseline, post=post)
+            prev_post = post
             result.reports.append(report)
 
             # Score this follow-up on the real effect (skip q1 if it has a checker).

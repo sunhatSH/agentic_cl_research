@@ -36,6 +36,14 @@ class ObservationReport:
     file_tree: str = ""
     """Winner workspace file tree (depth-truncated; fallback evidence)."""
 
+    state_diff: str = ""
+    """Deterministic before/after sandbox diff for this turn (diff-driven evidence).
+
+    Computed by the harness from the sandbox itself (files created/modified/removed
+    + content), NOT by the model -- this is the ground truth the observer narrates
+    and the reward judge grounds on. Empty when no baseline/sandbox was available.
+    """
+
     def is_empty(self) -> bool:
         """True when the observer found no usable evidence.
 
