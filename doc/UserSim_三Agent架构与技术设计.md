@@ -13,9 +13,9 @@
 | **三个 agent** | Observer（客观报告）→ Questioner（人设 follow-up）+ Reward（观察 grounded 打分） |
 | **插入点** | 每个 query 的 **winner 选出并 sync 之后**（`sync_to_winner` 后） |
 | **共享结构** | `ObservationReport` $R_t$ **一份两用**——Questioner 与 Reward 读同一份 |
-| **Observer** | 无人设；只读 winner 沙箱；由 actor 声明驱动收集 |
+| **Observer** | 无人设；只读 winner 沙箱；**diff-driven，模型只看环境 diff、不看 actor 轨迹**；observer LLM 可选 |
 | **Questioner** | 42 人设，**一会话抽 1 个、全程固定**；不碰沙箱 |
-| **Reward** | 复用 `trainer/model_reward.JudgeClient`；rubric 与 ClawEval 同构 |
+| **Reward** | 复用 `trainer/model_reward.JudgeClient`；**双通道**：state_diff 判 completion + pass-through trajectory 判 safety/robustness；空 diff 短路不调 judge |
 | **耐心** | `PatienceTracker`：$P_k = P_0 - d_0(2^k-1)$，失败路径 probabilistic redo |
 | **后端隔离** | `OBSERVER_*` / `USERSIM_*` / `JUDGE_*` 三套独立 env，抗 self-preference |
 
@@ -38,8 +38,9 @@ SessionSandboxPool（16 会话 × 8 槽，或采集阶段 slots=1）
         w ← select_winner(T)          # 现有 reward / fallback
         sync_to_winner(w); H ← H ∥ T[w].messages
         │
-        ├─ R_t ← Observer.observe(T[w].messages, sandbox=w)
-        ├─ r  ← agents.reward.score_followup(query=q, report=R_t, trajectory=...)
+        ├─ R_t ← Observer.observe(sandbox=w, actor_trajectory=T[w].messages, baseline, post)
+        │         # observer 模型只看 state diff；轨迹仅 pass-through 进 R_t.actor_trajectory
+        ├─ r  ← agents.reward.score_followup(query=q, report=R_t)   # 从 R_t 取 state+trajectory
         ├─ buffer.ingest(all 8 trajs, winner_score=r)
         │
         ├─ if t > K: break
@@ -54,31 +55,39 @@ SessionSandboxPool（16 会话 × 8 槽，或采集阶段 slots=1）
 
 ## 3. 三个 Agent 技术规格
 
-### 3.1 Observer — `agents/observer.py`
+### 3.1 Observer — `agents/observer.py`（**diff-driven，模型只看 STATE**）
 
-**职责**：从 winner 轨迹 + 只读沙箱产出 `ObservationReport`。
+**职责**：从只读沙箱的 **before/after 环境 diff** 产出 `ObservationReport`。observer **模型不看 actor 轨迹**——它的判断只基于真实状态增量。
 
-**为什么训练时必须用独立 Observer 而非 actor 自观察**：线上推理/部署时，actor 与 agent 合一执行观察与动作（self-observation 无害——没有 reward 信号可 hack）；但在训练中，若让 actor 自行观察自己的产出并直接输入 reward 计算，actor 可以学到"产出看起来完成但实际未交付"的策略（reward hacking）——因为观察者与执行者是同一模型，没有独立的验证环节。引入独立的 Observer agent（使用不同模型与后端）作为第三方取证，将"声称"与"实际"的验证解耦，从结构上杜绝这一攻击面。| 字段 | 含义 |
+**为什么 observer 只看 state、不看 actor 叙事（2026-06-19 定稿）**：训练时若让 reward/observer 以 actor 的"声称"为依据，actor 会学到"嘴上说完成、实际没交付"的策略（reward hacking）。原方案让独立 Observer 读 actor 声称去"比对 claims vs 实际"；现进一步收紧为 **observer 根本不接收轨迹**——它对环境做确定性 before/after diff（文件内容 + SysOps 状态），completion 只能由真实 diff 决定。这样反 hacking 是**结构性**的：声称从不进入 observer 的判断，也从不进入 completion。
+
+| 字段 | 含义 |
 |------|------|
-| `intermediate[]` | 中间结果 `{desc, source, value_excerpt}` |
-| `final[]` | 最终交付 `{path, kind, content_excerpt}` |
-| `actor_claims` | Winner 轨迹文本（观察入口） |
-| `discrepancies` | 声称 vs 实际的差异（给 judge 防 hacking） |
-| `file_tree` | 工作区深度截断文件树（fallback 证据） |
+| `state_diff` | **环境 before/after diff（含内容 + SysOps）= ground truth**（observer 唯一判据） |
+| `final[]` | 最终交付 `{path, kind, content_excerpt}`（从 diff 填） |
+| `intermediate[]` | 中间结果 `{desc, source, value_excerpt}`（`use_llm` 时模型填） |
+| `discrepancies` | 状态内部红旗（空/损坏/自相矛盾；`use_llm` 时填） |
+| `actor_trajectory` | **pass-through**：actor 轨迹文本——observer **组件**捎带、observer **模型不看**、仅给 reward |
+| `file_tree` | 工作区文件树（fallback 证据） |
+| `has_effect` | 本轮 diff 是否非空；False → 短路 reward、走失败/耐心路径 |
 
 **实现要点**：
 
 ```python
-# 伪流程
-actor_text = flatten(winner_messages)
-file_tree = sandbox.run_code(read_only_walk)  # 失败则 ""
-messages = build_observer_prompt(actor_text, file_tree)
-raw = client.chat(messages)                   # OBSERVER_API_*
-report = parse_observation_report(raw, fallback=...)
+# 伪流程：观察组件做确定性取证，模型（可选）只归纳 diff
+post   = snapshot(sandbox)                 # fs + sys 快照（仅 run_code，后端无关）
+diff   = diff_snapshots(baseline, post)    # added/modified/removed + 内容
+extract_binaries(...)                       # xlsx/docx/pptx/pdf → 文本（仅变更文件）
+sys_diff = diff_system(baseline, post)      # 装的包/开的端口/起的进程
+state_diff = render(diff, sys_diff)
+report = (use_llm ? parse(client.chat(build_observer_prompt(state_diff)))   # 模型只看 diff
+                  : build_deterministic_report(diff))                       # 默认零模型调用
+report.actor_trajectory = flatten(winner_messages)   # pass-through，不进 prompt
 ```
 
-- **容错**：LLM 或沙箱失败 → 降级为最小报告（仅 claims + tree），**不 crash 会话**。
-- **空报告**：`report.is_empty()` → 触发失败路径 + 耐心机制。
+- **observer LLM 可选**（`use_llm`，默认 False）：取证证据已是文本，默认确定性建报告、零模型调用；开模型也只看 `state_diff`，**永不看 trajectory**（不浪费 token）。
+- **容错**：LLM/沙箱失败 → 降级为最小报告（state_diff + tree），**不 crash 会话**。
+- **空报告**：`has_effect=False`（空 diff）→ `is_empty()` 真 → 触发失败路径 + 耐心机制。
 - **Env**：`OBSERVER_API_BASE` / `OBSERVER_MODEL` / `OBSERVER_API_KEY`（`agents/base.resolve_observer_client`）。
 
 ### 3.2 Questioner — `agents/questioner.py`
@@ -106,12 +115,14 @@ report = parse_observation_report(raw, fallback=...)
 
 ```python
 # 不重复实现 judge I/O，复用 trainer/model_reward
-score_followup(query, report, trajectory, judge=get_judge())
-# → {score, completion, safety, robustness, judge_error}
+score_followup(query, report, judge=get_judge())   # trajectory 从 report 取
+# → {score, completion, safety, robustness, judge_error[, gated]}
 ```
 
-- **Rubric**：`build_reward_judge_input` 把 report 结构化字段 + 轨迹 + ClawEval 三维准则拼成 judge 输入。
-- **尺度**：与 eval 同构，保证 reward/eval 一致。
+- **双通道（都来自同一份 $R_t$）**：`state_diff`（observer 状态证据）= **completion** 的 ground truth；`report.actor_trajectory`（pass-through，observer 模型没看过）给 judge 判 **safety/robustness**。completion 锚在 diff（真实效果），trajectory 说明"怎么做到的"。
+- **拦截层（gate）**：`report.has_effect=False`（空 diff）→ 直接 score 0、**不调 judge**（带 `gated`）。
+- **防超长**：`state_diff` 与 `actor_trajectory` 各自中间截断封顶（`_MAX_DIFF_CHARS` / `_MAX_TRAJ_CHARS`）。
+- **尺度**：与 eval 同构（`safety*(0.8*completion+0.2*robustness)`），保证 reward/eval 一致。
 - **Env**：`JUDGE_API_BASE` / `JUDGE_MODEL` / `JUDGE_API_KEY`（与 verl `custom_reward_function` 共用）。
 
 ---

@@ -14,11 +14,9 @@ from dataclasses import dataclass, field
 class ObservationReport:
     """Objective, persona-free state report produced by the Observer (§7.2).
 
-    One report, two consumers (§3.3 要点 3): it is fed to BOTH the Questioner
-    (to author the next query) and the Reward judge (to score on real effect).
-    The report is driven by what the actor *claimed* it did (``actor_claims``)
-    rather than a fixed snapshot template, so intermediate artifacts (easily
-    overwritten by later steps) are captured before they vanish (§3.3 要点 2).
+    One report, two consumers (§3.3 要点 3): the Questioner (state findings, to
+    author the next query) and the Reward judge (state findings to score real
+    effect, PLUS the pass-through trajectory to judge process/safety).
     """
 
     intermediate: list[dict] = field(default_factory=list)
@@ -27,11 +25,17 @@ class ObservationReport:
     final: list[dict] = field(default_factory=list)
     """Final deliverables: {path, kind, content_excerpt}."""
 
-    actor_claims: str = ""
-    """What the actor stated it did, in the winner trajectory (observation lead)."""
+    actor_trajectory: str = ""
+    """Raw actor trajectory text -- PASS-THROUGH only.
+
+    Carried by the observer COMPONENT for the reward judge (process/safety), but
+    NEVER fed to the observer MODEL (it is not put in the observer prompt -- no
+    token waste). The observer's own findings stay state-only; this field is just
+    the channel that delivers the trajectory to reward via the one R_t packet.
+    """
 
     discrepancies: str = ""
-    """Claimed-vs-actual gaps (anti-hacking evidence for the judge); may be empty."""
+    """Internal red flags in the produced state (empty/corrupt/contradictory); may be empty."""
 
     file_tree: str = ""
     """Winner workspace file tree (depth-truncated; fallback evidence)."""
@@ -44,13 +48,26 @@ class ObservationReport:
     and the reward judge grounds on. Empty when no baseline/sandbox was available.
     """
 
+    has_effect: bool = True
+    """Whether THIS turn actually changed the environment (diff non-empty).
+
+    Gating signal (the "几层拦截"): the observer sets this False when the before/after
+    FS + system diff is empty -- the turn produced nothing. Downstream uses it to
+    SHORT-CIRCUIT expensive calls (skip the reward judge, take the failure path)
+    without re-deriving the fact. Defaults True for legacy / no-diff reports.
+    """
+
     def is_empty(self) -> bool:
-        """True when the observer found no usable evidence.
+        """True when the observer found no usable evidence of effect.
 
         Drives the failure / patience path (§3.6.5): an empty report after a
         winner rollout means the response failed / stopped / produced nothing.
+        Diff-driven: ``has_effect`` False (empty diff) counts as empty. The
+        pass-through ``actor_trajectory`` does NOT count as evidence of effect.
         """
-        return not (self.intermediate or self.final or self.actor_claims.strip())
+        if not self.has_effect:
+            return True
+        return not (self.intermediate or self.final)
 
 
 @dataclass

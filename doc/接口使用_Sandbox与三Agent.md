@@ -15,7 +15,7 @@
 | `make_sandbox`（按名选后端） | 同上 | `make_sandbox(backend="local"\|"e2b"\|"aliyun", **kw) -> SandboxClient` | 调度/采集脚本调用 |
 | `register_backend`（开放扩展） | 同上 | `register_backend(name, builder)`；`builder(**kw)->SandboxClient` | 加新厂商时调用 |
 | `Observer.observe`（产**报告**） | `agents/observer.py` | `observe(actor_trajectory, sandbox=None) -> ObservationReport` | 产出 `ObservationReport` |
-| `ObservationReport`（**报告**） | `agents/schema.py` | `.intermediate/.final/.actor_claims/.discrepancies/.file_tree`、`.is_empty()` | observer 产 → questioner+reward 消费 |
+| `ObservationReport`（**报告**） | `agents/schema.py` | `.state_diff`(ground truth)`/.final/.intermediate/.discrepancies/.actor_trajectory`(pass-through)`/.has_effect`、`.is_empty()` | observer 产 → questioner+reward 消费 |
 | `Questioner.next_query`（消费报告） | `agents/questioner.py` | `next_query(persona, report, session_history) -> str\|None` | 读报告 → 出下一条 query |
 | `PatienceTracker`（失败路径） | 同上 | `PatienceTracker(persona, rng).on_failure() -> bool` | 失败轮决定 redo / 结束 |
 | `score_followup`（Reward，消费报告） | `agents/reward.py` | `score_followup(*, query, report, trajectory, judge=None) -> dict` | 读报告 → 打分 |
@@ -94,33 +94,39 @@ export AGENTBAY_API_KEY=...   # pip install wuying-agentbay-sdk
 
 ---
 
-## 2. 三 Agent 层接口（**报告**与**声明**）
+## 2. 三 Agent 层接口（**报告**）
 
-一句话：**Observer 产出一份 `ObservationReport`（报告），Questioner 和 Reward 各读这同一份报告**（一份两用）。报告里 `actor_claims` 是 actor 的**声明**（它说自己做了什么），`discrepancies` 是"声明 vs 实际"的差异（反 reward-hacking 的命门）。
+一句话：**Observer 产出一份 `ObservationReport`（报告），Questioner 和 Reward 各读这同一份报告**。报告核心是 `state_diff`（环境 diff = ground truth）；另有 `actor_trajectory`（actor 轨迹文本，**pass-through**：observer 组件捎带、observer 模型不看、只给 reward）。
 
 ### 2.1 `ObservationReport`（**报告**，`agents/schema.py`）
 
 | 字段 | 含义 | 谁用 |
 |------|------|------|
-| `intermediate: list[dict]` | 中间结果 `{desc, source, value_excerpt}` | reward 核对、questioner 追问 |
-| `final: list[dict]` | 最终交付 `{path, kind, content_excerpt}` | reward 判 completion、questioner 反应 |
-| `actor_claims: str` | **声明**：actor 轨迹文本（它说自己做了什么） | 与实际对照 |
-| `discrepancies: str` | 声明 vs 实际差异（反 hacking 证据） | **reward 据此扣分** |
+| `state_diff: str` | **环境 before/after diff（含内容 + SysOps）= ground truth** | reward 判 completion、questioner 看产出 |
+| `final: list[dict]` | 最终交付 `{path, kind, content_excerpt}`（从 diff 填） | reward / questioner |
+| `intermediate: list[dict]` | 中间结果 `{desc, source, value_excerpt}`（use_llm 时由模型填） | reward / questioner |
+| `discrepancies: str` | 状态内部红旗（空/损坏/自相矛盾；use_llm 时填） | reward 参考 |
+| `actor_trajectory: str` | **pass-through**：actor 轨迹文本，**observer 模型不看**，只给 reward 判 safety/robustness | reward |
 | `file_tree: str` | 工作区文件树（fallback 证据） | 兜底 |
-| `is_empty()` | 无可用证据 → 触发失败/耐心路径 | session driver |
+| `has_effect: bool` | 本轮 diff 是否非空；False → 短路 reward、走失败/耐心路径 | reward gate / driver |
+| `is_empty()` | `not has_effect` 或无 final/intermediate → 失败/耐心路径 | session driver |
 
-### 2.2 `actor_claims`（**声明**）来源与用途
+### 2.2 `actor_trajectory`（**pass-through**）来源与用途
 
-来源 = `Observer` 把 winner 轨迹消息拍平（`_trajectory_text`）。用途 = 给 reward/questioner 当"actor 自述"，并与沙箱实际比对填 `discrepancies`。**注意：声明 ≠ 事实**——这正是要独立 observer 取证的原因（线上 self-observation 无害，训练里 actor 自观察会被 reward-hack）。
+来源 = driver 把 winner 轨迹消息传给 `observe(actor_trajectory=...)`，observer 组件用 `flatten_trajectory` 拍平存进报告。用途 = **只给 reward** 判 safety/robustness。**关键**：observer 模型（LLM）**永远看不到它**（不进 `build_observer_prompt`，不浪费 token）；observer 自身的取证只基于 `state_diff`。结构性反 hacking：声称根本不进 observer 的判断与 completion。
 
-### 2.3 `Observer.observe`（产报告）
+### 2.3 `Observer.observe`（产报告，模型只看 STATE）
 
 ```python
 from agents.observer import Observer
-report = Observer().observe(winner.messages, sandbox=winner_client)  # sandbox 可空 -> 仅 claims
+report = Observer().observe(
+    sandbox, actor_trajectory=winner.messages, baseline=pre_snap, post=post_snap
+)
+# observer 模型只看 state_diff；actor_trajectory 仅 pass-through 给 reward
 ```
 
-- 容错：LLM/沙箱失败 → 降级为最小报告（仅 claims + tree），**不 crash 会话**。
+- 容错：LLM/沙箱失败 → 降级为最小报告（state_diff + tree），**不 crash 会话**。
+- `use_llm=False`（默认）→ 确定性建报告、零模型调用；`use_llm=True` 才调模型归纳（仍不看 trajectory）。
 - env：`OBSERVER_API_BASE` / `OBSERVER_MODEL` / `OBSERVER_API_KEY`（temperature 0，客观）。
 
 ### 2.4 `Questioner.next_query` + `PatienceTracker`（消费报告，人设侧）
@@ -134,15 +140,22 @@ pt = PatienceTracker(persona, rng); redo = pt.on_failure()           # 失败轮
 - persona 的 `observation_focus` 决定**强调报告哪一面**（整体/细节 × 形式/内容）；observer 仍客观。
 - env：`USERSIM_API_BASE` / `USERSIM_MODEL` / `USERSIM_API_KEY`（temperature 0.9，抗坍缩）。
 
-### 2.5 `score_followup`（Reward，消费报告，打分侧）
+### 2.5 `score_followup`（Reward，打分侧，**双通道**）
 
 ```python
 from agents.reward import score_followup
-verdict = score_followup(query=q, report=report, trajectory=text, judge=None)
-# -> {score, completion, safety, robustness, judge_error}；尺度与 ClawEval 同构
+verdict = score_followup(query=q, report=report, trajectory=traj_text, judge=None)
+# -> {score, completion, safety, robustness, judge_error[, gated]}；尺度与 ClawEval 同构
 ```
 
-- 以 `report` 为**事实基准**（非 actor 声称）；`discrepancies` 进 rubric 当反 hacking 信号。
+reward judge 收**两条互相独立的输入通道**：
+- **状态通道**：`report.state_diff`（observer 的环境 diff = ground truth）→ 进 rubric，判 **completion**（真实产出）。
+- **轨迹通道**：`trajectory`（actor 动作文本）→ 由调用方（driver）**直接传入**，**不经过 observer**，判 **safety/robustness**（怎么做的）。
+
+要点：
+- **observer 不碰轨迹**（§2.3），轨迹从 rollout 直达 reward——这样 completion 只能反映真实效果（结构性反 hacking：声称根本不进 completion）；轨迹仍给 reward 看"过程"。
+- **拦截层（gate）**：`report.has_effect=False`（空 diff，本轮无变化）→ **直接返回 score 0、不调 judge**（带 `gated=1.0`）。
+- diff 与 trajectory 各自封顶（`_MAX_DIFF_CHARS` / `_MAX_TRAJ_CHARS`，中间截断）防超长。
 - env：`JUDGE_API_BASE` / `JUDGE_MODEL` / `JUDGE_API_KEY`（与 verl `custom_reward_function` 共用）。
 
 ### 2.6 数据流
@@ -216,6 +229,15 @@ turn 后：snapshot_post = files.list(...) + 内容哈希
 7. ✅ **(b) 非 FS 状态命令探针（SysOps）**：`snapshot_system` 取 `{pip, ports(LISTEN), procs}`，`diff_system` 出"本轮装的包 / 开的端口 / 起的进程"；不采集 env 值（防泄密）。
 8. ✅ **observer LLM 可选**：`Observer(use_llm=False)` 默认**确定性建报告、零模型调用**（取证证据已是文本）；`use_llm=True` 才调模型做归纳/discrepancy。确定性取证层（快照+diff+提取+sysops）**始终运行**——这正是避免"把原始证据塞给 reward 模型去观察"的高消耗。
 
+**几层拦截（gate，不需要的就不调用）：**
+| 层 | 调用 | 触发条件（否则跳过） |
+|----|------|----------------------|
+| L1 | 二进制内容提取 | 本轮**有变更的**富二进制文件（xlsx/docx/pptx/pdf）|
+| L2 | observer LLM | `use_llm=True` **且** diff 非空 |
+| L3 | reward judge | `report.has_effect=True`（本轮 diff 非空）**且** turn>1；空 diff → score 0、不调 judge |
+| L4 | questioner LLM | `turn<=k` **且** 未判失败 |
+> 快照本身（L0）便宜、确定性，始终跑；`has_effect=False` 同时让 `is_empty()` 为真 → 走失败/耐心路径。
+
 **剩余（待集群 / 后续）：**
 - 二进制提取真值验证需 openpyxl/pptx 等库 + 真实文件（本机无库，已验证 fallback 不崩）。
 - 瞬态/被覆盖的中间产物：当前 before/after 快照只看**净变化**，未上 `watch_dir` 事件流（Tier2 #6，按调查降级）。
@@ -230,6 +252,6 @@ turn 后：snapshot_post = files.list(...) + 内容哈希
 
 - **改沙箱后端**：只加类 + `register_backend`，**别动** `session_pool` / `scheduler` / 采集脚本。
 - **加新厂商**：照 `AliyunSandbox` stub 的形状实现 `run_code`/`kill`，env 用自己的前缀。
-- **用报告**：questioner/reward 一律以 `ObservationReport` 为准，**不要**直接信 `actor_claims`（那是"声明"不是事实）。
+- **用报告**：questioner/reward 一律以 `ObservationReport.state_diff` 为事实基准；`actor_trajectory` 是 reward-only pass-through，**observer 模型不看**、questioner 也不看。
 - **三套 env 端点必须分开**，否则 self-preference 保护失效。
 - **写完跑** `pytest tests/test_sandbox_client.py tests/test_agents.py` + `ruff check`（集群环境）。

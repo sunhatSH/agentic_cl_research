@@ -46,6 +46,27 @@ from agents.base import ChatClient, resolve_observer_client
 from agents.prompts import build_observer_prompt
 from agents.schema import ObservationReport
 
+
+def flatten_trajectory(messages: Sequence[dict[str, Any]] | str) -> str:
+    """Flatten winner messages into trajectory text (pass-through to reward).
+
+    Accepts a message list or an already-flattened string. This is carried by the
+    observer COMPONENT for reward; it is NEVER put into the observer LLM prompt.
+    """
+    if isinstance(messages, str):
+        return messages
+    lines: list[str] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        content = m.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                (c.get("text", "") if isinstance(c, dict) else str(c)) for c in content
+            )
+        lines.append(f"[{m.get('role', '?')}] {str(content).strip()}")
+    return "\n".join(lines)
+
 # Rendering caps for the prompt / report (#4): bound size regardless of workspace.
 _MAX_RENDER_FILES = 50
 _MAX_RENDER_CHARS = 1200
@@ -193,22 +214,6 @@ def _extract_probe(paths: list[str]) -> str:
         "        out[p]='[%s: extract failed: %s]' % (ext, type(e).__name__)\n"
         "print(json.dumps(out))\n"
     )
-
-
-def _trajectory_text(actor_trajectory: list[dict[str, Any]]) -> str:
-    """Flatten the winner message list into the actor's claim text."""
-    lines: list[str] = []
-    for msg in actor_trajectory:
-        if not isinstance(msg, dict):
-            continue
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            content = " ".join(
-                (c.get("text", "") if isinstance(c, dict) else str(c)) for c in content
-            )
-        role = msg.get("role", "?")
-        lines.append(f"[{role}] {str(content).strip()}")
-    return "\n".join(lines)
 
 
 def _run_json_probe(sandbox: ReadOnlySandbox | None, probe: str) -> dict:
@@ -367,15 +372,15 @@ def _format_state(post: dict[str, dict]) -> str:
 def build_deterministic_report(
     *,
     diff: dict[str, list] | None,
-    actor_text: str,
     file_tree: str,
     state_diff: str,
 ) -> ObservationReport:
     """Build R_t from the diff with NO model call (observer LLM optional).
 
-    Realized artifacts (added/modified files, incl. binary→text) go into ``final``;
-    ``discrepancies`` is left to the reward judge, which reads the same ``state_diff``
-    (so claim-vs-reality checking is not duplicated by a second model here).
+    Realized artifacts (added/modified files, incl. binary→text) go into ``final``.
+    The report carries STATE only (no ``actor_claims`` -- the observer never sees
+    the trajectory); the actor trajectory is given to the reward judge DIRECTLY,
+    not via this report.
     """
     final: list[dict] = []
     if diff is not None:
@@ -388,12 +393,7 @@ def build_deterministic_report(
                         "content_excerpt": f.get("content_excerpt", ""),
                     }
                 )
-    return ObservationReport(
-        final=final,
-        actor_claims=actor_text,
-        file_tree=file_tree,
-        state_diff=state_diff,
-    )
+    return ObservationReport(final=final, file_tree=file_tree, state_diff=state_diff)
 
 
 class Observer:
@@ -438,22 +438,29 @@ class Observer:
 
     def observe(
         self,
-        actor_trajectory: Sequence[dict[str, Any]],
         sandbox: ReadOnlySandbox | None = None,
         *,
+        actor_trajectory: Sequence[dict[str, Any]] | str = "",
         baseline: dict | None = None,
         post: dict | None = None,
     ) -> ObservationReport:
-        """Diff-driven objective report. Deterministic forensics + optional LLM.
+        """Diff-driven objective report. The observer MODEL sees STATE only.
+
+        The observer's findings are grounded purely on the real environment diff;
+        the observer LLM NEVER sees the trajectory (no token waste). The
+        ``actor_trajectory`` is carried PASS-THROUGH on the report (``actor_trajectory``
+        field) for the reward judge -- it is not fed to the prompt here.
 
         Args:
-            actor_trajectory: winner messages -- CLAIMS to cross-check.
-            sandbox: live (winner) instance; snapshotted for ``post`` if not given.
+            sandbox: live (winner) instance; used to extract changed binaries, and
+                snapshotted for ``post`` if ``post`` is not supplied.
+            actor_trajectory: winner messages (or text) -- carried through to reward,
+                NOT given to the observer model.
             baseline: pre-turn {fs,sys} snapshot. With it -> before/after diff.
             post: post-turn {fs,sys} snapshot (driver carries it forward -> one
                 snapshot per turn). Snapshotted here only if not supplied.
         """
-        actor_text = _trajectory_text(list(actor_trajectory))
+        traj_text = flatten_trajectory(actor_trajectory)
         if post is None:
             post = self.snapshot(sandbox) if sandbox is not None else {"fs": {}, "sys": {}}
         post_fs = self._fs(post)
@@ -469,11 +476,13 @@ class Observer:
             if changed:
                 _merge_extracted(diff, extract_binaries(sandbox, changed))
             if _fs_diff_empty(diff) and _sys_diff_empty(sys_diff):
-                # nothing changed on disk OR in system state this turn.
+                # nothing changed on disk OR in system state this turn -> gate
+                # downstream (skip reward judge / take failure path) via has_effect.
                 return ObservationReport(
-                    actor_claims=actor_text,
                     file_tree=file_tree,
+                    actor_trajectory=traj_text,
                     state_diff="mode: before/after diff -- (no filesystem or system changes this turn)",
+                    has_effect=False,
                 )
             state_diff = _format_changes(diff, sys_diff)
         else:
@@ -482,34 +491,35 @@ class Observer:
         # Observer LLM is OPTIONAL: the forensics evidence above is already text,
         # so by default we build the report deterministically (no model call).
         if not self._use_llm:
-            return build_deterministic_report(
-                diff=diff, actor_text=actor_text, file_tree=file_tree, state_diff=state_diff
+            report = build_deterministic_report(
+                diff=diff, file_tree=file_tree, state_diff=state_diff
             )
+        else:
+            # The prompt carries the diff ONLY -- the trajectory is never sent.
+            messages = build_observer_prompt(state_diff=state_diff)
+            try:
+                raw = self.client.chat(messages, max_tokens=self._max_tokens)
+                report = parse_observation_report(
+                    raw, fallback_tree=file_tree, fallback_diff=state_diff
+                )
+            except Exception:  # noqa: BLE001 -- degrade to minimal report, never crash
+                report = ObservationReport(file_tree=file_tree, state_diff=state_diff)
 
-        messages = build_observer_prompt(actor_trajectory=actor_text, state_diff=state_diff)
-        try:
-            raw = self.client.chat(messages, max_tokens=self._max_tokens)
-        except Exception:  # noqa: BLE001 -- degrade to minimal report, never crash
-            return ObservationReport(
-                actor_claims=actor_text, file_tree=file_tree, state_diff=state_diff
-            )
-        return parse_observation_report(
-            raw, fallback_claims=actor_text, fallback_tree=file_tree, fallback_diff=state_diff
-        )
+        report.actor_trajectory = traj_text  # pass-through (not seen by the model)
+        return report
 
 
 def parse_observation_report(
     text: str,
     *,
-    fallback_claims: str = "",
     fallback_tree: str = "",
     fallback_diff: str = "",
 ) -> ObservationReport:
     """Robustly parse the observer's JSON into an ObservationReport.
 
-    Falls back to a minimal report (actor text / tree / diff) when the model
-    output is not valid JSON. ``state_diff`` is the code-computed evidence and is
-    always carried (the model does not emit it), so reward/debug see the diff.
+    Falls back to a minimal report (tree / diff) when the model output is not valid
+    JSON. ``state_diff`` is the code-computed evidence and is always carried (the
+    model does not emit it). ``actor_trajectory`` is set by the caller (pass-through).
     """
     obj: Any = None
     if text:
@@ -523,9 +533,7 @@ def parse_observation_report(
                 except (TypeError, ValueError):
                     obj = None
     if not isinstance(obj, dict):
-        return ObservationReport(
-            actor_claims=fallback_claims, file_tree=fallback_tree, state_diff=fallback_diff
-        )
+        return ObservationReport(file_tree=fallback_tree, state_diff=fallback_diff)
 
     def _as_list(v: Any) -> list[dict]:
         return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
@@ -533,7 +541,6 @@ def parse_observation_report(
     return ObservationReport(
         intermediate=_as_list(obj.get("intermediate")),
         final=_as_list(obj.get("final")),
-        actor_claims=str(obj.get("actor_claims") or fallback_claims),
         discrepancies=str(obj.get("discrepancies") or ""),
         file_tree=str(obj.get("file_tree") or fallback_tree),
         state_diff=str(obj.get("state_diff") or fallback_diff),

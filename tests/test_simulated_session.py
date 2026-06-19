@@ -24,10 +24,17 @@ class MockChat:
         return self.reply
 
 
-def make_agent_fn(reward_by_slot):
-    """agent_fn whose slot rewards are fixed, so winner selection is deterministic."""
+def make_agent_fn(reward_by_slot, *, write=True):
+    """agent_fn whose slot rewards are fixed, so winner selection is deterministic.
+
+    By default each slot WRITES a file to its sandbox so the observer's before/after
+    diff is non-empty (has_effect True) -- the realistic case. Set ``write=False`` to
+    model a turn that produces nothing (empty diff -> failed turn).
+    """
 
     def agent_fn(client, query, state, slot_idx, history=None):
+        if write and hasattr(client, "run_code"):
+            client.run_code(f"open('out_{slot_idx}.txt', 'w').write({query!r})")
         return Trajectory(
             slot_idx=slot_idx,
             trajectory_id=f"s{slot_idx}",

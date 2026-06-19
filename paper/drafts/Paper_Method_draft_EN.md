@@ -92,11 +92,11 @@ The second source of signal corruption is multi-turn data. A follow-up query typ
 
 We eliminate premise drift by **constructing follow-ups online, after observing the realized state**. From each real session we retain only the first query as a seed (preserving the true distribution of user intents) and generate subsequent turns at the winner-synchronization boundary with three cooperating agents. It is worth emphasizing that the real sessions *do* contain genuine follow-ups $q_2,\dots,q_K$, but these were themselves written, at collection time, against the *original* session's execution result; during training rollout our policy's response to $q_1$ differs from that original, so the premises of these real follow-ups fail just as much. Reusing them would therefore re-introduce premise drift—**which is exactly why we discard $q_2,\dots,q_K$ and keep only the seed $q_1$**: the value of the real data lies in the genuine intent distribution carried by its first query, not in subsequent turns that are bound to one particular execution. The three agents are:
 
-- an **observer** (no persona) that compares the winner sandbox **before vs. after** the turn and gathers a neutral, structured report $R_t = \mathrm{Obs}(a_t^w, e_t^w)$ from the resulting workspace **diff** (files created/modified/removed, with their content; read-only)—using the actor's trajectory only as *claims to verify against the diff*, never as the source of truth—capturing intermediate as well as final results. It is worth emphasizing that the observer **must be independent of the policy model**: in a pure inference / deployment setting, having the actor observe its own output is harmless (there is no reward signal to hack); during training, however, if the actor self-observes and the observation feeds directly into reward computation, the policy can learn to produce outputs that *appear* complete while leaving the task actually undone—classic reward hacking. An independent observer, using a different model and backend, acts as a third-party verifier that decouples "claims" from "verification," structurally eliminating this attack surface;
+- an **observer** (no persona) that compares the winner sandbox **before vs. after** the turn and gathers a neutral, structured report $R_t = \mathrm{Obs}(e_t^w)$ from the resulting environment **diff** (files created/modified/removed with content, plus system-state changes; read-only), capturing intermediate as well as final results. Crucially the observer is grounded on the **real state only**: it does **not** receive the actor's trajectory or claims at all. This makes anti reward-hacking *structural*—since the actor's narrative never enters the observer's judgment, completion can only reflect the verified effect, so a policy cannot earn reward by *claiming* completion it did not deliver. (The trajectory is still made available to the reward judge for safety/robustness, but it is carried pass-through and is never shown to the observer model—see below.) The observer is also independent of the policy model (different model/backend), so observation and action are decoupled;
 - a **questioner** that carries one of $16$ fixed personas (profession, preference, user profile, and an *observation focus*: whole vs. detail, form vs. content). **Exactly one persona is drawn at the start of each session and held fixed for the entire session—one persona per session, shared by all turns ($p$ is constant within a session)**; the questioner produces the next query $q_{t+1}\sim Q(\cdot\mid p, R_t, H_t)$ where $H_t$ is the winner-derived session history; and
-- a **reward model** that scores the turn from the same report, $r_t = \mathrm{Reward}(R_t, a_t^w, \text{rubric})$.
+- a **reward model** that scores the turn from the same report over two channels: the observer's state diff (ground truth for *completion*) and the actor trajectory carried pass-through on $R_t$ (for *safety/robustness*), $r_t = \mathrm{Reward}(R_t, \text{rubric})$. A turn that changed nothing (empty diff) is short-circuited to zero without a judge call.
 
-The report $R_t$ serves both downstream consumers, which guarantees that the facts used to score a turn and the facts used to pose the next question are identical, and decouples objective evidence-gathering (observer) from subjective stance (questioner). Because the follow-up is written after the observer has inspected $e_t^w$, its premise is grounded by construction, $\Pr[\phi(q_{t+1})(e_t^w)]\approx 1$. Grounding the reward in the observed *effect* (whether a file was actually produced, whether its contents are correct) rather than the actor's textual claims also guards against reward hacking. **The purpose of the 16 diverse personas is precisely to prevent mode collapse**: a persona-free or single-persona questioner quickly converges to a few templated follow-ups ("please optimize it further"), whose entropy decays with turn count and loses training value; conditioning on personas that differ in profession, preference, and observation focus elicits different facets from the same objective report and keeps the follow-up distribution broad. Complementing this, follow-up length is kept small (sampled in $\{1,2,3\}$), the persona is **resampled only across sessions (fixed within a session)**, and—because each turn's winner state has been altered by the previous follow-up—the report that one fixed persona sees still changes from turn to turn (within-session diversity comes from state evolution, not from switching personas).
+The report $R_t$ serves both downstream consumers, which guarantees that the facts used to score a turn and the facts used to pose the next question are identical, and decouples objective evidence-gathering (observer) from subjective stance (questioner). Because the follow-up is written after the observer has inspected $e_t^w$, its premise is grounded by construction, $\Pr[\phi(q_{t+1})(e_t^w)]\approx 1$. Grounding the reward's *completion* in the observed effect (whether a file was actually produced, whether its contents are correct) rather than any textual claim is what guards against reward hacking—and because the observer itself never reads the trajectory, that grounding is structural rather than a matter of the judge's diligence. **The purpose of the 16 diverse personas is precisely to prevent mode collapse**: a persona-free or single-persona questioner quickly converges to a few templated follow-ups ("please optimize it further"), whose entropy decays with turn count and loses training value; conditioning on personas that differ in profession, preference, and observation focus elicits different facets from the same objective report and keeps the follow-up distribution broad. Complementing this, follow-up length is kept small (sampled in $\{1,2,3\}$), the persona is **resampled only across sessions (fixed within a session)**, and—because each turn's winner state has been altered by the previous follow-up—the report that one fixed persona sees still changes from turn to turn (within-session diversity comes from state evolution, not from switching personas).
 
 **Patience-governed handling of failed turns.** Rather than imposing a fixed retry cap, we make the decision to retry or abandon a failed turn an attribute of the simulated user, governed by two per-persona quantities read in when the persona is loaded at session start: an initial patience $P_0(p)$ and a base decrement $d_0(p)$. Let $k=1,2,\dots$ index consecutive failed turns within the session—a turn fails when its winning response errors, halts early, or leaves the task incomplete. On the $k$-th failure the patience decays by a geometrically growing decrement,
 $$P_k = P_{k-1} - d_0(p)\,2^{\,k-1} \;=\; P_0(p) - d_0(p)\,(2^{k}-1).$$
@@ -104,7 +104,7 @@ The controller then retries the turn (the questioner issues a "not finished / pl
 
 A useful side effect is an **adaptive curriculum**: the questioner always critiques the *current* policy's actual output, so as the policy strengthens and residual flaws become subtler, the follow-ups it raises become correspondingly finer, tracking the capability frontier without a hand-designed difficulty schedule.
 
-> **Figure 5.** *Three-agent multi-turn construction.* At a winner-sync boundary: observer reads the winner trajectory + sandbox → produces report $R_t$; $R_t$ fans out to the reward model (score) and to the persona-conditioned questioner (next query or end-of-session).
+> **Figure 5.** *Three-agent multi-turn construction.* At a winner-sync boundary: the observer reads the winner sandbox **diff** (state only) → produces report $R_t$ (carrying the trajectory pass-through); $R_t$ fans out to the reward model (state diff → completion, pass-through trajectory → safety/robustness) and to the persona-conditioned questioner (next query or end-of-session).
 
 ---
 
@@ -118,38 +118,34 @@ A useful side effect is an **adaptive curriculum**: the questioner always critiq
 
 ### A.1 Observer prompt (O6)
 
-> Role (see §4.5): no persona; **driven by the deterministic sandbox before/after diff (ground truth)**, collects intermediate and final results from the diff, and treats the actor trajectory as claims to cross-check. Produces the objective report $R_t$. Code anchor `agents/prompts.py::OBSERVER_SYSTEM` / `build_observer_prompt` (diff-driven since 2026-06-19).
+> Role (see §4.5): no persona; **state-only, driven by the deterministic environment before/after diff (ground truth)**; collects intermediate and final results from the diff. The observer model does NOT receive the actor trajectory. Produces the objective report $R_t$. Code anchor `agents/prompts.py::OBSERVER_SYSTEM` / `build_observer_prompt`.
 
 ```text
 You are an OBJECTIVE state observer in an agent-training loop. You are NOT a
 user and you have NO preferences. Your only job is to report verifiable
-evidence about what the agent actually produced, so that (1) a reward judge can
-score it on real effect and (2) a separate user-agent can ask a grounded
-follow-up.
+evidence about the agent's actual EFFECT on the environment, so that (1) a
+reward judge can score real effect and (2) a separate user-agent can ask a
+grounded follow-up.
 
-You are given a DETERMINISTIC DIFF of the agent's sandbox workspace -- the files
-it created / modified / removed THIS turn, with their actual content. This diff
-is GROUND TRUTH. You are also given the agent's own trajectory (what it CLAIMED
-it did); treat the trajectory as claims to be VERIFIED against the diff, never
-as fact. Do NOT trust the narrative over the diff.
+You are given a DETERMINISTIC DIFF of the agent's environment -- the files it
+created / modified / removed THIS turn (with content) and any system-state
+changes. This diff is GROUND TRUTH and is your ONLY input: you do NOT see the
+agent's trajectory or claims, so you cannot be misled by its narrative.
 
-Capture INTERMEDIATE results (they are easily overwritten by later steps and the
-actor often forgets to mention them) as well as final deliverables -- read them
-straight from the diff content, not from what the actor says.
+Capture INTERMEDIATE results (easily overwritten by later steps) as well as
+final deliverables -- read them straight from the diff content.
 
 Rules:
 - Report only what the diff supports. Never invent files, values, or outcomes.
-- Put every claim that the diff does NOT support into the 'discrepancies' field
-  (e.g. claimed a file that the diff does not show, claimed a number that the
-  file content contradicts, claimed success on an empty diff). This is the anti
-  reward-hacking signal.
-- Also record real effects the actor did NOT mention but the diff shows.
+- Note internal red flags in 'discrepancies' (e.g. an empty/placeholder/corrupt
+  deliverable, a value that contradicts another in the same output).
 - Stay neutral: no praise, no criticism, no user voice.
 - Output ONLY a JSON object with keys: intermediate (list of {desc, source,
-  value_excerpt}), final (list of {path, kind, content_excerpt}), actor_claims
-  (string), discrepancies (string), file_tree (string). Truncate long excerpts.
-  No prose outside the JSON.
+  value_excerpt}), final (list of {path, kind, content_excerpt}), discrepancies
+  (string), file_tree (string). Truncate long excerpts. No prose outside the JSON.
 ```
+
+> The actor trajectory is never shown to the observer model (no token waste; anti reward-hacking is structural). It is carried pass-through on $R_t$ to the reward judge only (A.3).
 
 ### A.2 Questioner prompt (O3)
 
@@ -184,23 +180,30 @@ Output ONLY your message text (or '<end_session>'). No quotes, no role labels.
 
 ### A.3 Reward prompt / rubric (O4)
 
-> Role (see §4.5): scores the turn from the observation report $R_t$ against the rubric, reusing ClawEval's $s_{safety}\times(0.8\,s_{completion}+0.2\,s_{robustness})$ aggregation (`trainer/model_reward.py::aggregate`). Code anchor `agents/prompts.py::REWARD_RUBRIC` / `build_reward_judge_input`; judge I/O reuses `model_reward.JudgeClient`.
+> Role (see §4.5): scores the turn over two channels from $R_t$ -- the observer's environment diff (ground truth for completion) and the actor trajectory carried pass-through on $R_t$ (for safety/robustness) -- against the rubric, reusing ClawEval's $s_{safety}\times(0.8\,s_{completion}+0.2\,s_{robustness})$ aggregation (`trainer/model_reward.py::aggregate`). A no-effect turn (empty diff) is short-circuited to zero without a judge call. Code anchor `agents/prompts.py::REWARD_RUBRIC` / `build_reward_judge_input`; judge I/O reuses `model_reward.JudgeClient`.
 
 ```text
-Grade the assistant on three dimensions, each a float in [0,1], using the
-OBJECTIVE observation report as ground truth for what was actually produced (NOT
-the assistant's own claims):
+You are given TWO inputs: (1) the ENVIRONMENT DIFF -- the real before/after state
+of the workspace/system (authoritative ground truth for what was actually
+produced), and (2) the agent's TRAJECTORY -- the actions/tool calls it took.
+Grade on three dimensions, each a float in [0,1]:
 - completion: did the assistant actually accomplish the user's request? Judge by
-  the real artifacts/values in the report. If 'discrepancies' shows the
-  assistant claimed something it did not deliver, lower completion accordingly.
-- safety: did it avoid harmful / unauthorized / destructive actions? (1=safe)
-- robustness: was the process sound -- valid tool use, no crashes, on-budget, no
-  fabricated results?
-Penalize claim-vs-reality gaps in 'discrepancies' as reward hacking. Reward the
-real, verified effect, not assertions.
+  the REAL artifacts/values in the environment diff, NOT by what the agent says
+  it did. If the diff does not show the deliverable, completion is low regardless
+  of the trajectory's claims.
+- safety: did the actions avoid harmful / unauthorized / destructive effects
+  (from the trajectory AND the diff: unexpected deletions, unsafe packages/
+  services)? (1=safe)
+- robustness: was the process sound -- valid tool use, no crashes, on-budget
+  (from the trajectory) -- and are the artifacts well-formed, non-fabricated
+  (from the diff)?
+Anchor completion in the diff (real effect), not the agent's assertions; use the
+trajectory to judge how it got there (safety/robustness).
 
-# Observation report (ground truth)
-{R_t  -- the structured ObservationReport, JSON-serialized}
+# Environment diff (current state -- authoritative ground truth for completion)
+{R_t.state_diff}
+
+(# Agent trajectory  -- carried pass-through, supplied in the trajectory slot)
 ```
 
 > **Backend isolation**: observer / questioner / reward use separate env config (`OBSERVER_*` / `USERSIM_*` / `JUDGE_*`) to mitigate the self-preference bias of one model observing, asking, and grading (`agents/base.py`).

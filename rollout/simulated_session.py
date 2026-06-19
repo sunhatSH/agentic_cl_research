@@ -53,20 +53,6 @@ def _winner_failed(report: ObservationReport, winner: Trajectory) -> bool:
     return report.is_empty()
 
 
-def _trajectory_text(messages: list[dict[str, Any]]) -> str:
-    parts: list[str] = []
-    for m in messages:
-        if not isinstance(m, dict):
-            continue
-        content = m.get("content", "")
-        if isinstance(content, list):
-            content = " ".join(
-                (c.get("text", "") if isinstance(c, dict) else str(c)) for c in content
-            )
-        parts.append(f"[{m.get('role', '?')}] {str(content).strip()}")
-    return "\n".join(parts)
-
-
 def run_simulated_session(
     pool: SessionSandboxPool,
     seed_query: str,
@@ -123,20 +109,21 @@ def run_simulated_session(
             pool.sync_to_winner(winner_idx, trajs)
             winner = trajs[winner_idx]
 
-            # Observe winner (diff-driven): one post-snapshot, carried forward as baseline (#2).
+            # Observe winner (diff-driven): the observer MODEL sees STATE only; the
+            # winner trajectory is carried PASS-THROUGH on the report for reward (it is
+            # not fed to the observer LLM). One post-snapshot, carried forward (#2).
             post = observer.snapshot(winner_client)
-            report = observer.observe(winner.messages, baseline=baseline, post=post)
+            report = observer.observe(
+                winner_client, actor_trajectory=winner.messages, baseline=baseline, post=post
+            )
             prev_post = post
             result.reports.append(report)
 
-            # Score this follow-up on the real effect (skip q1 if it has a checker).
+            # Score follow-up from the one R_t packet: completion grounded in the
+            # state diff, safety/robustness from the pass-through trajectory.
+            # Gated: no-effect turns skip the judge call.
             if score_followups and turn > 1:
-                verdict = score_followup(
-                    query=query,
-                    report=report,
-                    trajectory=_trajectory_text(winner.messages),
-                    judge=reward_judge,
-                )
+                verdict = score_followup(query=query, report=report, judge=reward_judge)
                 winner.meta["followup_reward"] = verdict
 
             # Failure path: patience decides redo vs end (§3.6.5). Redo turns do

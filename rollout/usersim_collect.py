@@ -91,9 +91,12 @@ def run_usersim_session(
             pool.session_history.extend(traj.messages)
             # advance the (single) slot state already handled by run_query.
 
-            # Observe (diff-driven): one post-snapshot, carried forward as next baseline (#2).
+            # Observe (diff-driven): observer MODEL sees STATE only; trajectory carried
+            # pass-through on the report. One post-snapshot, carried forward (#2).
             post = observer.snapshot(sandbox)
-            report = observer.observe(traj.messages, baseline=baseline, post=post)
+            report = observer.observe(
+                sandbox, actor_trajectory=traj.messages, baseline=baseline, post=post
+            )
             prev_post = post
             result.reports.append(report)
 

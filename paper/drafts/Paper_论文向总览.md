@@ -148,11 +148,11 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 
 | agent | 人设 | 职责 |
 |-------|------|------|
-| **观察 agent** | 无（客观） | 以**沙箱 before/after 内容级 diff** 为 ground truth 收集中间+最终结果（actor 声称仅交叉核对，2026-06-19 起 diff-driven），产出客观报告 $R_t$。**训练时必须独立于 actor**：线上推理可 actor 自观察（无 reward，无 hacking 风险），但训练中 actor 自观察可学到"声称完成但未交付"的策略骗取高分（reward hacking）；独立 Observer 作为第三方取证，结构上杜绝此攻击面 |
-| **出题 agent** | 有（42 选 1，会话级随机） | 以人设视角读 $R_t$，模拟真实用户出下一 query |
-| **奖励模型** | 无（冻结 judge） | 以 $R_t$ 中实际产出/效果 + rubric 打 reward |
+| **观察 agent** | 无（客观） | **state-only，diff-driven**：以沙箱 before/after 内容级 diff（+SysOps）为 ground truth 收集中间+最终结果，产出 $R_t$。观察**模型不接收 actor 轨迹** → 反 hacking 是**结构性**的（声称从不进入观察判断与 completion）。observer LLM 可选（默认确定性、零模型调用） |
+| **出题 agent** | 有（42 选 1，会话级随机） | 以人设视角读 $R_t$（状态），模拟真实用户出下一 query |
+| **奖励模型** | 无（冻结 judge） | **双通道**：$R_t$ 的 state_diff 判 completion + pass-through 的 actor 轨迹判 safety/robustness；空 diff 短路不调 judge |
 
-报告 $R_t$ **一份两用**（喂出题 + 喂奖励），保证给分与出题的事实一致；reward 落到实际效果上、抗"嘴上说做完了"的 hacking。
+报告 $R_t$ **一份两用**（喂出题 + 喂奖励），保证给分与出题的事实一致；reward 的 completion 落到真实 diff 上、抗"嘴上说做完了"的 hacking；轨迹仅作 pass-through 给 reward（观察模型不看）。
 
 - **只观察 winner**：与"会话正史 = winner 轨迹拼接"自洽。
 - **防模式坍缩**：42 人设会话级随机（含观察偏好：整体/细节、形式/内容）+ 轮数压小（1–3）+ winner 状态逐轮演化。

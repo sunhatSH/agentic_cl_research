@@ -276,14 +276,16 @@ export JUDGE_API_KEY=<key>                     # 同上
 ```python
 @dataclass
 class ObservationReport:
-    intermediate: list[dict]   # 中间结果: {desc, source(命令/文件), value_excerpt}（由 actor 输出驱动收集）
-    final: list[dict]          # 最终交付物: {path, kind, content_excerpt}
-    actor_claims: str          # actor 在 winner 轨迹里声明了"做了什么"（观察的线索来源）
-    discrepancies: str         # 声明 vs 实际的差异（供奖励模型抗 hacking；可空）
+    state_diff: str            # 环境 before/after diff（含内容 + SysOps）= ground truth（observer 唯一判据）
+    intermediate: list[dict]   # 中间结果: {desc, source(命令/文件), value_excerpt}（从 diff 提取）
+    final: list[dict]          # 最终交付物: {path, kind, content_excerpt}（从 diff 提取）
+    discrepancies: str         # 状态内部红旗（空/损坏/自相矛盾；可空）
+    actor_trajectory: str      # pass-through：actor 轨迹文本，observer 模型不看，仅给奖励模型判 safety/robustness
     file_tree: str             # winner workspace 文件树（深度截断，兜底）
+    has_effect: bool           # 本轮 diff 是否非空；False → 短路 reward、走失败/耐心路径
 ```
 
-采集时机与 `run_checkers` 相同（sync 后、在存活 winner 实例上跑只读命令）。**与旧"固定 digest"的区别**：不再是套死模板抓快照，而是观察 agent 读 `actor_claims` 后**定向**收集（尤其中间结果，易被后续步骤覆盖）。具体只读命令集 / 截断预算 = O6（留空，实现时定）。
+采集时机与 `run_checkers` 相同（sync 后、在存活 winner 实例上跑只读命令）。**实现定稿（2026-06-19，diff-driven）**：观察 agent **不读 actor 轨迹**，而是对 winner 沙箱做确定性 **before/after diff**（文件内容 + 二进制提取 + SysOps），以真实状态增量为唯一判据；轨迹仅由观察**组件** pass-through 给奖励模型（observer **模型**永不看，省 token）。反 hacking 由此变为**结构性**——声称从不进入观察判断与 completion。
 
 ### 7.3 观察 agent 协议（Observer，无人设）
 

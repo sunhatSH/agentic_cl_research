@@ -88,7 +88,10 @@ def build_judge_prompt(*, task: str, trajectory: str, rubric: str) -> list[dict[
     parts = [f"# Task\n{task.strip()}"]
     if rubric.strip():
         parts.append(f"# Rubric\n{rubric.strip()}")
-    parts.append(f"# Agent trajectory\n{trajectory.strip()}")
+    # Observation-grounded reward grades the state (in the rubric), not the
+    # trajectory, so it passes an empty trajectory -> skip the section entirely.
+    if trajectory.strip():
+        parts.append(f"# Agent trajectory\n{trajectory.strip()}")
     parts.append(
         '# Output\nReturn JSON like {"completion": 0.0, "safety": 1.0, "robustness": 0.0}.'
     )

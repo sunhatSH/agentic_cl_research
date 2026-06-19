@@ -64,8 +64,9 @@ def test_observer_parses_json_report():
         '"actor_claims": "wrote out.csv", "discrepancies": "", "file_tree": "out.csv"}'
     )
     # use_llm=True: opt into the model path (default observer is deterministic).
+    # The observer is STATE-only -> observe() takes no trajectory.
     obs = Observer(client=MockChat(raw), use_llm=True)
-    report = obs.observe([{"role": "assistant", "content": "done, wrote out.csv"}])
+    report = obs.observe()
     assert report.final[0]["path"] == "out.csv"
     assert report.intermediate[0]["value_excerpt"] == "42"
     assert not report.is_empty()
@@ -73,9 +74,17 @@ def test_observer_parses_json_report():
 
 def test_observer_falls_back_on_bad_json():
     obs = Observer(client=MockChat("not json at all"), use_llm=True)
-    report = obs.observe([{"role": "assistant", "content": "I did stuff"}])
-    # actor text preserved even when the model output is unparseable
-    assert "I did stuff" in report.actor_claims
+    # bad JSON -> minimal report; must not crash. Trajectory is carried PASS-THROUGH
+    # on the report but is NEVER put into the observer prompt (no token waste).
+    report = obs.observe(
+        actor_trajectory=[{"role": "assistant", "content": "I did stuff"}],
+        post={"fs": {"a.txt": {"size": 1, "mtime": 1.0, "ext": ".txt", "text": "x"}}},
+    )
+    assert "I did stuff" in report.actor_trajectory  # pass-through carried
+    assert "a.txt" in report.file_tree
+    # the observer LLM prompt must NOT contain the trajectory
+    prompt_user = obs._client.calls[-1][1]["content"] if hasattr(obs._client, "calls") else ""
+    assert "I did stuff" not in prompt_user
 
 
 def test_observer_deterministic_report_no_llm():
@@ -87,17 +96,15 @@ def test_observer_deterministic_report_no_llm():
     obs = Observer(client=Boom())
     pre = {"fs": {}, "sys": {}}
     post = {"fs": {"./out.csv": {"size": 3, "mtime": 2.0, "ext": ".csv", "text": "a,b"}}, "sys": {}}
-    report = obs.observe(
-        [{"role": "assistant", "content": "wrote out.csv"}], baseline=pre, post=post
-    )
+    report = obs.observe(baseline=pre, post=post)
     assert any(f["path"] == "./out.csv" for f in report.final)
     assert "out.csv" in report.state_diff and "a,b" in report.state_diff
 
 
 def test_parse_observation_report_extracts_embedded_json():
-    text = 'prefix {"actor_claims": "x", "final": [], "intermediate": []} suffix'
+    text = 'prefix {"discrepancies": "x", "final": [], "intermediate": []} suffix'
     report = parse_observation_report(text)
-    assert report.actor_claims == "x"
+    assert report.discrepancies == "x"
 
 
 # --- questioner (§7.4 / O3) --------------------------------------------------
@@ -113,7 +120,7 @@ def test_questioner_returns_query_text():
 
 def test_questioner_end_session():
     q = Questioner(client=MockChat(END_SESSION))
-    out = q.next_query(PERSONAS[0], ObservationReport(actor_claims="x"), [])
+    out = q.next_query(PERSONAS[0], ObservationReport(final=[{"path": "x"}]), [])
     assert out is None
 
 
@@ -167,6 +174,7 @@ class MockJudge:
 
     def score(self, *, task, trajectory, rubric, data_source):
         self.last_rubric = rubric
+        self.last_trajectory = trajectory
         return self.verdict
 
 
@@ -175,14 +183,15 @@ def test_reward_uses_observation_report_as_evidence():
         final=[{"path": "out.csv", "kind": "csv", "content_excerpt": "a,b,c"}],
         discrepancies="claimed 100 rows but file has 3",
     )
+    report.actor_trajectory = "[assistant] ran the tool"  # pass-through channel
     judge = MockJudge({"completion": 0.4, "safety": 1.0, "robustness": 0.8})
-    out = score_followup(
-        query="recheck the totals", report=report, trajectory="[assistant] done", judge=judge
-    )
+    out = score_followup(query="recheck the totals", report=report, judge=judge)
     # ClawEval aggregation: safety*(0.8*completion + 0.2*robustness)
     assert out["score"] == pytest.approx(1.0 * (0.8 * 0.4 + 0.2 * 0.8))
-    # discrepancies (anti-hacking evidence) made it into the judge rubric
+    # state evidence (discrepancies / report) made it into the judge rubric
     assert "claimed 100 rows" in judge.last_rubric
+    # the actor trajectory reaches the judge via the report's pass-through field
+    assert "ran the tool" in judge.last_trajectory
 
 
 def test_reward_judge_error_is_surfaced():
@@ -190,9 +199,21 @@ def test_reward_judge_error_is_surfaced():
         def score(self, **kw):
             raise RuntimeError("judge down")
 
-    out = score_followup(query="q", report=ObservationReport(), trajectory="t", judge=Boom())
+    # has_effect default True -> judge is called -> error surfaced
+    out = score_followup(query="q", report=ObservationReport(final=[{"path": "x"}]), judge=Boom())
     assert out["judge_error"] == 1.0
     assert out["score"] == 0.0
+
+
+def test_reward_gated_on_no_effect_skips_judge():
+    # Layer of interception: an empty-diff turn (has_effect False) must NOT call
+    # the judge at all -- score 0 for free.
+    class Boom:
+        def score(self, **kw):
+            raise AssertionError("judge must not be called when has_effect is False")
+
+    out = score_followup(query="q", report=ObservationReport(has_effect=False), judge=Boom())
+    assert out["score"] == 0.0 and out["completion"] == 0.0 and out.get("gated") == 1.0
 
 
 # --- prompt assembly ---------------------------------------------------------
@@ -200,9 +221,9 @@ def test_reward_judge_error_is_surfaced():
 
 def test_prompts_inject_their_inputs():
     persona = PERSONAS[4]
-    report = ObservationReport(actor_claims="wrote report.xlsx", discrepancies="page 3 empty")
+    report = ObservationReport(final=[{"path": "report.xlsx"}], discrepancies="page 3 empty")
 
-    obs_msgs = build_observer_prompt(actor_trajectory="I wrote report.xlsx", file_tree="report.xlsx")
+    obs_msgs = build_observer_prompt(state_diff="+ ADDED report.xlsx", file_tree="report.xlsx")
     assert "report.xlsx" in obs_msgs[1]["content"]
     assert "OBJECTIVE" in obs_msgs[0]["content"]
 
@@ -211,6 +232,9 @@ def test_prompts_inject_their_inputs():
     assert "page 3 empty" in q_msgs[1]["content"]
     assert END_SESSION in q_msgs[0]["content"]
 
-    r_in = build_reward_judge_input(query="recheck", report=report, trajectory="t")
+    report.actor_trajectory = "[assistant] did it"  # pass-through channel on the report
+    r_in = build_reward_judge_input(query="recheck", report=report)
     assert "page 3 empty" in r_in["rubric"]
     assert r_in["task"] == "recheck"
+    # trajectory reaches reward via the report's pass-through field
+    assert "did it" in r_in["trajectory"]

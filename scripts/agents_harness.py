@@ -78,7 +78,6 @@ def _mock_observer_report() -> str:
         {
             "intermediate": [{"desc": "Q3 total", "source": "calc", "value_excerpt": "123"}],
             "final": [{"path": "report.txt", "kind": "text", "content_excerpt": "Q3 total = 123"}],
-            "actor_claims": "wrote report.txt with Q3 total = 123",
             "discrepancies": "",
             "file_tree": "report.txt",
         }

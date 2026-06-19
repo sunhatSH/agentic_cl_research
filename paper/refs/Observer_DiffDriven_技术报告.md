@@ -8,7 +8,9 @@
 
 ## 0. TL;DR
 
-observer 的职责是给 reward 与 questioner 提供一份"实际发生了什么"的客观证据 $R_t$。旧实现让 **actor 的声称**驱动观察（单次 LLM 把"声称文本 + 盲扫文件树"塞进一个提示），用 runtime 证据确认其**结构上看不到真实状态**，退化为"actor 自述复读机"——反 reward-hacking 落空。本次改为 **diff-driven**：以**沙箱 before/after 内容级 diff** 为 ground truth，actor 声称仅作交叉核对。配套把 `LocalSandbox` 改持久 workdir，使本机即可验证。
+observer 的职责是给 reward 与 questioner 提供一份"实际发生了什么"的客观证据 $R_t$。旧实现让 **actor 的声称**驱动观察（单次 LLM 把"声称文本 + 盲扫文件树"塞进一个提示），用 runtime 证据确认其**结构上看不到真实状态**，退化为"actor 自述复读机"——反 reward-hacking 落空。本次改为 **diff-driven**：以**沙箱 before/after 内容级 diff** 为 ground truth。
+
+**最终边界（2026-06-19 定稿）**：observer **模型只看 state diff，根本不接收 actor 轨迹**（反 hacking 变为结构性——声称从不进入观察判断与 completion）；actor 轨迹由 observer **组件** pass-through 进 `R_t.actor_trajectory`（observer 模型不看、不浪费 token），**仅供 reward** 判 safety/robustness。reward 因此是**双通道**：state_diff 判 completion + pass-through trajectory 判 safety/robustness。配套：`LocalSandbox` 持久 workdir、二进制内容提取、SysOps 命令探针、observer LLM 可选、空 diff 短路不调 judge。
 
 ---
 
@@ -46,19 +48,22 @@ observer 的职责是给 reward 与 questioner 提供一份"实际发生了什�
 ## 3. 设计
 
 ```text
-turn 前：baseline = observer.snapshot(sandbox)         # 只读快照（仅用 run_code，后端无关）
+turn 前：baseline = observer.snapshot(sandbox)         # {fs,sys} 只读快照（仅 run_code，后端无关）
   ↓ 跑 actor turn（winner 在沙箱里做事）
 turn 后：post = snapshot(sandbox)
-  ↓ diff_snapshots(baseline, post) → added / modified / removed（+ 内容摘要 + before 摘要）
-  ↓ _format_changes(diff) → state_diff（ground-truth 证据块）
-  ↓ build_observer_prompt(state_diff=…, actor_trajectory=…) → LLM 归纳/核对
-  ↓ ObservationReport（intermediate/final/discrepancies + state_diff 携带确定性证据）
+  ↓ diff_snapshots(baseline, post) → added/modified/removed（+ 内容摘要）；变更二进制 → 提取文本
+  ↓ diff_system(baseline, post)    → 装的包/开的端口/起的进程
+  ↓ render → state_diff（ground-truth 证据块）
+  ↓ use_llm ? 模型只看 state_diff 归纳 : 确定性建报告（零模型调用）
+  ↓ report.actor_trajectory = flatten(winner_messages)   # pass-through，不进 prompt
+  ↓ ObservationReport（state_diff + final/intermediate/discrepancies + actor_trajectory + has_effect）
 ```
 
-- **快照探针**：在沙箱里跑一段只读 Python（`os.walk` + 全量 sha1 + 截断文本摘要），打印 `{path: {size, sha, text?}}` 的 JSON。**只依赖 `run_code`**，故 local / e2b / aliyun 后端通用，不绑某厂商的 `files.read`。
-- **diff**：纯 Python 计算 added/modified/removed；modified 同时带新旧内容摘要，可量化"改了什么"。
-- **无 baseline 兜底**：未给 baseline 时退化为"当前快照内容"（仍是内容级，比旧的盲扫文件树强）；无沙箱时退化为 claims-only。
-- **提示词反转**：`OBSERVER_SYSTEM` 明确"**diff = ground truth，authoritative；actor 声称仅 cross-check，不可凌驾于 diff**"，`discrepancies` 收"声称不被 diff 支持"的项，并要求记录"actor 没提但 diff 显示"的真实改动。
+- **快照探针**：在沙箱里跑只读 Python（`os.walk` + `os.stat` 取 size/mtime + 截断文本摘要）。**只依赖 `run_code`**，故 local / e2b / aliyun 后端通用，不绑某厂商的 `files.read`。
+- **diff**：纯 Python 计算 added/modified/removed（按 size+mtime）；modified 带新旧内容摘要。
+- **observer 模型只看 state_diff**：`build_observer_prompt` 只放 diff，**不放轨迹**——observer 模型永不见 trajectory（省 token、结构性反 hacking）。`discrepancies` 收"状态内部红旗"（空/损坏/自相矛盾），非"声称 vs 实际"。
+- **trajectory pass-through**：`observe(actor_trajectory=...)` 把轨迹拍平存进 `report.actor_trajectory`，**仅供 reward**；observer 组件捎带、observer 模型不看。
+- **无 baseline 兜底**：未给 baseline 时退化为"当前快照内容"；无沙箱时报告为空（`has_effect` 走默认）。
 
 ---
 
@@ -66,9 +71,10 @@ turn 后：post = snapshot(sandbox)
 
 | 文件 | 改动 |
 |------|------|
-| `agents/observer.py` | 新增 `_SNAPSHOT_PROBE` 只读探针、`snapshot_workspace`/`diff_snapshots`/`_format_changes`/`_format_state`；`Observer.snapshot()`；`observe(traj, sandbox=None, *, baseline=None)` 改为 diff-driven；`parse_observation_report(..., fallback_diff=)` 携带 `state_diff` |
-| `agents/prompts.py` | `OBSERVER_SYSTEM` 改 diff-driven；`build_observer_prompt(*, actor_trajectory, state_diff="", file_tree="", tool_outputs="")` 把 diff 置于最前作权威证据 |
-| `agents/schema.py` | `ObservationReport` 加 `state_diff: str`（确定性证据，下游 reward 可用） |
+| `agents/observer.py` | 只读探针 + `snapshot_workspace`/`snapshot_system`/`diff_snapshots`/`diff_system`/`extract_binaries`/`flatten_trajectory`；`observe(sandbox=None, *, actor_trajectory="", baseline=None, post=None)` —— 模型只看 diff、轨迹 pass-through；`use_llm` 可选；`parse_observation_report` 不再含 actor_claims |
+| `agents/prompts.py` | `OBSERVER_SYSTEM` 状态化（不提轨迹/声称，输出键去 actor_claims）；`build_observer_prompt(*, state_diff, file_tree, tool_outputs)` 只放 diff；`build_reward_judge_input` 双通道 + 截断 |
+| `agents/schema.py` | `ObservationReport`：`actor_claims`→`actor_trajectory`（pass-through）；加 `state_diff` / `has_effect` |
+| `agents/reward.py` | `score_followup(query, report, judge)` 从 report 取 state+trajectory；`has_effect=False` 短路不调 judge |
 | `rollout/sandbox_client.py` | `LocalSandbox` 改**持久 workdir**（`mkdtemp` once，`kill` 时 `rmtree`）——state 跨 `run_code` 不丢 |
 | `rollout/simulated_session.py` | turn 前 `observer.snapshot(slot0)` 取 baseline；pick_winner 后传 winner 沙箱给 `observe(..., baseline=)` |
 | `rollout/usersim_collect.py` | 同上（单槽：turn 前 snapshot、传 sandbox+baseline） |
