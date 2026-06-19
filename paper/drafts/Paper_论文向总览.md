@@ -219,6 +219,7 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 | 论文章节 | 信源文档 |
 |---------|---------|
 | 方法·CL Loss / 实验路线 / GPU / 精度 / 文献 | [`CL_Update_Sunhao.md`](../../doc/CL_Update_Sunhao.md)（**主文档**） |
+| **模型选型**（actor / observer / questioner / judge） | [`模型选型.md`](../../doc/模型选型.md)（**单一信源**） |
 | 方法·7 桶 Buffer 论证 | [`BucketDesign.md`](../../doc/BucketDesign.md)（+ `_compressed` 速查） |
 | 方法·环境/调度 | [`Sandbox_管理调度指南.md`](../../doc/Sandbox_管理调度指南.md)、[`SandboxRollout.md`](../../doc/SandboxRollout.md)、[`Sandbox_Agent架构.md`](../../doc/Sandbox_Agent架构.md) |
 | 方法·多轮数据 | [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md) |

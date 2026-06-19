@@ -96,6 +96,8 @@ export AGENTBAY_API_KEY=...   # pip install wuying-agentbay-sdk
 
 ## 2. 三 Agent 层接口（**报告**）
 
+> **用哪个模型（observer/questioner/judge 的选型）见 [`模型选型.md`](模型选型.md)**（单一信源）。本节只讲接口与 env 变量名，不记具体模型。
+
 一句话：**Observer 产出一份 `ObservationReport`（报告），Questioner 和 Reward 各读这同一份报告**。报告核心是 `state_diff`（环境 diff = ground truth）；另有 `actor_trajectory`（actor 轨迹文本，**pass-through**：observer 组件捎带、observer 模型不看、只给 reward）。
 
 ### 2.1 `ObservationReport`（**报告**，`agents/schema.py`）

@@ -233,6 +233,7 @@ agentic_cl_research/
 | 文件 | 内容 |
 |------|------|
 | `doc/CL_Update_Sunhao.md` | **主文档**：CL Loss / Replay Buffer / 实验路线 / 评测 / 文献 |
+| `doc/模型选型.md` | **模型选型单一信源**：actor / observer / questioner / judge 用哪个模型 + env + 状态（选型由 @孙豪 拍板，其它文档引用本表） |
 | `doc/BucketDesign.md` | 7 桶结构论证（开头含速查节） |
 | `doc/VerlIntegration.md` | verl 0.8.0 集成指导 |
 | `doc/UserSim_多轮Query在线生成.md` | 三 agent 多轮构造设计规格 |

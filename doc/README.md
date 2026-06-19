@@ -1,6 +1,6 @@
 # 文档索引（doc/）
 
-> 本目录 **19 篇**文档按用途分三级。接手项目从「② 运行手册」的 Migration_64GPU.md 开始。
+> 本目录 **20 篇**文档按用途分三级。接手项目从「② 运行手册」的 Migration_64GPU.md 开始。
 >
 > ⚠️ 一次性技术报告（`RolloutCollect_技术报告.md`、`汇报_技术总报告.md`、`vllm_upgrade_0.19.md`）和踩坑复盘（`集群推理采集_经验复盘.md`）已归档到 `paper/refs/`。`集群训练启动指南.md` 已合并到 `Migration_64GPU.md` 附录。
 
@@ -11,6 +11,7 @@
 | 文档 | 内容 |
 |------|------|
 | [CL_Update_Sunhao.md](CL_Update_Sunhao.md) | **主文档**：CL Loss / Replay Buffer / 实验路线 / 评测 / 文献 |
+| [模型选型.md](模型选型.md) | **模型选型单一信源**：actor/observer/questioner/judge 用哪个模型 + env + 状态 |
 | [BucketDesign.md](BucketDesign.md) | 7 桶结构论证（开头含速查节） |
 | [VerlIntegration.md](VerlIntegration.md) | verl 0.8.0 集成指导 |
 | [UserSim_多轮Query在线生成.md](UserSim_多轮Query在线生成.md) | 三 agent 多轮构造设计规格 |

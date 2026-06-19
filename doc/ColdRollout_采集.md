@@ -17,7 +17,9 @@
 
 因为无 winner，不能用 `rollout/simulated_session.run_simulated_session`（它依赖 run_query 多槽 + pick_winner + sync）。本阶段新写了 `rollout/usersim_collect.run_usersim_session`（slots=1，单轨迹多轮）。
 
-## 2. 模型选型（三方 + actor 双路，均不同）
+## 2. 模型选型（本阶段：三方 + actor 双路，均不同）
+
+> **权威选型见 [`模型选型.md`](模型选型.md)**（单一信源）。下表为冷启动采集阶段的具体落点（数据去向），选型本身以选型文档为准。
 
 | 角色 | 模型 | 后端 | 数据去向 |
 |------|------|------|----------|
