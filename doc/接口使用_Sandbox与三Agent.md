@@ -1,8 +1,8 @@
 # 接口使用指南：Sandbox 后端 + 三 Agent（报告与声明）
 
 > **定位**：给后续接手的人 / AI agent 的**接口使用速查**——每个接口在哪、签名、怎么调、谁产出谁消费。设计动机见 [`UserSim_三Agent架构与技术设计.md`](UserSim_三Agent架构与技术设计.md)（接口契约）与 [`SandboxRollout.md`](SandboxRollout.md)（平台 API）。本文只讲**怎么用**。
-> **状态**：沙箱接口/实现已解耦（2026-06-19）；三 Agent 代码已落盘 `agents/`。observer 的"证据采集"现状=claim-driven，目标=diff-driven（§3，回集群施工）。
-> **写作日期**：2026-06-19
+> **状态**：沙箱接口/实现已解耦；三 Agent 代码已落盘 `agents/`。observer 已落地 **diff-driven、模型只看 state**；reward **双通道**（state 判 completion + pass-through 轨迹判 safety/robustness）。完整设计与"diff 能否到内容"的论证见 [`../paper/refs/Observer_DiffDriven_技术报告.md`](../paper/refs/Observer_DiffDriven_技术报告.md)。
+> **写作日期**：2026-06-19（2026-06-22 校订）
 
 ---
 
@@ -14,11 +14,11 @@
 | `ExecResult`（返回契约） | 同上 | `.stdout / .stderr / .ok` | `run_code` 产出 |
 | `make_sandbox`（按名选后端） | 同上 | `make_sandbox(backend="local"\|"e2b"\|"aliyun", **kw) -> SandboxClient` | 调度/采集脚本调用 |
 | `register_backend`（开放扩展） | 同上 | `register_backend(name, builder)`；`builder(**kw)->SandboxClient` | 加新厂商时调用 |
-| `Observer.observe`（产**报告**） | `agents/observer.py` | `observe(actor_trajectory, sandbox=None) -> ObservationReport` | 产出 `ObservationReport` |
+| `Observer.observe`（产**报告**） | `agents/observer.py` | `observe(sandbox=None, *, actor_trajectory="", baseline=None, post=None) -> ObservationReport` | 产出 `ObservationReport` |
 | `ObservationReport`（**报告**） | `agents/schema.py` | `.state_diff`(ground truth)`/.final/.intermediate/.discrepancies/.actor_trajectory`(pass-through)`/.has_effect`、`.is_empty()` | observer 产 → questioner+reward 消费 |
 | `Questioner.next_query`（消费报告） | `agents/questioner.py` | `next_query(persona, report, session_history) -> str\|None` | 读报告 → 出下一条 query |
 | `PatienceTracker`（失败路径） | 同上 | `PatienceTracker(persona, rng).on_failure() -> bool` | 失败轮决定 redo / 结束 |
-| `score_followup`（Reward，消费报告） | `agents/reward.py` | `score_followup(*, query, report, trajectory, judge=None) -> dict` | 读报告 → 打分 |
+| `score_followup`（Reward，消费报告） | `agents/reward.py` | `score_followup(*, query, report, judge=None) -> dict`（trajectory 从 `report.actor_trajectory` 取） | 读报告 → 打分 |
 | `sample_persona` / `PERSONAS` | `agents/personas.py` | `sample_persona(rng) -> Persona` | 会话级抽 1 个人设 |
 
 ---
@@ -146,16 +146,16 @@ pt = PatienceTracker(persona, rng); redo = pt.on_failure()           # 失败轮
 
 ```python
 from agents.reward import score_followup
-verdict = score_followup(query=q, report=report, trajectory=traj_text, judge=None)
+verdict = score_followup(query=q, report=report, judge=None)  # trajectory 从 report 取
 # -> {score, completion, safety, robustness, judge_error[, gated]}；尺度与 ClawEval 同构
 ```
 
-reward judge 收**两条互相独立的输入通道**：
+reward judge 收**两条通道，都来自同一份 $R_t$**：
 - **状态通道**：`report.state_diff`（observer 的环境 diff = ground truth）→ 进 rubric，判 **completion**（真实产出）。
-- **轨迹通道**：`trajectory`（actor 动作文本）→ 由调用方（driver）**直接传入**，**不经过 observer**，判 **safety/robustness**（怎么做的）。
+- **轨迹通道**：`report.actor_trajectory`（actor 动作文本）→ observer **组件** pass-through 捎带（observer **模型**没看过），判 **safety/robustness**（怎么做的）。
 
 要点：
-- **observer 不碰轨迹**（§2.3），轨迹从 rollout 直达 reward——这样 completion 只能反映真实效果（结构性反 hacking：声称根本不进 completion）；轨迹仍给 reward 看"过程"。
+- **observer 模型不看轨迹**（§2.2/§2.3），但报告把轨迹捎给 reward——completion 只能反映真实 diff（结构性反 hacking：声称根本不进 completion）；轨迹仍供 reward 看"过程"。
 - **拦截层（gate）**：`report.has_effect=False`（空 diff，本轮无变化）→ **直接返回 score 0、不调 judge**（带 `gated=1.0`）。
 - diff 与 trajectory 各自封顶（`_MAX_DIFF_CHARS` / `_MAX_TRAJ_CHARS`，中间截断）防超长。
 - env：`JUDGE_API_BASE` / `JUDGE_MODEL` / `JUDGE_API_KEY`（与 verl `custom_reward_function` 共用）。
@@ -163,90 +163,56 @@ reward judge 收**两条互相独立的输入通道**：
 ### 2.6 数据流
 
 ```text
-winner.messages ─┐
-                 ├─► Observer.observe(.., sandbox=winner) ─► ObservationReport R_t ─┬─► Questioner.next_query(persona, R_t, history) ─► 下一条 query
-sandbox(winner) ─┘                                                                  └─► score_followup(query, R_t, traj) ─► reward
+winner.messages ─┐  (轨迹仅 pass-through，observer 模型不看)
+                 ▼
+sandbox(winner) ─► Observer.observe(sandbox, actor_trajectory=, baseline=, post=) ─► R_t
+                       │  R_t = state_diff(事实) + final/intermediate + actor_trajectory(pass-through) + has_effect
+                       ├─► Questioner.next_query(persona, R_t, history) ─► 下一条 query
+                       └─► score_followup(query, R_t) ─► reward（state→completion, trajectory→safety/robustness）
 ```
 
 > ⚠️ 三套 env 端点**故意分开**（OBSERVER/USERSIM/JUDGE），抗 self-preference。若三者指向同一模型，保护失效。
 
 ---
 
-## 3. 观察证据采集：claim-driven → diff-driven（**2026-06-19 已实现**）
+## 3. 观察证据采集：diff-driven（现行实现）
 
-> 状态：observer 已落地 diff-driven（`agents/observer.py`：`snapshot()` + `diff_snapshots()` + `observe(.., baseline=)`），`LocalSandbox` 持久 workdir，本机已验证 diff 能读到内容、能暴露"声称 12345 vs 实际 99999"。§3.1 = 被取代的旧方案（留作对照），§3.2/§3.3 = 现行机制，§3.4 = 落地状态与剩余。
+> 设计动机（为什么从 claim-driven 改 diff-driven 的 6 条理由）、"沙箱 diff 能否到内容"的分层论证，见 [`../paper/refs/Observer_DiffDriven_技术报告.md`](../paper/refs/Observer_DiffDriven_技术报告.md)。本节只列**现行机制**与**落地状态**，不重复论证。
 
-### 3.1 旧方案（claim-driven，单次 LLM）的局限 —— 已弃用
-
-`observe()` 是**一次** LLM 调用：把 `actor_claims`（声明文本）+ 一段**固定** `os.walk` 文件树塞进提示，让模型"自己悟该看什么"。系统提示让模型"以声称为线索去读 report.xlsx / 找中间值"，**但代码没给模型任何去取这些信息的能力**：文件树是盲扫（非声称驱动）、**从不读文件内容**、`tool_outputs` 槽位从不填。→ 能判断"该看什么"，不能"真的去看"，"声称值≠实际值"结构上判不出。
-
-### 3.2 现行机制：diff-driven（沙箱状态增量当事实）
-
-把"actor 说了什么"降级为**次要交叉校验输入**，把"沙箱真实改了什么"升为**事实主轴**：
+### 3.1 机制（确定性取证，observer 模型只看 state）
 
 ```text
-turn 前：snapshot_pre = files.list(workspace, depth=N) + 内容哈希   （或起 watch_dir）
-  ↓ 跑 actor turn
-turn 后：snapshot_post = files.list(...) + 内容哈希
-  ↓ 代码确定性算 diff：
-   added    = post - pre
-   removed  = pre - post
-   modified = 两边都有但 hash/size/mtime 变了
-  ↓ 对 added/modified（按声称相关性 + 体积上限过滤）：files.read 拿内容 → 算 difflib 内容差
-  ↓ 把结构 diff + 内容 diff 作为 tool_outputs 喂给 observer 模型（模型只负责归纳/核对 discrepancies）
+turn 前  baseline = observer.snapshot(sandbox)   # {fs,sys} 只读快照（仅用 run_code，后端无关）
+  ↓ actor turn（winner 在沙箱里做事）
+turn 后  post = observer.snapshot(sandbox)
+  ↓ diff_snapshots(baseline.fs, post.fs)   → added/modified/removed（按 size+mtime；带内容摘要）
+  ↓ extract_binaries(...)                  → 仅本轮变更的 xlsx/docx/pptx/pdf 在沙箱内抽成文本（缺库降级不崩）
+  ↓ diff_system(baseline.sys, post.sys)    → 本轮装的包 / 开的端口(LISTEN) / 起的进程
+  ↓ state_diff = render(fs diff + sys diff)            # = ground truth
+  ↓ use_llm ? 模型只看 state_diff 归纳 : 确定性建报告（默认零模型调用）
+  ↓ report.actor_trajectory = flatten(winner_messages)  # pass-through，绝不进 observer prompt
 ```
 
-两种粒度，可叠加：
+- 取证只用 `sandbox.run_code`（后端无关：local/e2b/aliyun 通用），**不绑**某厂商的 `files.*` API。
+- 文本类 diff 直接带内容；二进制走**格式提取→文本**；非 FS 效果走 **SysOps 命令探针**。
+- `LocalSandbox` 已改持久 workdir（state 跨 `run_code` 不丢），本机即可验证 diff 逻辑。
 
-- **快照轮询 diff**（before/after `files.list` + `files.read`）：简单稳，但只看**净变化**，会漏 turn 内"建了又被覆盖"的中间产物。
-- **事件流 `watch_dir`**（Create/Write/Remove/Rename 实时事件）：能抓**瞬态/被覆盖的中间产物**——正好对上设计里"intermediate 易被后续步骤覆盖"的诉求。
+### 3.2 几层拦截（gate，不需要的就不调用）
 
-### 3.3 沙箱 diff 能 diff 到**内容**吗？
-
-**能，但要分清三层**（这是问题的核心答案）：
-
-| 想要的 diff | 用什么 API | 能到什么粒度 |
-|-------------|-----------|--------------|
-| 文件**数量/名称/结构** | `files.list(path, depth)` 前后做集合差 | ✅ 路径增删、大小/类型；**只到名字与元数据，不含内容** |
-| 文件**内容** | `files.read(path)` 读取前后两版 → 自己用 `difflib` 算 unified diff | ✅ **能到内容**（行级文本 diff）；需要你把内容拉下来自己算，沙箱不白送 git 式 diff |
-| 一把梭的内容 diff | 会话开始 `git init`，每轮后在沙箱里 `git diff` / `git status --porcelain`（via `commands.run`/`execute_command`） | ✅ 最省事的"内容 diff"：一条命令拿到所有跟踪文件的文本差 |
-| **二进制**（xlsx/png/db） | `files.read` 取字节 + 格式化解析（openpyxl 读单元格等），或先 `md5` 判变更 | ⚠️ **纯文本 diff 无意义**，必须格式感知解析后再比 |
-
-结论：
-- `files.list` 这类**只能 diff 到"文件数量和名称"（+大小/类型元数据）**，给不出内容。
-- **要 diff 到内容**，必须 `files.read` 把两版内容读下来自己算（`difflib`），或在沙箱里跑 `git diff`/`diff`。
-- E2B（腾讯）有 `files.list`/`files.read`/`watch_dir`/`commands.run`；阿里 AgentBay 有 `session.file_system`/`session.command.execute_command`——两边都够做内容级 diff。
-
-### 3.4 落地状态（2026-06-19）
-
-**已实现（本机验证通过）：**
-1. ✅ `LocalSandbox` 持久 workdir —— state 跨 `run_code` 不丢。
-2. ✅ `simulated_session` / `usersim_collect`：turn 前 `observer.snapshot(sandbox)` 取 baseline、传 winner 沙箱给 `observe`。
-3. ✅ `Observer` diff 采集：只读快照探针（仅用 `run_code`，后端无关）→ `diff_snapshots(pre, post)` 出 added/modified/removed + 内容摘要 → 进 `OBSERVER_SYSTEM` 当 ground truth；`ObservationReport.state_diff` 携带确定性证据。
-4. ✅ 提示词：diff = 事实，actor 声称仅交叉核对，`discrepancies` 收"声称不被 diff 支持"的项。
-
-**已实现（2026-06-19 第二批）：**
-5. ✅ **性能 Tier1**：空 diff 跳过 observer LLM；每轮 1 次快照（上轮 post 前传作 baseline）；变更检测改 `(size, mtime)` 去掉整文件 sha1；prompt 去冗余 file tree + 封顶。
-6. ✅ **(a) 二进制内容提取适配器**：快照对二进制只标记，diff 后**只对本轮变更的** xlsx/xlsm/docx/pptx/pdf 跑沙箱内提取（openpyxl/python-docx/python-pptx/pdfplumber）→ 文本进 diff（`kind=binary→text`）；缺库/解析失败优雅降级为标记，不崩。
-7. ✅ **(b) 非 FS 状态命令探针（SysOps）**：`snapshot_system` 取 `{pip, ports(LISTEN), procs}`，`diff_system` 出"本轮装的包 / 开的端口 / 起的进程"；不采集 env 值（防泄密）。
-8. ✅ **observer LLM 可选**：`Observer(use_llm=False)` 默认**确定性建报告、零模型调用**（取证证据已是文本）；`use_llm=True` 才调模型做归纳/discrepancy。确定性取证层（快照+diff+提取+sysops）**始终运行**——这正是避免"把原始证据塞给 reward 模型去观察"的高消耗。
-
-**几层拦截（gate，不需要的就不调用）：**
 | 层 | 调用 | 触发条件（否则跳过） |
 |----|------|----------------------|
+| L0 | 快照 / diff | 始终（便宜、确定性） |
 | L1 | 二进制内容提取 | 本轮**有变更的**富二进制文件（xlsx/docx/pptx/pdf）|
 | L2 | observer LLM | `use_llm=True` **且** diff 非空 |
-| L3 | reward judge | `report.has_effect=True`（本轮 diff 非空）**且** turn>1；空 diff → score 0、不调 judge |
+| L3 | reward judge | `report.has_effect=True`（diff 非空）**且** turn>1；空 diff → score 0、不调 judge |
 | L4 | questioner LLM | `turn<=k` **且** 未判失败 |
-> 快照本身（L0）便宜、确定性，始终跑；`has_effect=False` 同时让 `is_empty()` 为真 → 走失败/耐心路径。
+> `has_effect=False` 同时让 `is_empty()` 为真 → 走失败/耐心路径。
 
-**剩余（待集群 / 后续）：**
-- 二进制提取真值验证需 openpyxl/pptx 等库 + 真实文件（本机无库，已验证 fallback 不崩）。
-- 瞬态/被覆盖的中间产物：当前 before/after 快照只看**净变化**，未上 `watch_dir` 事件流（Tier2 #6，按调查降级）。
-- 真实后端（`e2b`/`aliyun`）连通 + 8 槽 winner-sync 下 FS/SYS baseline 正确性（local mock 仅近似）待集群验证。
-- discrepancy（声称 vs 实际）在 `use_llm=False` 下留给 reward judge（其 R_t 已含 `state_diff`），不在 observer 重复一遍模型判断。
+### 3.3 落地状态（2026-06-19）
 
-> 用 §1 的 `e2b`（真后端能读内容）或实现后的 `aliyun` 即可上真实沙箱；本机用 `local`（持久 workdir）已能验证 diff 逻辑。详见 `CLAUDE.md` TODO#5。
+**已实现（本机单测 + 验证）**：持久 workdir、diff 采集（fs + 内容 + 二进制提取 + SysOps）、observer LLM 可选（默认确定性零调用）、性能 Tier1（空 diff 跳过 / 单快照 / (size,mtime) / prompt 瘦身）、reward 双通道 + 空 diff 短路。
+
+**剩余（待集群）**：二进制提取真值（需 openpyxl/pptx 等库 + 真实文件，本机仅验 fallback）；`watch_dir` 抓瞬态中间产物（Tier2，按调查降级未做）；真实 `e2b`/`aliyun` 连通 + 8 槽 winner-sync 下 FS/SYS baseline 正确性（local mock 仅近似）。详见 `CLAUDE.md` TODO#5。
 
 ---
 

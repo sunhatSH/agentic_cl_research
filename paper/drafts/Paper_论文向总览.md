@@ -207,7 +207,7 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 
 - **U 形 / priority 融合权重未实证调优**：$\gamma=\delta=0.88$、设计 $\alpha=(0.4,0.2,0.2,0.2)$（v1 实跑 diversity 禁用 → $(0.5,0.25,0,0.25)$）均为起步值，待 Phase 3 数据校准；短轨迹（小 $K_i$）下 U 形可能近乎消失，需更小 $\gamma$。
 - **模拟用户分布失真 / 幻觉**：42 人设分布 ≠ 真实 follow-up 分布；观察不全时前提漂移以小概率回归（靠首轮真实锚点 + 前提成立率审计缓解）。
-- **观察 grounding 强度 = 取证能力**：反 reward-hacking 的强度上限 = observer 能取到的证据强度。**已落地 diff-driven**（2026-06-19）：observer 以沙箱 before/after **内容级 diff** 为 ground truth、actor 声称仅交叉核对，本机已验证 diff 能读到内容并暴露"声称值 ≠ 实际"（详见 [`Observer_DiffDriven_技术报告.md`](../refs/Observer_DiffDriven_技术报告.md)）。**残余局限**：二进制产物（xlsx/png）需格式解析才能核对单元格数值；瞬态/被覆盖的中间产物需 `watch_dir` 事件流（当前只看净变化）；真实 e2b/aliyun 后端连通 + 8 槽 FS 级 baseline 正确性待集群验证。
+- **观察 grounding 强度 = 取证能力**：反 reward-hacking 的强度上限 = observer 能取到的证据强度。**已落地 diff-driven、observer 模型只看 state**（2026-06-19）：observer 以沙箱 before/after **内容级 diff**（含二进制格式提取 + SysOps 状态）为 ground truth，**不接收 actor 轨迹**（结构性反 hacking——声称从不进入观察判断与 completion）；轨迹仅 pass-through 给 reward 判 safety/robustness。详见 [`Observer_DiffDriven_技术报告.md`](../refs/Observer_DiffDriven_技术报告.md)。**残余局限**：二进制提取的真值核对需库 + 真实文件（本机仅验 fallback）；瞬态/被覆盖的中间产物需 `watch_dir` 事件流（当前只看净变化）；真实 e2b/aliyun 后端连通 + 8 槽 FS/SYS baseline 正确性待集群验证。
 - **winner-sync 进程态保真**：平台若只支持磁盘快照，替补槽的进程/内存态可能与 winner 不一致（头号 PoC）。
 - **judge 选型未定**：须用 ClawEval 人工 rubric 一致率校准；外部 judge API 地址待提供（reward 走 `JudgeClient` env 注入，代码零改动）。
 - **27B 成本数字待重算**；**全栈 64 卡 smoke 未跑**——Loss 链路三处接线 bug 已审计修复且纯逻辑单测通过（约 200 测试函数），但 replay 行真过 verl forward + log_probs 选回 + packing 断言不触发，仍待集群 1-step 全栈验证。`inference/VerlRolloutGenerateFn` 为占位（接 verl 原生 generate 是 Gap D）。
