@@ -1,1 +1,65 @@
+# IDE
 .idea/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Compiled objects (unstripped tools)
+*.o
+*.so
+
+# Node (sandbox docker may npm install at project root in docker build)
+node_modules/
+
+# Env / secrets
+.env
+.env.*
+*.local
+
+# Training artefacts
+ckpts/
+checkpoints/
+outputs/
+runs/
+logs/
+*.log
+
+# WandB / experiment trackers
+wandb/
+mlruns/
+
+# Eval results
+eval/results/
+
+# Buffer dumps (large, regenerated per run)
+buffer_dumps/
+*.lmdb
+*.sqlite
+*.sqlite-journal
+
+# Datasets (raw sessions + generated queries; large, regenerated, not source)
+datasets/
+
+# Runtime collected data (mock rollouts + warm-start buffers; regenerated, not source)
+data/
+
+# Tencent / CCR local credentials (never commit)
+docker/sandbox/tencent.env
+docker/sandbox/image.env
+docker/sandbox/runtime.env
+.claude/

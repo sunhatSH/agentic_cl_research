@@ -1,0 +1,4 @@
+[ ] Send launch email draft for review
+[ ] Summarize Q3 NPS responses
+[x] Book meeting room for next sync
+[ ] Follow up with vendor on rescheduled review

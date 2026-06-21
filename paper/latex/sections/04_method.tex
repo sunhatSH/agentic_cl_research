@@ -1,0 +1,38 @@
+% Section 4: Method
+% Prose source of truth: ../../drafts/Paper_Method_draft_EN.md
+% Two-act structure tied to the Intro thesis:
+%   §4.1-4.3 consolidate the signal (objective / buffer / U-shape reweighting)
+%   §4.4-4.5 produce a clean signal (sandbox winner-sync / simulated-user data)
+% Figures 1-5 live in ../assets/ (see ../assets/README.md for the placeholder list).
+
+\section{Method}
+\label{sec:method}
+
+\TODO{port from ../../drafts/Paper\_Method\_draft\_EN.md (keep subsection transitions)}
+
+\subsection{Continual-Learning Objective}
+\label{sec:obj}
+% L_cl = lambda1 L_rl + lambda2 L_kl + lambda3 L_replay + lambda4 L_ent.
+% Drop L_reg; entropy always on. Injected via set_loss_fn, no fork.
+
+\subsection{Capability-Partitioned Prioritized Replay Buffer}
+\label{sec:buffer}
+% Partition by capability not difficulty; prioritize by anti-forgetting value
+% not reward; bucket-local eviction; two-level sampling.
+
+\subsection{U-Shaped Block Reweighting for Replay}
+\label{sec:reweight}
+% Action-block segmentation; U shape (first + last blocks high); gamma=delta=1
+% recovers uniform; clip the product.
+
+\subsection{Sandboxed Rollout with Winner-Synchronized Sessions}
+\label{sec:rollout}
+% Inference outside / actions inside the sandbox; 16x8 + per-query winner sync.
+% Implementation note: replacing the framework's default rollout via the
+% official rollout-manager injection point (non-invasive), to realize
+% winner-sync inside a standard framework.
+
+\subsection{Online Multi-Turn Query Construction via Simulated Users}
+\label{sec:usersim}
+% Premise drift; keep only seed q1; three agents (observer/questioner/reward);
+% 16 personas (anti mode-collapse); patience mechanism; adaptive curriculum.

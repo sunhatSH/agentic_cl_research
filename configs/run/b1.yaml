@@ -1,0 +1,25 @@
+# B1 集群 runnable 配置 = verl 引擎默认 + base overlay + cluster 引擎层 + B1 语义。
+# B1：纯 RL 遗忘基线（无 KL、无 replay）。
+# 启动：bash scripts/run_phases.sh   或   bash scripts/run_phases.sh configs/run/b1.yaml
+
+defaults:
+  - /mnt/afs_toolcall/wuzehuan/Documents/verl/verl/trainer/config/_generated_ppo_trainer.yaml
+  - ../base
+  - ../cluster
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+    entropy_coeff: 0.001
+  # B1 是纯 RL 遗忘基线，不走 agentic rollout（覆盖 cluster.yaml 的 agent 设置）
+  rollout:
+    agent: null
+
+cl:
+  lambda_replay: 0.0
+  buffer:
+    enabled: false
+
+trainer:
+  experiment_name: qwen36_27b_b1

@@ -1,0 +1,141 @@
+# Base configuration shared by all 21 experiments.
+#
+# Each experiment yaml inherits from this file and overrides only the fields
+# that vary in its ablation row. Inheritance is resolved in trainer/cl_main.py
+# (load_config -> OmegaConf.merge over `defaults: [../base]`).
+#
+# IMPORTANT (verl Hydra compatibility):
+# This file is a CL-specific OVERLAY, not a complete verl config. Every field
+# below lives under verl's canonical key path (actor_rollout_ref.model.path,
+# actor_rollout_ref.actor.*, data.*, algorithm.*, trainer.*) so it takes effect
+# when merged on top of verl's `ppo_trainer` defaults. On the training cluster
+# the full verl defaults are composed first (Hydra `defaults: [ppo_trainer]`
+# or `--config-name`), then this overlay + the experiment yaml are merged in.
+# The `cl:` / `weighting:` sections are our own and are read only by
+# trainer/cl_main.py + trainer/cl_loss.py (verl ignores them).
+#
+# See doc/CL_Update_Sunhao.md "实验参数组合设计" for the parameter table.
+
+# config for actor, rollout and reference model (verl: actor_rollout_ref)
+actor_rollout_ref:
+
+  # Base model -- Qwen3.6-27B (https://huggingface.co/Qwen/Qwen3.6-27B).
+  # Override `path` to a local cache (e.g. /mnt/afs/models/qwen3.6-27b/).
+  model:
+    path: Qwen/Qwen3.6-27B
+
+  # Rollout (generation) config
+  rollout:
+    n: 8                          # traj/query (GRPO group size M)
+    temperature: 1.0
+    # Custom rollout via our session scheduler (16x8 + winner-sync). verl's
+    # official injection point (ray_trainer.py:931): when set, verl uses our
+    # AgentLoopManager instead of the default batch rollout, WITHOUT touching
+    # fit(). Default OFF (commented) -> verl-native rollout. Enable to route
+    # rollout through rollout/scheduler.py with sandbox + winner-sync.
+    # agent:
+    #   agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
+    #   sessions_per_step: 16       # 16 sessions in parallel (x n slots = 128)
+    #   sandbox_backend: e2b        # 'e2b' (Tencent) on cluster, 'local' for dev; 'aliyun' (AgentBay) = stub/留空
+
+  # Reference policy pi_ref -- pi_0 (initial) or pi_{t-1} (prev stage ckpt).
+  ref:
+    path: ???                     # set per experiment
+
+  # Actor (policy optimization) config
+  actor:
+    entropy_coeff: 0.001          # lambda_4, FIXED across all phases (anti Echo Trap)
+    use_kl_loss: false            # toggled per experiment
+    kl_loss_coef: 0.0             # lambda_2, set per experiment
+    kl_loss_type: low_var_kl      # reverse-KL family in verl
+    # NOTE: no custom policy_loss.loss_mode here. The CL loss is injected at
+    # runtime via actor.set_loss_fn (trainer/verl_runner.inject_cl_loss), so we
+    # leave verl's default loss_mode ("vanilla") untouched. The previous
+    # `loss_mode: cl_grpo` was dead config -- nothing registered that name.
+
+# Data
+data:
+  train_files: ???                # set per experiment / on cluster
+  val_files: ???
+  train_batch_size: 1024
+  gen_batch_size: 1024
+  dataloader_num_workers: 4
+
+# Algorithm
+algorithm:
+  adv_estimator: grpo
+
+# Reward -- MODEL JUDGE (no rules; see trainer/model_reward.py "Why NOT rules").
+# A single frozen LLM judge grades every trajectory on one consistent scale.
+# verl naive manager calls trainer/model_reward.py::compute_score per sample;
+# the judge model is NOT hardcoded -- it is resolved from env (launch with
+# scripts/serve_reward_model.sh, then export JUDGE_API_BASE + JUDGE_MODEL).
+reward:
+  reward_manager:
+    name: naive
+  custom_reward_function:
+    path: trainer/model_reward.py
+    name: compute_score
+  reward_model:
+    enable: false                 # judge is served externally, not a verl RM worker
+
+# Continual Learning -- replay buffer config (read by trainer/cl_main.py)
+cl:
+  lambda_replay: 0.0              # lambda_3, set per experiment
+  replay_batch_size: 32
+  replay_warmup_size: 0           # >0: linearly ramp replay batch while buffer
+                                  # fills (cold-start); 0 = full batch immediately
+  # Paper-evidence cadences (steps; 0 disables). See trainer/replay_metrics.py.
+  buffer_stats_log_freq: 1        # log buffer.stats() -> wandb + logs/buffer_stats/*.jsonl
+  forgetting_update_freq: 1       # recompute current-policy logprobs -> activate forgetting_risk
+  buffer:
+    enabled: false                # B1 / K* phases keep this false
+    warmup_path: null             # optional sqlite snapshot (scripts/warmup_buffer.py)
+                                  # to preload before training (CL cold-start, so
+                                  # L_replay has old experience from step 0).
+                                  # null/empty = start empty. Missing file is a
+                                  # hard error (mis-set path should fail loud).
+    num_buckets: 7
+    total_capacity: 25000
+    q_min: 2000
+    alpha: 0.5
+    bucket_names:
+      - Workflow
+      - SysOps
+      - Dialogue
+      - Finance
+      - Communication
+      - Knowledge
+      - OfficeQA
+    bucket_task_counts: [54, 52, 38, 18, 12, 11, 10]
+  weighting:
+    scheme: W0                    # W0 = gamma=delta=1 (flat, priority-only).
+                                  # W2 = active U-shape (gamma=delta=0.88).
+                                  # Phase 3 R4-w is the ONLY config that uses W2;
+                                  # all earlier phases stay W0 to avoid confound.
+    gamma: 1.0                    # overridden to 1.0 by scheme=W0; 0.88 when W2
+    delta: 1.0                    # overridden to 1.0 by scheme=W0; 0.88 when W2
+    segmenter: message_block      # primary: split by OpenAI chat message boundaries
+                                  # fallback: equal_length when K_i==1
+    # Action blocks are OpenAI chat messages, not XML tags. The dataset
+    # (datasets/_stage_prefix_pass.jsonl) is in OpenAI tool-use format:
+    # assistant messages carry `content` + optional structured `tool_calls`;
+    # tool messages carry observations. There are NO <think>/<toolcall>/
+    # <final_answer> XML tags in the rollouts -- confirmed empirically on
+    # 50 records (0/3177 assistant msgs had any of these tags). One action
+    # block = one assistant message OR one tool message. K_i = number of
+    # such response messages in the trajectory.
+    role_boundaries:
+      - assistant                 # assistant turn (content + optional tool_calls)
+      - tool                      # tool result (observation)
+    equal_length_K: 20            # fallback K when K_i == 1
+    long_block_threshold: 100     # re-split blocks exceeding this many tokens
+    clip_quantiles: [0.05, 0.95]
+
+# Trainer (verl key paths)
+trainer:
+  total_epochs: 1
+  total_training_steps: 100       # verl: total_training_steps (was total_steps)
+  save_freq: 25
+  test_freq: 25
+  logger: ['console', 'swanlab']   # SWANLAB_API_KEY via scripts/load_training_env.sh

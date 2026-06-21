@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-cl-research"
+version = "0.1.0"
+description = "Continual Learning over Agentic LLM with Replay Buffer + verl"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Sun Hao" }]
+license = { text = "Apache-2.0" }
+
+# Pinned after verl integration smoke test (see doc/VerlIntegration.md §4.2).
+# verl 0.8.0 requires Python >= 3.10; uvicorn/fastapi/cachetools are verl
+# transitive deps needed by the ray_trainer / engine_workers import path that
+# some mirrors do not auto-resolve.
+dependencies = [
+    "verl==0.8.0",
+    "torch>=2.1",
+    "transformers>=4.40",
+    "ray>=2.10",
+    "omegaconf>=2.3",
+    "tensordict",
+    "numpy",
+    "pyyaml",
+    "tqdm",
+    "wandb",
+    "uvicorn",
+    "fastapi",
+    "cachetools",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "ruff>=0.4",
+    "black>=24.0",
+    "mypy>=1.8",
+]
+# NOTE: vendor sandbox backends beyond local/e2b are stubs for now
+# (rollout.sandbox_client.AliyunSandbox is 留空). When the Alibaba AgentBay
+# backend is implemented on the cluster, add its SDK here, e.g.:
+#   aliyun = ["wuying-agentbay-sdk"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["replay_buffer*", "trainer*", "eval*", "rollout*", "agents*", "inference*"]
+exclude = ["tests*", "doc*", "configs*", "scripts*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 110
+target-version = ["py310"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-ra --strict-markers"
+markers = [
+    "gpu: tests that require GPU and a full verl install",
+]

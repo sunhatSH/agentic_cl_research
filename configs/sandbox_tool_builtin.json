@@ -1,0 +1,10 @@
+{
+  "_comment": "Fastest path: built-in code-interpreter (no custom image / no docker push). API: tccli ags CreateSandboxTool",
+  "ToolName": "agentic-cl-code-interpreter",
+  "ToolType": "code-interpreter",
+  "Description": "Agentic CL rollout — platform built-in code interpreter (no custom CCR image)",
+  "DefaultTimeout": "30m",
+  "NetworkConfiguration": {
+    "NetworkMode": "PUBLIC"
+  }
+}
