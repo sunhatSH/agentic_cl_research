@@ -155,11 +155,11 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 报告 $R_t$ **一份两用**（喂出题 + 喂奖励），保证给分与出题的事实一致；reward 的 completion 落到真实 diff 上、抗"嘴上说做完了"的 hacking；轨迹仅作 pass-through 给 reward（观察模型不看）。
 
 - **只观察 winner**：与"会话正史 = winner 轨迹拼接"自洽。
-- **防模式坍缩**：42 人设会话级随机（含观察偏好：整体/细节、形式/内容）+ 轮数压小（1–3）+ winner 状态逐轮演化。
+- **防模式坍缩（四维）**：① 42 人设会话级随机（含观察偏好：整体/细节、形式/内容）② 轮数压小（1–3）③ winner 状态逐轮演化 ④ Questioner 4 模型轮换（claude-sonnet-4-6 / deepseek-v4-pro / qwen3.7-max / kimi-k2.6，每 5 次提问切换，从模型层面注入输出风格异质性）。
 - **自适应课程**：出题 agent 始终对当前策略的实际输出挑刺 → 策略越强、刺越细，难度自动跟随能力前沿。
 
 > 完整设计（接口契约、决策记录、风险）见 [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md)。
-> **实现状态（2026-06-12）**：三 agent 已落盘 `agents/`（observer/questioner/reward + 42 人设库 + 双轴耐心机制 `PatienceTracker`），三个 prompt（O6/O3/O4）已填（见 Method 草稿附录 A）；会话编排 `rollout/simulated_session.run_simulated_session`（Algorithm 1）已实现并以 mock 单测覆盖。三方后端各自独立 env（`OBSERVER_*`/`USERSIM_*`/`JUDGE_*`）抗 self-preference。待集群：把 `run_simulated_session` 接进 scheduler + 接 verl 原生 generate（`inference/VerlRolloutGenerateFn`）。
+> **实现状态（2026-06-23）**：三 agent 已落盘 `agents/`（observer/questioner/reward + 42 人设库 + 双轴耐心机制 `PatienceTracker`），三个 prompt（O6/O3/O4）已填（见 Method 草稿附录 A）；会话编排 `rollout/simulated_session.run_simulated_session`（Algorithm 1）已实现并以 mock 单测覆盖。Questioner 多模型轮换（`RotatingChatClient`，`USERSIM_ENDPOINTS` 配置）已实现并单测覆盖。模型选型单一信源见 [`configs/agents.yaml`](../../configs/agents.yaml) + [`doc/模型选型.md`](../../doc/模型选型.md)，三方后端（observer/questioner-rotation/reward）各用不同模型抗 self-preference。待集群：把 `run_simulated_session` 接进 scheduler + 接 verl 原生 generate（`inference/VerlRolloutGenerateFn`）。
 
 ---
 

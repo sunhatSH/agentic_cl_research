@@ -2,18 +2,22 @@
 
 All off-network: agents take mock chat clients; the session driver uses a mock
 SessionSandboxPool agent_fn. Verifies prompt assembly, JSON parsing, the patience
-mechanism (§3.6.5), persona library (§3.5), and the Algorithm 1 session flow.
+mechanism (§3.6.5), persona library (§3.5), the Algorithm 1 session flow,
+RotatingChatClient (anti mode-collapse), and persona tone injection.
 """
 
 from __future__ import annotations
 
 import random
+import threading
 
 import pytest
 
+from agents.base import OpenAIChatClient, RotatingChatClient, _parse_endpoints
 from agents.observer import Observer, parse_observation_report
 from agents.personas import PERSONAS, sample_persona
 from agents.prompts import (
+    _TONE_GUIDANCE,
     build_observer_prompt,
     build_questioner_prompt,
     build_reward_judge_input,
@@ -122,6 +126,26 @@ def test_questioner_end_session():
     q = Questioner(client=MockChat(END_SESSION))
     out = q.next_query(PERSONAS[0], ObservationReport(final=[{"path": "x"}]), [])
     assert out is None
+    assert not q.last_query_was_error
+
+
+def test_questioner_api_error_distinguished():
+    """API failure sets last_query_was_error=True; <end_session> sets it False."""
+
+    class BoomChat:
+        def chat(self, messages, *, max_tokens=512):
+            raise RuntimeError("API down")
+
+    q = Questioner(client=BoomChat())
+    out = q.next_query(PERSONAS[0], ObservationReport(final=[{"path": "x"}]), [])
+    assert out is None
+    assert q.last_query_was_error is True
+
+    # Now a satisfied end — must reset the flag
+    q2 = Questioner(client=MockChat(END_SESSION))
+    out2 = q2.next_query(PERSONAS[0], ObservationReport(final=[{"path": "x"}]), [])
+    assert out2 is None
+    assert q2.last_query_was_error is False
 
 
 # --- patience mechanism (§3.6.5) --------------------------------------------
@@ -238,3 +262,382 @@ def test_prompts_inject_their_inputs():
     assert r_in["task"] == "recheck"
     # trajectory reaches reward via the report's pass-through field
     assert "did it" in r_in["trajectory"]
+
+
+# --- RotatingChatClient (anti mode-collapse) ----------------------------------
+
+
+class RecordingChat:
+    """Records calls and returns the model name (so we can tell who answered).
+
+    Has a ``model`` attribute to match the ``OpenAIChatClient`` interface
+    used by ``RotatingChatClient.current_model``.
+    """
+
+    def __init__(self, model_name: str):
+        self.model = model_name
+        self.call_count = 0
+
+    def chat(self, messages, *, max_tokens: int = 512) -> str:
+        self.call_count += 1
+        return f"reply from {self.model}"
+
+    def chat_with_tools(self, messages, *, tools=None, max_tokens: int = 1024) -> dict:
+        self.call_count += 1
+        return {"role": "assistant", "content": f"tool-reply from {self.model}"}
+
+
+def test_rotating_client_single_model():
+    """With one client, rotation is a no-op — always the same model."""
+    c = RecordingChat("m1")
+    rc = RotatingChatClient([c], rotate_every=3)
+    for _ in range(10):
+        assert "m1" in rc.chat([])
+
+
+def test_rotating_client_cycles_through_models():
+    """With rotate_every=2, every 2 calls switch to the next model."""
+    c1, c2, c3 = RecordingChat("m1"), RecordingChat("m2"), RecordingChat("m3")
+    rc = RotatingChatClient([c1, c2, c3], rotate_every=2)
+    # Calls 1-2 -> m1, calls 3-4 -> m2, calls 5-6 -> m3, calls 7-8 -> m1 (wrap)
+    results = [rc.chat([]) for _ in range(8)]
+    assert results[0] == "reply from m1"
+    assert results[1] == "reply from m1"
+    assert results[2] == "reply from m2"
+    assert results[3] == "reply from m2"
+    assert results[4] == "reply from m3"
+    assert results[5] == "reply from m3"
+    assert results[6] == "reply from m1"  # wraps
+    assert results[7] == "reply from m1"
+
+
+def test_rotating_client_current_model():
+    """current_model tracks the active model."""
+    c1, c2 = RecordingChat("m1"), RecordingChat("m2")
+    rc = RotatingChatClient([c1, c2], rotate_every=3)
+    assert rc.current_model == "m1"
+    for _ in range(3):
+        rc.chat([])
+    assert rc.current_model == "m2"
+    for _ in range(3):
+        rc.chat([])
+    assert rc.current_model == "m1"  # wraps
+
+
+def test_rotating_client_requires_at_least_one():
+    with pytest.raises(ValueError, match="at least one"):
+        RotatingChatClient([], rotate_every=5)
+
+
+def test_rotating_client_chat_with_tools():
+    """chat_with_tools also rotates."""
+    c1, c2 = RecordingChat("m1"), RecordingChat("m2")
+    rc = RotatingChatClient([c1, c2], rotate_every=2)
+    r1 = rc.chat_with_tools([], tools=[{"type": "function", "function": {"name": "x"}}])
+    assert "m1" in r1["content"]
+    r2 = rc.chat_with_tools([], tools=[{"type": "function", "function": {"name": "x"}}])
+    assert "m1" in r2["content"]
+    # After 2 calls, should rotate to m2
+    r3 = rc.chat_with_tools([], tools=[{"type": "function", "function": {"name": "x"}}])
+    assert "m2" in r3["content"]
+
+
+def test_rotating_client_thread_safety():
+    """Concurrent calls don't corrupt the rotation counter."""
+    c1, c2 = RecordingChat("m1"), RecordingChat("m2")
+    rc = RotatingChatClient([c1, c2], rotate_every=5)
+    results: list[str] = []
+    lock = threading.Lock()
+
+    def worker():
+        for _ in range(50):
+            r = rc.chat([])
+            with lock:
+                results.append(r)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    # All 200 calls completed without crash; both models were used
+    assert len(results) == 200
+    assert any("m1" in r for r in results)
+    assert any("m2" in r for r in results)
+
+
+# --- _parse_endpoints ---------------------------------------------------------
+
+
+def test_parse_endpoints_json_array():
+    raw = '[{"base_url":"http://a/v1","model":"model-a","api_key":"key-a"},' \
+          '{"base_url":"http://b/v1","model":"model-b","api_key":"key-b"}]'
+    entries = _parse_endpoints(raw)
+    assert len(entries) == 2
+    assert entries[0] == {"base_url": "http://a/v1", "model": "model-a", "api_key": "key-a"}
+    assert entries[1] == {"base_url": "http://b/v1", "model": "model-b", "api_key": "key-b"}
+
+
+def test_parse_endpoints_missing_key_gets_default():
+    raw = '[{"base_url":"http://a/v1","model":"model-a"}]'
+    entries = _parse_endpoints(raw)
+    assert entries[0]["api_key"] == "sk-local"
+
+
+def test_parse_endpoints_empty_key_gets_default():
+    raw = '[{"base_url":"http://a/v1","model":"model-a","api_key":""}]'
+    entries = _parse_endpoints(raw)
+    assert entries[0]["api_key"] == "sk-local"
+
+
+def test_parse_endpoints_not_json():
+    with pytest.raises(ValueError, match="JSON array"):
+        _parse_endpoints("not json at all")
+
+
+def test_parse_endpoints_not_array():
+    with pytest.raises(ValueError, match="non-empty JSON array"):
+        _parse_endpoints('{"base_url":"http://a/v1","model":"m"}')
+
+
+def test_parse_endpoints_empty_array():
+    with pytest.raises(ValueError, match="non-empty JSON array"):
+        _parse_endpoints("[]")
+
+
+def test_parse_endpoints_missing_base_url():
+    with pytest.raises(ValueError, match="missing 'base_url' or 'model'"):
+        _parse_endpoints('[{"model":"m","api_key":"k"}]')
+
+
+def test_parse_endpoints_missing_model():
+    with pytest.raises(ValueError, match="missing 'base_url' or 'model'"):
+        _parse_endpoints('[{"base_url":"http://a/v1","api_key":"k"}]')
+
+
+def test_parse_endpoints_entry_not_object():
+    with pytest.raises(ValueError, match="must be an object"):
+        _parse_endpoints('["not-an-object"]')
+
+
+# --- resolve_questioner_client with rotation (env-level) ----------------------
+
+
+def test_resolve_questioner_client_fallback_no_endpoints(monkeypatch):
+    """When USERSIM_ENDPOINTS is not set, falls back to single model."""
+    monkeypatch.delenv("USERSIM_ENDPOINTS", raising=False)
+    monkeypatch.setenv("USERSIM_API_BASE", "http://localhost:8100/v1")
+    monkeypatch.setenv("USERSIM_MODEL", "test-model")
+    monkeypatch.setenv("USERSIM_API_KEY", "sk-test")
+    # Force re-resolve by importing fresh
+    from agents.base import resolve_questioner_client
+
+    client = resolve_questioner_client()
+    assert isinstance(client, OpenAIChatClient)
+    assert client.model == "test-model"
+
+
+def test_resolve_questioner_client_rotation(monkeypatch):
+    """When USERSIM_ENDPOINTS is set, returns RotatingChatClient."""
+    monkeypatch.setenv(
+        "USERSIM_ENDPOINTS",
+        '[{"base_url":"http://a/v1","model":"model-a","api_key":"key-a"},'
+        '{"base_url":"http://b/v1","model":"model-b","api_key":"key-b"}]',
+    )
+    monkeypatch.setenv("USERSIM_ROTATE_EVERY", "3")
+    from agents.base import resolve_questioner_client
+
+    client = resolve_questioner_client()
+    assert isinstance(client, RotatingChatClient)
+    assert client._rotate_every == 3
+    assert len(client._clients) == 2
+
+
+# --- Persona tone injection ---------------------------------------------------
+
+
+def test_tone_guidance_injected_in_questioner_prompt():
+    """Each tone value produces distinct guidance in the system prompt."""
+    for tone_key, guidance_text in _TONE_GUIDANCE.items():
+        p = Persona("t", "", "", "", "x", patience=1.0, patience_decay=0.1, tone=tone_key)
+        msgs = build_questioner_prompt(persona=p, report=ObservationReport(), session_history=[])
+        system = msgs[0]["content"]
+        assert guidance_text in system, f"tone={tone_key}: expected guidance in system prompt"
+        # persona block includes the tone field
+        user = msgs[1]["content"]
+        assert f"tone: {tone_key}" in user
+
+
+def test_tone_hot_makes_prompt_different_from_calm():
+    hot = Persona("t", "", "", "", "x", patience=1.0, patience_decay=0.1, tone="hot")
+    calm = Persona("t", "", "", "", "x", patience=1.0, patience_decay=0.1, tone="calm")
+    hot_msgs = build_questioner_prompt(persona=hot, report=ObservationReport(), session_history=[])
+    calm_msgs = build_questioner_prompt(persona=calm, report=ObservationReport(), session_history=[])
+    assert hot_msgs[0]["content"] != calm_msgs[0]["content"]
+    assert "impatient" in hot_msgs[0]["content"]
+    assert "measured" in calm_msgs[0]["content"]
+
+
+def test_persona_tone_in_library():
+    """All personas in the library have a valid tone."""
+    valid = {"calm", "neutral", "hot"}
+    for p in PERSONAS:
+        assert p.tone in valid, f"persona {p.name!r} has invalid tone {p.tone!r}"
+
+
+# --- validate_endpoints_distinct ------------------------------------------------
+
+
+def test_validate_endpoints_distinct_ok(monkeypatch):
+    """Three different models → no warnings."""
+    monkeypatch.setenv("OBSERVER_API_BASE", "http://a/v1")
+    monkeypatch.setenv("OBSERVER_MODEL", "observer-model")
+    monkeypatch.setenv("USERSIM_API_BASE", "http://b/v1")
+    monkeypatch.setenv("USERSIM_MODEL", "questioner-model")
+    monkeypatch.setenv("REWARD_API_BASE", "http://c/v1")
+    monkeypatch.setenv("REWARD_MODEL", "reward-model")
+    from agents.base import validate_endpoints_distinct
+
+    warnings = validate_endpoints_distinct()
+    assert warnings == []
+
+
+def test_validate_endpoints_same_model_warns(monkeypatch):
+    """Same model for Observer and Reward → warning."""
+    monkeypatch.setenv("OBSERVER_API_BASE", "http://a/v1")
+    monkeypatch.setenv("OBSERVER_MODEL", "same-model")
+    monkeypatch.setenv("USERSIM_API_BASE", "http://b/v1")
+    monkeypatch.setenv("USERSIM_MODEL", "questioner-model")
+    monkeypatch.setenv("REWARD_API_BASE", "http://c/v1")
+    monkeypatch.setenv("REWARD_MODEL", "same-model")
+    from agents.base import validate_endpoints_distinct
+
+    warnings = validate_endpoints_distinct()
+    assert any("same model" in w for w in warnings)
+
+
+def test_validate_endpoints_missing_warns(monkeypatch):
+    """Missing env AND config -> warning. With config-first resolution, deleting
+    env vars alone is not enough (agents.yaml fills in); we must also point at
+    a missing config so the yaml fallback is absent."""
+    monkeypatch.delenv("OBSERVER_API_BASE", raising=False)
+    monkeypatch.delenv("OBSERVER_MODEL", raising=False)
+    monkeypatch.setenv("USERSIM_API_BASE", "http://b/v1")
+    monkeypatch.setenv("USERSIM_MODEL", "q-model")
+    monkeypatch.setenv("REWARD_API_BASE", "http://c/v1")
+    monkeypatch.setenv("REWARD_MODEL", "r-model")
+    from agents.base import validate_endpoints_distinct
+    from agents.config import _reload_config
+
+    # Point config at a nonexistent file so yaml resolution yields nothing
+    _reload_config("/nonexistent/agents.yaml")
+    try:
+        warnings = validate_endpoints_distinct()
+        assert any("Observer not configured" in w for w in warnings)
+    finally:
+        # Restore default config
+        _reload_config(None)
+
+
+# --- agents/config.py -- config-first resolution ------------------------------
+
+
+def test_config_resolve_observer_from_yaml():
+    """Observer resolves from agents.yaml without any env vars."""
+    from agents.config import _reload_config, resolve_observer
+
+    _reload_config(None)  # use default configs/agents.yaml
+    try:
+        ep = resolve_observer()
+        assert ep.base_url == "https://tokenhub.sensetime.com/v1"
+        assert ep.model == "gpt-4.1-mini"
+        assert ep.temperature == 0.0
+    finally:
+        _reload_config(None)
+
+
+def test_config_resolve_judge_from_yaml():
+    """Reward judge resolves from agents.yaml without any env vars."""
+    from agents.config import _reload_config, resolve_judge
+
+    _reload_config(None)
+    try:
+        ep = resolve_judge()
+        assert ep.base_url == "https://tokenhub.sensetime.com/v1"
+        assert ep.model == "claude-opus-4-8-thinking"
+        assert ep.temperature == 0.0
+    finally:
+        _reload_config(None)
+
+
+def test_config_resolve_questioner_from_yaml():
+    """Questioner rotation pool resolves from agents.yaml."""
+    from agents.config import _reload_config, resolve_questioner
+
+    _reload_config(None)
+    try:
+        q_cfg = resolve_questioner()
+        assert len(q_cfg.rotation) == 4
+        assert q_cfg.rotation[0].model == "claude-sonnet-4-6"
+        assert q_cfg.rotation[1].model == "deepseek-v4-pro"
+        assert q_cfg.rotation[2].model == "qwen3.7-max"
+        assert q_cfg.rotation[3].model == "kimi-k2.6"
+        assert q_cfg.rotate_every == 5
+    finally:
+        _reload_config(None)
+
+
+def test_config_env_overrides_yaml(monkeypatch):
+    """Env vars take priority over agents.yaml values."""
+    from agents.config import _reload_config, resolve_observer
+
+    monkeypatch.setenv("OBSERVER_API_BASE", "http://override/v1")
+    monkeypatch.setenv("OBSERVER_MODEL", "override-model")
+    _reload_config(None)
+    try:
+        ep = resolve_observer()
+        assert ep.base_url == "http://override/v1"
+        assert ep.model == "override-model"
+    finally:
+        _reload_config(None)
+
+
+def test_config_missing_yaml_falls_to_env(monkeypatch):
+    """When agents.yaml is missing, env-only resolution still works."""
+    from agents.config import _reload_config, resolve_observer
+
+    monkeypatch.setenv("OBSERVER_API_BASE", "http://env-only/v1")
+    monkeypatch.setenv("OBSERVER_MODEL", "env-model")
+    _reload_config("/nonexistent/agents.yaml")
+    try:
+        ep = resolve_observer()
+        assert ep.base_url == "http://env-only/v1"
+        assert ep.model == "env-model"
+    finally:
+        _reload_config(None)
+
+
+def test_config_validate_distinct_from_yaml():
+    """validate_model_distinctness works with config-first resolution."""
+    from agents.config import _reload_config, validate_model_distinctness
+
+    _reload_config(None)
+    try:
+        warnings = validate_model_distinctness()
+        # agents.yaml has distinct models -> no self-preference warnings
+        assert not any("same model" in w for w in warnings)
+    finally:
+        _reload_config(None)
+
+
+def test_config_key_env_resolves_from_env(monkeypatch):
+    """key_env in agents.yaml points to TOKENHUB_API_KEY for the shared API key."""
+    from agents.config import _reload_config, resolve_observer
+
+    monkeypatch.setenv("TOKENHUB_API_KEY", "my-secret-key")
+    _reload_config(None)
+    try:
+        ep = resolve_observer()
+        assert ep.api_key == "my-secret-key"
+    finally:
+        _reload_config(None)

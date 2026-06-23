@@ -24,9 +24,9 @@ We deliberately do NOT score with hand-written rules. Reasons:
 env (endpoint + served model name). Deployment choices -- model size, local vs
 api -- are configuration, not a code change:
 
-    JUDGE_API_BASE   OpenAI-compatible base url (e.g. http://127.0.0.1:8100/v1)
-    JUDGE_MODEL      served model name (e.g. reward-judge)
-    JUDGE_API_KEY    token (dummy ok for a local vLLM)
+    REWARD_API_BASE   OpenAI-compatible base url (e.g. http://127.0.0.1:8100/v1)
+    REWARD_MODEL      served model name (e.g. reward-judge)
+    REWARD_API_KEY    token (dummy ok for a local vLLM)
 
 Launch a local frozen judge with ``scripts/serve_reward_model.sh``. The judge
 should be >= the policy in capability (anti reward-hacking) and FROZEN for the
@@ -182,22 +182,44 @@ class OpenAIJudgeClient:
 
 
 def get_judge() -> JudgeClient:
-    """Resolve the judge from env (cached). Raises if not configured."""
+    """Resolve the reward judge from config then env (cached). Raises if not configured.
+
+    Reads configs/agents.yaml first (reward section), then falls back to
+    REWARD_API_BASE + REWARD_MODEL env vars. The judge model is NOT hardcoded here --
+    it is resolved from configuration so the same code works with a local vLLM serve
+    or a remote tokenhub endpoint.
+    """
     global _DEFAULT_JUDGE
     if _DEFAULT_JUDGE is not None:
         return _DEFAULT_JUDGE
-    base = os.environ.get("JUDGE_API_BASE")
-    model = os.environ.get("JUDGE_MODEL")
+    # Config-first resolution (configs/agents.yaml)
+    try:
+        from agents.config import resolve_judge as _resolve_from_config
+
+        ep = _resolve_from_config()
+        _DEFAULT_JUDGE = OpenAIJudgeClient(
+            base_url=ep.base_url,
+            model=ep.model,
+            api_key=ep.api_key,
+            temperature=ep.temperature,
+        )
+        return _DEFAULT_JUDGE
+    except RuntimeError:
+        pass  # fall through to env-only path
+    # Legacy env-only resolution
+    base = os.environ.get("REWARD_API_BASE")
+    model = os.environ.get("REWARD_MODEL")
     if not base or not model:
         raise RuntimeError(
-            "Reward judge not configured. Set JUDGE_API_BASE + JUDGE_MODEL (launch "
-            "one with scripts/serve_reward_model.sh). The judge model is intentionally "
-            "not hardcoded -- see trainer/model_reward.py."
+            "Reward judge not configured. Set REWARD_API_BASE + REWARD_MODEL (and "
+            "optionally REWARD_API_KEY), or configure the reward section in "
+            "configs/agents.yaml. The judge model is intentionally not "
+            "hardcoded -- see trainer/model_reward.py."
         )
     _DEFAULT_JUDGE = OpenAIJudgeClient(
         base_url=base,
         model=model,
-        api_key=os.environ.get("JUDGE_API_KEY", "sk-local"),
+        api_key=os.environ.get("REWARD_API_KEY", "sk-local"),
     )
     return _DEFAULT_JUDGE
 

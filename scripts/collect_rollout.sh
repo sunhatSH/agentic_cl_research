@@ -37,6 +37,12 @@ REMOTE_ACTOR_MODEL="${REMOTE_ACTOR_MODEL:-gpt-5}"
 OBSERVER_MODEL_ID="${OBSERVER_MODEL_ID:-gpt-4.1-mini}"
 QUESTIONER_MODEL_ID="${QUESTIONER_MODEL_ID:-claude-sonnet-4-6}"
 
+# Questioner multi-model rotation (anti mode-collapse, 2026-06-22).
+# When set, overrides USERSIM_API_BASE/MODEL/KEY with a rotating pool.
+# Format: "base1|model1|key1;base2|model2|key2;..."
+# USERSIM_ENDPOINTS="${USERSIM_ENDPOINTS:-}"
+# USERSIM_ROTATE_EVERY="${USERSIM_ROTATE_EVERY:-5}"
+
 # local vllm
 PORT="${PORT:-8000}"; ACTOR_TP="${ACTOR_TP:-8}"; SERVED="${SERVED:-cold-actor}"
 MAX_LEN="${MAX_LEN:-32768}"
@@ -68,7 +74,13 @@ rm -f /tmp/_chk.$$
 
 # export agent env (agents.base reads these)
 export OBSERVER_API_BASE="$REMOTE_BASE"  OBSERVER_MODEL="$OBSERVER_MODEL_ID"   OBSERVER_API_KEY="$REMOTE_KEY"
-export USERSIM_API_BASE="$REMOTE_BASE"   USERSIM_MODEL="$QUESTIONER_MODEL_ID"  USERSIM_API_KEY="$REMOTE_KEY"
+# If USERSIM_ENDPOINTS is set (multi-model rotation), it takes precedence;
+# otherwise fall back to single-model USERSIM_API_BASE/MODEL/KEY.
+if [[ -n "${USERSIM_ENDPOINTS:-}" ]]; then
+  echo "[rollout.sh] USERSIM_ENDPOINTS set -> Questioner multi-model rotation enabled (rotate_every=${USERSIM_ROTATE_EVERY:-5})"
+else
+  export USERSIM_API_BASE="$REMOTE_BASE"   USERSIM_MODEL="$QUESTIONER_MODEL_ID"  USERSIM_API_KEY="$REMOTE_KEY"
+fi
 
 # ---- python env (vllm overlay) -------------------------------------------
 export PYTHONPATH="$VLLM_OVERLAY:$ROOT_DIR:${PYTHONPATH:-}"

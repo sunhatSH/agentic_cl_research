@@ -14,11 +14,11 @@
 # 一键串跑多个 phase 请用 scripts/run_phases.sh。
 set -uo pipefail
 
-# 全部走 AFS 共享挂载（集群各节点都能访问）。verl/LightLLM 直接用泽寰的源码
-# （含 lightllm_rollout + recipe_custom），免去拷贝；都在 AFS 上、可读。
+# 全部走 AFS 共享挂载（集群各节点都能访问）。verl/LightLLM 已拷至自己 AFS 目录
+# （含 lightllm_rollout + recipe_custom），与泽寰目录解耦。
 PROJECT_DIR=/mnt/afs_toolcall/sunhao4/agentic_cl_research
-LIGHTLLM_DIR=/mnt/afs_toolcall/wuzehuan/Documents/LightLLM
-VERL_DIR=/mnt/afs_toolcall/wuzehuan/Documents/verl
+LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/Documents/LightLLM
+VERL_DIR=/mnt/afs_toolcall/sunhao4/Documents/verl
 # 默认先跑 b1（无 replay，最简单，仍走你的 CL loss）验证 mock 链路；
 # 链路 OK 后换 configs/run/r4.yaml 开 7 桶 replay：bash start_train.sh configs/run/r4.yaml
 CONFIG="${1:-$PROJECT_DIR/configs/run/b1.yaml}"
@@ -30,21 +30,36 @@ export MODELING_BACKEND=hf
 export PYTHONPATH=$LIGHTLLM_DIR:$VERL_DIR:$PROJECT_DIR
 export RESULT_DIR=$PROJECT_DIR/outputs
 
-# 训练密钥（gitignore 的 .env）：SWANLAB_API_KEY + JUDGE_API_BASE/MODEL/KEY 都从这里来。
+# 训练密钥（gitignore 的 .env）：SWANLAB_API_KEY + REWARD_API_BASE/MODEL/KEY 都从这里来。
 if [ -f "$PROJECT_DIR/.env" ]; then
     set -a; source "$PROJECT_DIR/.env"; set +a
 fi
-export SWANLAB_API_KEY="${SWANLAB_API_KEY:-GDGemFX7c2ruxYtRWzVh0}"
+# SWANLAB_API_KEY must come from .env — no hardcoded default.
+if [ -z "${SWANLAB_API_KEY:-}" ]; then
+    echo "[start_train.sh] WARNING: SWANLAB_API_KEY not set (neither .env nor env). W&B logging will fail."
+fi
 
 # AFS (quarkfs FUSE) 不支持 fcntl.flock，HF/verl 缓存指向本地盘
 export HF_DATASETS_CACHE=/tmp/hf_datasets_cache
 export HF_HOME=/tmp/hf_home
 
-# reward = 项目 model judge（trainer/model_reward.py 读这三个；值来自上面的 .env）。
-# 现已配置外部 judge：tokenhub.sensetime.com / gpt5.1。.env 缺失时才回退 mock。
-export JUDGE_API_BASE="${JUDGE_API_BASE:-http://127.0.0.1:8100/v1}"
-export JUDGE_MODEL="${JUDGE_MODEL:-mock-judge}"
-export JUDGE_API_KEY="${JUDGE_API_KEY:-sk-local}"
+# reward = project model judge（trainer/model_reward.py 读 REWARD_API_BASE/MODEL/KEY）。
+# 2026-06-22: Reward model 改走 tokenhub（claude-opus-4-8-thinking），不再本地 vLLM 部署。
+# 值来自 .env；仅当 .env 缺失时才回退 mock。
+export REWARD_API_BASE="${REWARD_API_BASE:-http://127.0.0.1:8100/v1}"
+export REWARD_MODEL="${REWARD_MODEL:-mock-judge}"
+# API key: TOKENHUB_API_KEY 在 .env 中设置，所有 agent 共用。
+export TOKENHUB_API_KEY="${TOKENHUB_API_KEY:-sk-local}"
+
+# Observer / Questioner env（agents/base.py 读取；值来自 .env）。
+export OBSERVER_API_BASE="${OBSERVER_API_BASE:-}"
+export OBSERVER_MODEL="${OBSERVER_MODEL:-}"
+# Questioner: 单模型 fallback（USERSIM_ENDPOINTS 优先，见下）
+export USERSIM_API_BASE="${USERSIM_API_BASE:-}"
+export USERSIM_MODEL="${USERSIM_MODEL:-}"
+# Questioner: 多模型轮换（JSON 数组，每 5 次 query 切换模型，抗模式坍缩）
+export USERSIM_ENDPOINTS="${USERSIM_ENDPOINTS:-}"
+export USERSIM_ROTATE_EVERY="${USERSIM_ROTATE_EVERY:-5}"
 
 # Agentic rollout 走 e2b 腾讯沙箱：加载凭证（docker/sandbox/tencent.env，gitignore，已填）。
 if [ -f "$PROJECT_DIR/docker/sandbox/tencent.env" ]; then
@@ -72,8 +87,20 @@ cd "$PROJECT_DIR"
 OMP_NUM_THREADS=1 python -c "import os, torch.distributed as d; s,r,w = d.rendezvous(f'tcp://$MASTER_ADDR:$MASTER_PORT'); d.init_process_group('gloo', store=s, rank=r, world_size=w); d.barrier()"
 
 if [ "$RANK" = "0" ]; then
+    # 启动前校验：Observer/Questioner/Reward 三端点应配置且模型不同
+    python -c "
+import os, sys
+sys.path.insert(0, '$PROJECT_DIR')
+from agents.base import validate_endpoints_distinct
+warnings = validate_endpoints_distinct()
+for w in warnings:
+    print(f'[start_train.sh] WARNING: {w}')
+if any('not configured' in w for w in warnings):
+    print('[start_train.sh] ABORT: critical endpoint missing. Check .env')
+    sys.exit(1)
+"
     # 仅当仍在用 mock judge 时才在本地起 mock 服务；用了真实 judge（tokenhub）则跳过。
-    if [ "$JUDGE_MODEL" = "mock-judge" ]; then
+    if [ "$REWARD_MODEL" = "mock-judge" ]; then
         python "$PROJECT_DIR/scripts/mock_judge.py" --port 8100 > /tmp/mock_judge.log 2>&1 &
     fi
     ray start --head --disable-usage-stats && ray status

@@ -1,0 +1,45 @@
+# Agent 模型选型配置 — 单一信源
+#
+# 代码（agents/base.py, trainer/model_reward.py）+ 测试 + 启动脚本统一读取本文件。
+# doc/模型选型.md 引用本文件，不再自行记录选型。
+#
+# API key 不写进本文件，从 .env 或环境变量读取（key_name 指示对应的 env var）。
+# 所有模型共用同一个 tokenhub key：TOKENHUB_API_KEY。
+# 测试脚本用 verify_endpoints.py 查验所有端点可达。
+
+observer:
+  api_base: "https://tokenhub.sensetime.com/v1"
+  model: "gpt-4.1-mini"
+  key_env: "TOKENHUB_API_KEY"       # 共用 tokenhub key
+  temperature: 0.0                  # 客观取证，确定性
+
+questioner:
+  # 多模型轮换池（每 rotate_every 次提问切换到下一个，抗模式坍缩）
+  # 4 个跨厂商模型，最大化输出风格异质性
+  rotation:
+    - api_base: "https://tokenhub.sensetime.com/v1"
+      model: "claude-sonnet-4-6"
+      key_env: "TOKENHUB_API_KEY"
+    - api_base: "https://tokenhub.sensetime.com/v1"
+      model: "deepseek-v4-pro"
+      key_env: "TOKENHUB_API_KEY"
+    - api_base: "https://tokenhub.sensetime.com/v1"
+      model: "qwen3.7-max"
+      key_env: "TOKENHUB_API_KEY"
+    - api_base: "https://tokenhub.sensetime.com/v1"
+      model: "kimi-k2.6"
+      key_env: "TOKENHUB_API_KEY"
+  rotate_every: 5
+  temperature: 0.9                  # 抗坍缩
+
+  # 单模型 fallback（rotation 为空时使用，兼容旧 env）
+  fallback:
+    api_base_env: "USERSIM_API_BASE"
+    model_env: "USERSIM_MODEL"
+    key_env: "TOKENHUB_API_KEY"
+
+reward:
+  api_base: "https://tokenhub.sensetime.com/v1"
+  model: "claude-opus-4-8-thinking"
+  key_env: "TOKENHUB_API_KEY"
+  temperature: 0.0                  # 冻结 reward，一致性

@@ -38,18 +38,40 @@ class Questioner:
         report: ObservationReport,
         session_history: list[dict[str, Any]],
     ) -> str | None:
-        """Return the next query text, or None == <end_session> (§7.4)."""
+        """Return the next query text, or None == session ended.
+
+        None can mean two things (distinguished by caller checking
+        ``last_query_was_error``):
+          - The model returned ``<end_session>`` (satisfied user).
+          - An API/LLM error occurred (connection failure, timeout, etc.).
+
+        Both currently result in session termination, but the caller should
+        record the distinction for telemetry (P1 TODO from CLAUDE.md).
+        """
         messages = build_questioner_prompt(
             persona=persona, report=report, session_history=session_history
         )
+        self._last_query_was_error = False
         try:
             raw = self.client.chat(messages, max_tokens=self._max_tokens)
         except Exception:  # noqa: BLE001 -- a failed generation ends the session
+            self._last_query_was_error = True
             return None
         text = (raw or "").strip()
         if not text or text == END_SESSION or END_SESSION in text:
             return None
         return text
+
+    @property
+    def last_query_was_error(self) -> bool:
+        """True if the last ``next_query`` call ended due to an API/LLM error.
+
+        When False and ``next_query`` returned None, the model chose to end
+        the session (satisfied user). This distinction matters for telemetry
+        and for the patience mechanism (§3.6.5): a genuinely satisfied user
+        should not consume patience, whereas an API failure is ambiguous.
+        """
+        return getattr(self, "_last_query_was_error", False)
 
 
 # --------------------------------------------------------------------------- #

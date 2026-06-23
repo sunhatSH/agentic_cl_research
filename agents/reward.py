@@ -50,7 +50,7 @@ def score_followup(
     truth) and ``actor_trajectory`` (the actor's actions, carried pass-through by the
     observer for safety/robustness). Reuses model_reward's judge + aggregation so the
     reward scale matches eval (safety * (0.8*completion + 0.2*robustness)). The judge
-    model is resolved from JUDGE_API_BASE / JUDGE_MODEL env unless injected.
+    model is resolved from REWARD_API_BASE / REWARD_MODEL env unless injected.
 
     Returns the same dict shape as ``model_reward.compute_score``
     ({score, completion, safety, robustness, judge_error}); a gated/no-effect turn

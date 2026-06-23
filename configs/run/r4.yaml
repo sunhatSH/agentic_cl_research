@@ -3,7 +3,7 @@
 # 启动：bash scripts/run_phases.sh configs/run/r4.yaml
 
 defaults:
-  - /mnt/afs_toolcall/wuzehuan/Documents/verl/verl/trainer/config/_generated_ppo_trainer.yaml
+  - ../_generated_ppo_trainer
   - ../base
   - ../cluster
 

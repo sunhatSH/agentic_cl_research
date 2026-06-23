@@ -29,25 +29,46 @@ from agents.schema import ObservationReport, Persona
 
 OBSERVER_SYSTEM = (
     "You are an OBJECTIVE state observer in an agent-training loop. You are NOT "
-    "a user and you have NO preferences. Your only job is to report verifiable "
-    "evidence about the agent's actual EFFECT on the environment, so that (1) a "
-    "reward judge can score real effect and (2) a separate user-agent can ask a "
-    "grounded follow-up.\n\n"
-    "You are given a DETERMINISTIC DIFF of the agent's environment -- the files it "
-    "created / modified / removed THIS turn (with content) and any system-state "
-    "changes. This diff is GROUND TRUTH and is your ONLY input: you do NOT see the "
-    "agent's trajectory or claims, so you cannot be misled by its narrative.\n\n"
-    "Capture INTERMEDIATE results (easily overwritten by later steps) as well as "
-    "final deliverables -- read them straight from the diff content.\n\n"
-    "Rules:\n"
-    "- Report only what the diff supports. Never invent files, values, or outcomes.\n"
-    "- Note internal red flags in 'discrepancies' (e.g. an empty/placeholder/corrupt "
-    "deliverable, a value that contradicts another in the same output).\n"
+    "a user and you have NO preferences. Your job is to produce a structured "
+    "observation report from the environment evidence.\n\n"
+    "## Your Input\n\n"
+    "You receive an AUTO-COLLECTED ENVIRONMENT DIFF (ground truth) showing what "
+    "the agent changed this turn. This diff is produced by system probes that "
+    "run inside the sandbox — it works identically on Tencent E2B, Alibaba "
+    "AgentBay, and local sandboxes.\n\n"
+    "## Your Tools\n\n"
+    "You may call the following tools to investigate further if the diff is "
+    "suspicious or incomplete:\n\n"
+    "- **get_diff** — re-read the auto-collected before/after diff\n"
+    "- **get_file_tree** — full workspace file list with content excerpts\n"
+    "- **read_file(path)** — read a specific file in detail (up to 4 KB)\n"
+    "- **list_dir(path)** — list a directory's contents\n"
+    "- **get_system_state** — installed packages, listening ports, processes\n\n"
+    "Use tools sparingly — only when the diff alone is insufficient. The diff "
+    "already contains file content for text files and extracted content for "
+    "binary formats (xlsx/docx/pptx/pdf).\n\n"
+    "## Your Task\n\n"
+    "1. **Classify artifacts** as INTERMEDIATE or FINAL:\n"
+    "   - INTERMEDIATE: temporary / easily overwritten (temp files, partial "
+    "outputs, files later modified in the same turn).\n"
+    "   - FINAL: stable deliverables the user asked for.\n\n"
+    "2. **Detect DISCREPANCIES** — internal red flags in the state:\n"
+    "   - Empty deliverables (xlsx with no data, zero-size output files).\n"
+    "   - Conflicting values across files (same key, different numbers).\n"
+    "   - Corrupt or placeholder content (e.g. 'TODO', 'placeholder').\n"
+    "   - Results that contradict each other within the same output.\n\n"
+    "3. **Produce the report** — a JSON object with keys:\n"
+    "   - `intermediate` (list of {desc, source, value_excerpt})\n"
+    "   - `final` (list of {path, kind, content_excerpt})\n"
+    "   - `discrepancies` (string — describe all red flags found)\n"
+    "   - `file_tree` (string — workspace file listing)\n\n"
+    "## Rules\n\n"
+    "- Report ONLY what the evidence supports. Never invent files, values, or "
+    "outcomes.\n"
+    "- You do NOT see the agent's trajectory or claims — only the real state.\n"
     "- Stay neutral: no praise, no criticism, no user voice.\n"
-    "- Output ONLY a JSON object with keys: intermediate (list of "
-    '{desc, source, value_excerpt}), final (list of {path, kind, content_excerpt}), '
-    "discrepancies (string), file_tree (string). "
-    "Truncate long excerpts. No prose outside the JSON."
+    "- Truncate long excerpts.\n"
+    "- Output ONLY the JSON object. No prose outside the JSON.\n"
 )
 
 
@@ -55,6 +76,10 @@ def build_observer_prompt(
     *, state_diff: str = "", file_tree: str = "", tool_outputs: str = ""
 ) -> list[dict[str, str]]:
     """Messages for the Observer (diff-driven, STATE only -- no actor trajectory).
+
+    The first user message contains the auto-collected diff evidence. The LLM
+    may call tools (get_diff, read_file, etc.) to investigate further before
+    producing the final JSON report.
 
     Args:
         state_diff: deterministic before/after environment diff (GROUND TRUTH).
@@ -64,7 +89,9 @@ def build_observer_prompt(
     parts: list[str] = []
     if state_diff.strip():
         parts.append(
-            "# Environment evidence (sandbox diff -- GROUND TRUTH, your only input)\n"
+            "# Environment evidence (sandbox diff -- GROUND TRUTH)\n"
+            "The following diff was auto-collected by system probes running inside "
+            "the sandbox. It shows exactly what changed this turn.\n\n"
             + state_diff.strip()
         )
     if file_tree.strip():
@@ -72,8 +99,10 @@ def build_observer_prompt(
     if tool_outputs.strip():
         parts.append("# Read-only probe outputs\n" + tool_outputs.strip())
     parts.append(
-        "# Output\nReturn the JSON observation report. Populate intermediate AND final "
-        "from the diff; note internal red flags in 'discrepancies'."
+        "# Task\n"
+        "Classify each artifact as intermediate or final. Detect discrepancies. "
+        "You may call tools to investigate suspicious files, then output the JSON "
+        "observation report."
     )
     return [
         {"role": "system", "content": OBSERVER_SYSTEM},
@@ -110,6 +139,22 @@ QUESTIONER_SYSTEM = (
     "Output ONLY your message text (or '<end_session>'). No quotes, no role labels."
 )
 
+# Tone guidance injected from persona.tone (calm / neutral / hot).
+_TONE_GUIDANCE = {
+    "calm": (
+        "Your tone is calm and measured. Even when pointing out errors, you stay "
+        "patient and constructive. You give the assistant the benefit of the doubt."
+    ),
+    "neutral": (
+        "Your tone is straightforward and business-like — neither overly patient "
+        "nor visibly frustrated."
+    ),
+    "hot": (
+        "Your tone is impatient and direct. When something is wrong, you express "
+        "frustration clearly and press for a fix. You do not mince words."
+    ),
+}
+
 
 def _persona_block(p: Persona) -> str:
     return (
@@ -117,7 +162,8 @@ def _persona_block(p: Persona) -> str:
         f"profession: {p.profession}\n"
         f"preference: {p.preference}\n"
         f"profile: {p.profile}\n"
-        f"observation_focus: {p.observation_focus}"
+        f"observation_focus: {p.observation_focus}\n"
+        f"tone: {p.tone}"
     )
 
 
@@ -150,7 +196,14 @@ def _history_block(session_history: list[dict[str, Any]], max_msgs: int = 12) ->
 def build_questioner_prompt(
     *, persona: Persona, report: ObservationReport, session_history: list[dict[str, Any]]
 ) -> list[dict[str, str]]:
-    """Messages for the Questioner. Persona is session-fixed; report is per-turn."""
+    """Messages for the Questioner. Persona is session-fixed; report is per-turn.
+
+    Persona tone (calm / neutral / hot) is injected as a guidance paragraph
+    appended to the system prompt so the questioner's voice matches the persona's
+    emotional style (P1 TODO from CLAUDE.md).
+    """
+    tone_guidance = _TONE_GUIDANCE.get(persona.tone, _TONE_GUIDANCE["neutral"])
+    system = QUESTIONER_SYSTEM + "\n\n" + tone_guidance
     user = (
         "# Your persona\n" + _persona_block(persona) + "\n\n"
         "# What the assistant actually produced (objective report)\n"
@@ -160,7 +213,7 @@ def build_questioner_prompt(
         "# Your turn\nSend your next message to the assistant, or '<end_session>'."
     )
     return [
-        {"role": "system", "content": QUESTIONER_SYSTEM},
+        {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 

@@ -7,7 +7,7 @@ valid {completion, safety, robustness} and training never blocks on a real
 judge. NOT for real runs -- reward is constant, no learning signal.
 
 Run:  python scripts/mock_judge.py --port 8100
-Then: export JUDGE_API_BASE=http://127.0.0.1:8100/v1 JUDGE_MODEL=mock-judge
+Then: export REWARD_API_BASE=http://127.0.0.1:8100/v1 REWARD_MODEL=mock-judge
 """
 from __future__ import annotations
 

@@ -17,6 +17,7 @@
 | `Observer.observe`（产**报告**） | `agents/observer.py` | `observe(sandbox=None, *, actor_trajectory="", baseline=None, post=None) -> ObservationReport` | 产出 `ObservationReport` |
 | `ObservationReport`（**报告**） | `agents/schema.py` | `.state_diff`(ground truth)`/.final/.intermediate/.discrepancies/.actor_trajectory`(pass-through)`/.has_effect`、`.is_empty()` | observer 产 → questioner+reward 消费 |
 | `Questioner.next_query`（消费报告） | `agents/questioner.py` | `next_query(persona, report, session_history) -> str\|None` | 读报告 → 出下一条 query |
+| `RotatingChatClient`（多模型轮换） | `agents/base.py` | `RotatingChatClient(clients, rotate_every=5)` — 每 N 次调用切换模型 | Questioner 抗模式坍缩 |
 | `PatienceTracker`（失败路径） | 同上 | `PatienceTracker(persona, rng).on_failure() -> bool` | 失败轮决定 redo / 结束 |
 | `score_followup`（Reward，消费报告） | `agents/reward.py` | `score_followup(*, query, report, judge=None) -> dict`（trajectory 从 `report.actor_trajectory` 取） | 读报告 → 打分 |
 | `sample_persona` / `PERSONAS` | `agents/personas.py` | `sample_persona(rng) -> Persona` | 会话级抽 1 个人设 |
@@ -106,8 +107,8 @@ export AGENTBAY_API_KEY=...   # pip install wuying-agentbay-sdk
 |------|------|------|
 | `state_diff: str` | **环境 before/after diff（含内容 + SysOps）= ground truth** | reward 判 completion、questioner 看产出 |
 | `final: list[dict]` | 最终交付 `{path, kind, content_excerpt}`（从 diff 填） | reward / questioner |
-| `intermediate: list[dict]` | 中间结果 `{desc, source, value_excerpt}`（use_llm 时由模型填） | reward / questioner |
-| `discrepancies: str` | 状态内部红旗（空/损坏/自相矛盾；use_llm 时填） | reward 参考 |
+| `intermediate: list[dict]` | 中间结果 `{desc, source, value_excerpt}`（LLM 填 或 启发式检测） | reward / questioner |
+| `discrepancies: str` | 状态内部红旗（空/损坏/自相矛盾；LLM 填 或 启发式检测） | reward 参考 |
 | `actor_trajectory: str` | **pass-through**：actor 轨迹文本，**observer 模型不看**，只给 reward 判 safety/robustness | reward |
 | `file_tree: str` | 工作区文件树（fallback 证据） | 兜底 |
 | `has_effect: bool` | 本轮 diff 是否非空；False → 短路 reward、走失败/耐心路径 | reward gate / driver |
@@ -128,7 +129,7 @@ report = Observer().observe(
 ```
 
 - 容错：LLM/沙箱失败 → 降级为最小报告（state_diff + tree），**不 crash 会话**。
-- `use_llm=False`（默认）→ 确定性建报告、零模型调用；`use_llm=True` 才调模型归纳（仍不看 trajectory）。
+- `use_llm=True`（默认）→ LLM 多轮 tool-use：先看 diff，可调探针工具（read_file/list_dir 等）深入调查，再输出结构化报告；`use_llm=False` → 确定性建报告、零模型调用（降级模式）。两种路径都不看 trajectory。
 - env：`OBSERVER_API_BASE` / `OBSERVER_MODEL` / `OBSERVER_API_KEY`（temperature 0，客观）。
 
 ### 2.4 `Questioner.next_query` + `PatienceTracker`（消费报告，人设侧）
@@ -140,7 +141,13 @@ pt = PatienceTracker(persona, rng); redo = pt.on_failure()           # 失败轮
 ```
 
 - persona 的 `observation_focus` 决定**强调报告哪一面**（整体/细节 × 形式/内容）；observer 仍客观。
-- env：`USERSIM_API_BASE` / `USERSIM_MODEL` / `USERSIM_API_KEY`（temperature 0.9，抗坍缩）。
+- persona 的 `tone`（calm/neutral/hot）注入 Questioner system prompt，控制语气风格（2026-06-22 新增）。
+- env（单模型）：`USERSIM_API_BASE` / `USERSIM_MODEL` / `USERSIM_API_KEY`（temperature 0.9，抗坍缩）。
+- env（多模型轮换，2026-06-22 新增）：
+  - `USERSIM_ENDPOINTS`：JSON 数组，每个元素是 `{"base_url": "...", "model": "...", "api_key": "..."}`，`api_key` 可省略（默认 `"sk-local"`）。
+  - `USERSIM_ROTATE_EVERY`：每 N 次调用后切换到下一个模型（默认 5）。
+  - 设置 `USERSIM_ENDPOINTS` 后，`resolve_questioner_client()` 返回 `RotatingChatClient`（多模型轮换），替代单一 `OpenAIChatClient`；不设置时行为完全不变。
+  - 轮换池中的模型应来自**不同厂商/不同系列**（如 claude-sonnet + gpt-4.1 + deepseek-v3），最大化输出风格多样性，防止 follow-up query 的模式坍缩。
 
 ### 2.5 `score_followup`（Reward，打分侧，**双通道**）
 

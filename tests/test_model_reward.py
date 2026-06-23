@@ -83,8 +83,15 @@ def test_compute_score_judge_error_is_flagged_not_raised():
 
 def test_get_judge_requires_env(monkeypatch):
     set_judge(None)
-    monkeypatch.delenv("JUDGE_API_BASE", raising=False)
-    monkeypatch.delenv("JUDGE_MODEL", raising=False)
-    with pytest.raises(RuntimeError, match="judge not configured|JUDGE_API_BASE"):
-        get_judge()
-    set_judge(None)  # cleanup
+    monkeypatch.delenv("REWARD_API_BASE", raising=False)
+    monkeypatch.delenv("REWARD_MODEL", raising=False)
+    # Also point config at a missing file so yaml resolution doesn't fill in
+    from agents.config import _reload_config
+
+    _reload_config("/nonexistent/agents.yaml")
+    try:
+        with pytest.raises(RuntimeError, match="Reward not configured|REWARD_API_BASE"):
+            get_judge()
+    finally:
+        set_judge(None)  # cleanup
+        _reload_config(None)  # restore default config

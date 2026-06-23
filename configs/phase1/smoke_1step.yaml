@@ -8,7 +8,7 @@
 # optim/rollout 引擎全字段），再叠加我们的 ../base overlay，最后本文件覆盖。
 #
 # reward judge 用本地 mock（scripts/mock_judge.py，固定满分）——启动前需:
-#   export JUDGE_API_BASE=http://127.0.0.1:8100/v1 JUDGE_MODEL=mock-judge
+#   export REWARD_API_BASE=http://127.0.0.1:8100/v1 REWARD_MODEL=mock-judge
 #
 # 启动: bash scripts/phase1/run_smoke.sh   (或直接 python -m trainer.cl_main --config 本文件)
 

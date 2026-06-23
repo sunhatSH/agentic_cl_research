@@ -19,6 +19,12 @@
 
 ## 记录（最新在最上面）
 
+### 2026-06-23 | 本机（开发机，CPU，无 GPU） | commit <pending>
+- 动作：收尾 `0622 待办计划.md` 的本机可完成项 + 清理 lint。修 7 个 ruff 错（observer.py 的 E702/F541、verify_endpoints.py 的 F401/F541/E402、verify_binary_extraction.py 的 F401）；给两个 verify 脚本补可执行位；`agents.yaml` yaml 校验通过；CLAUDE.md TODO #3（SWANLAB 硬编码）核对已落地并补标 ✅。
+- 结果：✅ 变更文件 `ruff check` 全过；`.venv/bin/python -m pytest` 在本机可跑的 28 个测试文件 **214 passed / 11 skipped**（skip = 缺 torch/omegaconf/verl，需集群环境，与本机一致）；新增配置模块 `agents/config.py` + `configs/agents.yaml`（模型选型单一信源）由 27 个单测覆盖（RotatingChatClient / parse_endpoints / resolve_* / validate_endpoints_distinct / validate_model_distinctness）全过。❌ `tests/test_configs.py`、`test_warmup_preload.py` 因 venv 缺 omegaconf 无法在本机 collect（非本次改动引入，属环境缺包，集群 `pip install -e .[dev]` 后即恢复）。
+- 产物：`agents/config.py`、`configs/agents.yaml`、`scripts/{verify_endpoints,verify_binary_extraction}.py`、`agents/observer.py`(lint)、`CLAUDE.md` TODO 标记、本条记录。
+- 解释：本机 venv 仅含 pytest/httpx/yaml 等轻量包，torch/verl/omegaconf 需集群装——故能跑的纯逻辑测试（agents/replay_buffer/domain_tagging/adapter/metrics/collect/cleaning/sandbox_client）全过即证明本次改动无回归。剩余阻塞全在集群：Phase 4/5 的 `???` 参数待 Phase 2/3 结果（TODO #4）、全栈 GPU smoke、verl Hydra defaults 补全。无新增硬编码密钥（grep `GDGemFX7` 0 命中）。
+
 ### 2026-06-19 03:38 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
 - 动作：理清 observer/reward 的 trajectory 边界，落定**双通道 + pass-through**。observer **模型只看 state（diff）**，永不收 trajectory（不浪费 LLM token）；trajectory 由 observer **组件**捎带为 `ObservationReport.actor_trajectory`（pass-through，不进 observer prompt），reward 从这一份 R_t 读 trajectory 判 safety/robustness、读 state_diff 判 completion。schema 把 `actor_claims` 改名为 `actor_trajectory`（语义=原始轨迹、非"声称"）；`observe(sandbox, *, actor_trajectory=, baseline=, post=)`；`score_followup(query, report, judge)` 不再单独传 trajectory；`build_reward_judge_input` 从 `report.actor_trajectory` 取（封顶）；`_report_block`(questioner) 去掉 actor_claims；`build_observer_prompt`/`OBSERVER_SYSTEM` 状态化（不提 trajectory/claims，输出键去掉 actor_claims）。
 - 结果：✅ 端到端验证——observer LLM prompt 不含 trajectory（SECRET_TRAJ_TOKEN 不泄漏）、报告 pass-through 携带、reward 从报告同时拿到 trajectory+state_diff；`test_agents`/`test_simulated_session`/`test_sandbox_client` 可跑用例全过（修了一批残留 `actor_claims` 引用：`_report_block` 生产崩溃点 + 5 处测试构造/断言 + harness mock）；`ReadLints` 无错；harness 两模式跑通。

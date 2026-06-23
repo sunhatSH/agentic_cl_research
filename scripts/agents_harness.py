@@ -165,6 +165,8 @@ def _run(args: argparse.Namespace) -> int:
 
     if args.real:
         missing = [v for v in ("USERSIM_API_BASE",) if not os.environ.get(v)]
+        if os.environ.get("USERSIM_ENDPOINTS"):
+            missing = []  # rotation mode doesn't need USERSIM_API_BASE
         if args.use_llm:
             missing += [v for v in ("OBSERVER_API_BASE",) if not os.environ.get(v)]
         if missing:
@@ -177,9 +179,22 @@ def _run(args: argparse.Namespace) -> int:
             client=ScriptedChat(default=_mock_observer_report()) if args.use_llm else None,
             use_llm=args.use_llm,
         )
-        questioner = Questioner(
-            client=ScriptedChat(replies=["Looks good, can you also add a Q4 column?"], default=END_SESSION)
-        )
+        # Questioner: optionally demonstrate RotatingChatClient with mock clients.
+        if args.rotation:
+            from agents.base import RotatingChatClient
+            rotating = RotatingChatClient(
+                [
+                    ScriptedChat(replies=["Looks good, can you add a Q4 column?"], default=END_SESSION),
+                    ScriptedChat(replies=["The numbers seem off, recheck row 5."], default=END_SESSION),
+                    ScriptedChat(replies=["Great, now export this as PDF."], default=END_SESSION),
+                ],
+                rotate_every=2,
+            )
+            questioner = Questioner(client=rotating)
+        else:
+            questioner = Questioner(
+                client=ScriptedChat(replies=["Looks good, can you also add a Q4 column?"], default=END_SESSION)
+            )
         judge = MockJudge()
 
     pool_slots = 8 if args.mode == "simulated" else 1
@@ -187,8 +202,8 @@ def _run(args: argparse.Namespace) -> int:
     agent_fn = _make_scored_agent_fn(backend_runs=args.backend != "local")
 
     print(f"=== agents_harness | mode={args.mode} backend={args.backend} "
-          f"persona={persona.name!r} ({persona.profession}) seed={args.seed} "
-          f"real={args.real} ===")
+          f"persona={persona.name!r} ({persona.profession}, tone={persona.tone}) seed={args.seed} "
+          f"real={args.real} rotation={args.rotation} ===")
     print(f"seed query: {args.seed_query!r}\n")
 
     if args.mode == "simulated":
@@ -229,9 +244,11 @@ def main() -> int:
                     help="simulated = 8-slot + winner-sync + all 3 agents; collect = 1-slot observer+questioner")
     ap.add_argument("--backend", choices=["local", "e2b", "aliyun"], default="local")
     ap.add_argument("--real", action="store_true",
-                    help="resolve observer/questioner/reward from env (OBSERVER_*/USERSIM_*/JUDGE_*) instead of mocks")
+                    help="resolve observer/questioner/reward from env (OBSERVER_*/USERSIM_*/REWARD_*) instead of mocks")
     ap.add_argument("--use-llm", action="store_true",
                     help="enable the OPTIONAL observer LLM (default: deterministic forensics, no model call)")
+    ap.add_argument("--rotation", action="store_true",
+                    help="demonstrate multi-model rotation with mock clients (anti mode-collapse)")
     ap.add_argument("--seed-query", default="Make a short report of the Q3 total and save it to report.txt.")
     ap.add_argument("--persona", default=None, help="fixed persona name (default: sampled)")
     ap.add_argument("--k-max", type=int, default=3, help="follow-up budget upper bound (K ~ U{1..k_max})")

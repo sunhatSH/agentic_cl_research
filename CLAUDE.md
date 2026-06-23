@@ -363,19 +363,20 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 
 > 这些阻断了正式训练，需要回到集群环境执行。
 
-1. **项目迁移：把泽寰的 AFS 路径全部改成自己的**
-   - `run_phases.sh:19-21`：`PROJECT_DIR / LIGHTLLM_DIR / VERL_DIR` 三个变量中的 `wuzehuan` → 你的 AFS 目录或项目本地路径
+1. ~~**项目迁移：把泽寰的 AFS 路径全部改成自己的**~~ ✅ 已完成（2026-06-22）
+   - `run_phases.sh:19-21`：已改为 `sunhao4/Documents/verl` 和 `sunhao4/Documents/LightLLM`
    - `start_train.sh:19-21`：同上
-   - `configs/run/b1.yaml` 和 `configs/run/r4.yaml`：`defaults` 中 `_generated_ppo_trainer.yaml` 的 `wuzehuan` 路径
-   - 方案 A（推荐）：把 verl/LightLLM 拷到自己 AFS 目录；方案 B：继续走泽寰的只读共享
+   - `configs/run/b1.yaml` 和 `configs/run/r4.yaml`：已改为 `../_generated_ppo_trainer`
+   - verl 从 GitHub clone `release/v0.8.0`，手动合入泽寰增量（lightllm_rollout + recipe_custom + agent gateway 等，见 `sunhao4/Documents/verl` 的 `sunhao4/v0.8.0-lightllm-agent` 分支）
+   - LightLLM 从 GitHub clone `rl_verl_rebase_main` 分支
 
-2. **拷贝 `_generated_ppo_trainer.yaml` 并更新 run/*.yaml**
-   - `cp /mnt/afs_toolcall/wuzehuan/Documents/verl/verl/trainer/config/_generated_ppo_trainer.yaml configs/_generated_ppo_trainer.yaml`
-   - 然后改 `configs/run/b1.yaml` 和 `configs/run/r4.yaml` 的 `defaults` 为 `../_generated_ppo_trainer`
+2. ~~**拷贝 `_generated_ppo_trainer.yaml` 并更新 run/*.yaml**~~ ✅ 已完成（2026-06-22）
+   - 已拷贝至 `configs/_generated_ppo_trainer.yaml`
+   - 已改 `configs/run/b1.yaml` 和 `configs/run/r4.yaml` 的 `defaults` 为 `../_generated_ppo_trainer`
 
-3. **清理 `run_phases.sh` 中硬编码的 `SWANLAB_API_KEY`**
-   - 第 43 行：`export SWANLAB_API_KEY="${SWANLAB_API_KEY:-GDGemFX7c2ruxYtRWzVh0}"`
-   - 密钥不应在脚本中出现，只放 `.env`。回公司后删掉这行默认值。
+3. ~~**清理 `run_phases.sh` 中硬编码的 `SWANLAB_API_KEY`**~~ ✅ 已完成（2026-06-22）
+   - `run_phases.sh` + `start_train.sh`：删除 `:-GDGemFX7...` 默认值，改为只从 `.env` / 环境变量取（缺失打 WARNING，不静默继续）。
+   - 全仓 grep 确认无任何明文密钥残留；`.env` 已在 `.gitignore`。
 
 4. **确认 Phase 4/5 参数就绪后再启用对应的 run.sh**
    - C1-C4 / S1-S2 配置中的 `???` 需要 Phase 2/3 结果确定后填入
@@ -398,7 +399,8 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
    - **剩余 / 待集群**：
      - 二进制提取真值验证需库+真实文件（本机仅验 fallback）；瞬态中间产物 `watch_dir`（Tier2 #6，已降级）。
      - 8 槽路径 baseline 取 slot0（依赖"turn 开始时各槽位级一致"）——真实 e2b winner-sync 下成立，local mock 不做 FS 级 sync，故 8 槽 local 仅近似；真实后端连通（e2b/aliyun）+ 全栈验证待集群。
-     - P1：questioner 区分"satisfied(`<end_session>`)" vs "API 失败"（现在异常吞成 None 静默结束）；persona `tone` 注入 questioner prompt；follow-up 轮 8 槽 reward 闭环；启动校验三端点存在且不同。
+     - P1：~~persona `tone` 注入 questioner prompt~~ ✅ 已完成（2026-06-22）；questioner 区分"satisfied(`<end_session>`)" vs "API 失败"（现在异常吞成 None 静默结束）；follow-up 轮 8 槽 reward 闭环；启动校验三端点存在且不同。
+     - **Questioner 多模型轮换**（2026-06-22 新增）：`RotatingChatClient`（`agents/base.py`）在多个模型端点之间轮换（每 N 次调用切换），通过 `USERSIM_ENDPOINTS`（JSON 数组，每个元素 `{"base_url":"...","model":"...","api_key":"..."}`） / `USERSIM_ROTATE_EVERY` 环境变量配置。不设置时行为与之前完全一致（单模型 `USERSIM_API_BASE/MODEL/KEY`）。详见 `doc/模型选型.md` §2 / `doc/接口使用_Sandbox与三Agent.md` §2.4。
    - **第三方取证手段（回公司可直接用）**：
      - 系统/沙箱状态：E2B `sandbox.files.read`/`files.list`/`watch_dir` 或 AgentBay `session.file_system`/`session.command.execute_command`（确定性快照/差分，模型只负责归纳）。
      - Agent 轨迹状态（可选增强）：OpenTelemetry GenAI 语义约定 + Langfuse / Arize Phoenix / OpenLLMetry。

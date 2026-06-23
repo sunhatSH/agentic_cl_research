@@ -4,23 +4,23 @@
 # The reward judge grades every rollout trajectory (trainer/model_reward.py). It
 # must be FROZEN for the whole training run (reproducible reward) and >= the
 # policy in capability (anti reward-hacking). The judge model is NOT hardcoded:
-# pass a model path / HF id via $JUDGE_MODEL_PATH or as the first argument.
+# pass a model path / HF id via $REWARD_MODEL_PATH or as the first argument.
 #
 # Usage:
-#   JUDGE_MODEL_PATH=/mnt/afs/models/qwen2.5-32b-instruct bash scripts/serve_reward_model.sh
+#   REWARD_MODEL_PATH=/mnt/afs/models/qwen2.5-32b-instruct bash scripts/serve_reward_model.sh
 #   bash scripts/serve_reward_model.sh /mnt/afs/models/qwen2.5-32b-instruct
 #
 # Then point the trainer at it:
-#   export JUDGE_API_BASE=http://127.0.0.1:${JUDGE_PORT:-8100}/v1
-#   export JUDGE_MODEL=${JUDGE_SERVED_NAME:-reward-judge}
-#   export JUDGE_API_KEY=sk-local
+#   export REWARD_API_BASE=http://127.0.0.1:${JUDGE_PORT:-8100}/v1
+#   export REWARD_MODEL=${JUDGE_SERVED_NAME:-reward-judge}
+#   export REWARD_API_KEY=sk-local
 #
 # Sizing guidance (doc/Sandbox_Agent架构.md): 32B is the default sweet spot for a
 # 27B policy; validate with ClawEval human-rubric agreement before trusting it.
 
 set -euo pipefail
 
-MODEL_PATH="${JUDGE_MODEL_PATH:-${1:-}}"
+MODEL_PATH="${REWARD_MODEL_PATH:-${1:-}}"
 PORT="${JUDGE_PORT:-8100}"
 TP="${JUDGE_TP:-2}"                       # tensor-parallel size = #GPUs for the judge
 GPUS="${JUDGE_GPUS:-0,1}"                 # which cards (carve from the inference pool)
@@ -30,8 +30,8 @@ SERVED_NAME="${JUDGE_SERVED_NAME:-reward-judge}"
 DTYPE="${JUDGE_DTYPE:-bfloat16}"
 
 if [[ -z "${MODEL_PATH}" ]]; then
-  echo "[serve_reward_model] ERROR: no model. Set JUDGE_MODEL_PATH or pass a path arg."
-  echo "  e.g. JUDGE_MODEL_PATH=/mnt/afs/models/qwen2.5-32b-instruct bash $0"
+  echo "[serve_reward_model] ERROR: no model. Set REWARD_MODEL_PATH or pass a path arg."
+  echo "  e.g. REWARD_MODEL_PATH=/mnt/afs/models/qwen2.5-32b-instruct bash $0"
   exit 2
 fi
 

@@ -69,7 +69,7 @@ algorithm:
 # A single frozen LLM judge grades every trajectory on one consistent scale.
 # verl naive manager calls trainer/model_reward.py::compute_score per sample;
 # the judge model is NOT hardcoded -- it is resolved from env (launch with
-# scripts/serve_reward_model.sh, then export JUDGE_API_BASE + JUDGE_MODEL).
+# scripts/serve_reward_model.sh, then export REWARD_API_BASE + REWARD_MODEL).
 reward:
   reward_manager:
     name: naive
