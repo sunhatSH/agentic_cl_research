@@ -399,7 +399,8 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
    - **剩余 / 待集群**：
      - 二进制提取真值验证需库+真实文件（本机仅验 fallback）；瞬态中间产物 `watch_dir`（Tier2 #6，已降级）。
      - 8 槽路径 baseline 取 slot0（依赖"turn 开始时各槽位级一致"）——真实 e2b winner-sync 下成立，local mock 不做 FS 级 sync，故 8 槽 local 仅近似；真实后端连通（e2b/aliyun）+ 全栈验证待集群。
-     - P1：~~persona `tone` 注入 questioner prompt~~ ✅ 已完成（2026-06-22）；questioner 区分"satisfied(`<end_session>`)" vs "API 失败"（现在异常吞成 None 静默结束）；follow-up 轮 8 槽 reward 闭环；启动校验三端点存在且不同。
+     - P1：~~persona `tone` 注入 questioner prompt~~ ✅ 已完成（2026-06-22）；~~questioner 区分"satisfied(`<end_session>`)" vs "API 失败"~~ ✅ 已完成（2026-06-23：`last_query_was_error` 标志区分二者，且截断也走 error 路径而非误判满意）；follow-up 轮 8 槽 reward 闭环（待集群）；启动校验三端点存在且不同。
+     - ~~**Thinking 模型截断防护**~~ ✅ 已完成（2026-06-23）：模型回复因 `finish_reason=length*`（或思考预算吃光 token、content 空且无 tool_calls）被截断时，`agents/base.py::_raise_if_truncated` 统一抛 `TruncatedOutputError`，三 Agent + judge 按各自语义分流——questioner→标 `last_query_was_error`（不误判为满意 `<end_session>`）、observer→降级到确定性取证报告（不解析半截 JSON）、judge→`parse_judge_output` 返回 `(verdict, parsed)`，无 verdict JSON 时抛错路由到 `compute_score` 的 `judge_error=1.0`（不再静默全 0 reward）。反 reward-hacking / 反静默退化的工程加固，本机 53 单测验证。
      - **Questioner 多模型轮换**（2026-06-22 新增）：`RotatingChatClient`（`agents/base.py`）在多个模型端点之间轮换（每 N 次调用切换），通过 `USERSIM_ENDPOINTS`（JSON 数组，每个元素 `{"base_url":"...","model":"...","api_key":"..."}`） / `USERSIM_ROTATE_EVERY` 环境变量配置。不设置时行为与之前完全一致（单模型 `USERSIM_API_BASE/MODEL/KEY`）。详见 `doc/模型选型.md` §2 / `doc/接口使用_Sandbox与三Agent.md` §2.4。
    - **第三方取证手段（回公司可直接用）**：
      - 系统/沙箱状态：E2B `sandbox.files.read`/`files.list`/`watch_dir` 或 AgentBay `session.file_system`/`session.command.execute_command`（确定性快照/差分，模型只负责归纳）。

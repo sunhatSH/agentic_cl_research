@@ -11,7 +11,7 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from agents.base import ChatClient, resolve_questioner_client
+from agents.base import ChatClient, TruncatedOutputError, resolve_questioner_client
 from agents.personas import DEFAULT_PATIENCE_DECAY
 from agents.prompts import build_questioner_prompt
 from agents.schema import ObservationReport, Persona
@@ -22,7 +22,11 @@ END_SESSION = "<end_session>"
 class Questioner:
     """Persona user-agent that generates the next follow-up query (§7.4)."""
 
-    def __init__(self, client: ChatClient | None = None, *, max_tokens: int = 256):
+    def __init__(self, client: ChatClient | None = None, *, max_tokens: int = 512):
+        # 512 (was 256): thinking models in the rotation pool (sonnet-4-6 /
+        # deepseek-v4-pro / qwen3.7-max / kimi-k2.6) can spend a large share of
+        # the budget on hidden reasoning before emitting the query. 256 risked an
+        # empty reply, which was indistinguishable from "<end_session>".
         self._client = client
         self._max_tokens = max_tokens
 
@@ -48,12 +52,18 @@ class Questioner:
         Both currently result in session termination, but the caller should
         record the distinction for telemetry (P1 TODO from CLAUDE.md).
         """
-        messages = build_questioner_prompt(
-            persona=persona, report=report, session_history=session_history
-        )
+        messages = build_questioner_prompt(persona=persona, report=report, session_history=session_history)
         self._last_query_was_error = False
+        # Truncation guard (thinking models): max_tokens budget can be entirely
+        # consumed by hidden reasoning, leaving content empty. Without this, an
+        # empty reply is indistinguishable from "<end_session>" (satisfied user)
+        # and the session would silently abort. Treat truncation as an error so
+        # the patience/telemetry path (not the "satisfied" path) handles it.
         try:
             raw = self.client.chat(messages, max_tokens=self._max_tokens)
+        except TruncatedOutputError:
+            self._last_query_was_error = True
+            return None
         except Exception:  # noqa: BLE001 -- a failed generation ends the session
             self._last_query_was_error = True
             return None

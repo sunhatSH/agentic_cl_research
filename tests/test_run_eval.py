@@ -22,21 +22,27 @@ def _write(tmp_path, records):
 
 
 def test_load_tasks_filters_to_text(tmp_path):
-    path = _write(tmp_path, [
-        {"task_id": "t1", "split": "General", "modality": "text", "bucket": "SysOps"},
-        {"task_id": "t2", "split": "Multimodal", "modality": "multimodal"},
-        {"task_id": "t3", "split": "Multi-turn", "modality": "text", "category": "Finance"},
-    ])
+    path = _write(
+        tmp_path,
+        [
+            {"task_id": "t1", "split": "General", "modality": "text", "bucket": "SysOps"},
+            {"task_id": "t2", "split": "Multimodal", "modality": "multimodal"},
+            {"task_id": "t3", "split": "Multi-turn", "modality": "text", "category": "Finance"},
+        ],
+    )
     tasks = load_tasks(path)
     ids = [t["task_id"] for t in tasks]
     assert ids == ["t1", "t3"]  # multimodal dropped
 
 
 def test_load_tasks_keeps_multimodal_when_requested(tmp_path):
-    path = _write(tmp_path, [
-        {"task_id": "t1", "split": "General", "modality": "text"},
-        {"task_id": "t2", "split": "Multimodal", "modality": "multimodal"},
-    ])
+    path = _write(
+        tmp_path,
+        [
+            {"task_id": "t1", "split": "General", "modality": "text"},
+            {"task_id": "t2", "split": "Multimodal", "modality": "multimodal"},
+        ],
+    )
     assert len(load_tasks(path, text_only=False)) == 2
 
 
@@ -57,8 +63,13 @@ def test_validate_task_record_rejects_missing_and_bad_fields():
 
 
 def test_load_tasks_propagates_bad_record(tmp_path):
-    path = _write(tmp_path, [{"task_id": "ok", "split": "General", "modality": "text"},
-                             {"task_id": "bad", "split": "X", "modality": "text"}])
+    path = _write(
+        tmp_path,
+        [
+            {"task_id": "ok", "split": "General", "modality": "text"},
+            {"task_id": "bad", "split": "X", "modality": "text"},
+        ],
+    )
     with pytest.raises(ValueError):
         load_tasks(path)
 
@@ -66,7 +77,14 @@ def test_load_tasks_propagates_bad_record(tmp_path):
 def test_score_task_pass_n_aggregation():
     runs = [
         {"task_id": "t", "passed": True, "safety": 1.0, "completion": 0.8, "robustness": 0.5, "reward": 0.74},
-        {"task_id": "t", "passed": False, "safety": 1.0, "completion": 0.6, "robustness": 0.5, "reward": 0.58},
+        {
+            "task_id": "t",
+            "passed": False,
+            "safety": 1.0,
+            "completion": 0.6,
+            "robustness": 0.5,
+            "reward": 0.58,
+        },
     ]
     out = score_task(runs)
     assert out["passed_all"] is False  # one run failed -> Pass^N fails
@@ -77,8 +95,14 @@ def test_evaluate_with_fake_rollout(monkeypatch):
     tasks = [{"task_id": "t1", "split": "General", "modality": "text"}]
 
     def fake_rollout(ckpt, task):
-        return {"task_id": task["task_id"], "passed": True,
-                "safety": 1.0, "completion": 1.0, "robustness": 1.0, "reward": 1.0}
+        return {
+            "task_id": task["task_id"],
+            "passed": True,
+            "safety": 1.0,
+            "completion": 1.0,
+            "robustness": 1.0,
+            "reward": 1.0,
+        }
 
     monkeypatch.setattr("eval.run_eval.rollout_one_task", fake_rollout)
     results = evaluate("ckpt", tasks, num_runs=3)

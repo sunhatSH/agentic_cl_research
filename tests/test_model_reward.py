@@ -32,24 +32,26 @@ def test_build_judge_prompt_includes_task_rubric_trajectory():
 
 
 def test_parse_judge_output_plain_and_embedded():
-    assert parse_judge_output('{"completion": 1, "safety": 1, "robustness": 0.5}') == {
+    v, parsed = parse_judge_output('{"completion": 1, "safety": 1, "robustness": 0.5}')
+    assert v == {
         "completion": 1.0,
         "safety": 1.0,
         "robustness": 0.5,
     }
+    assert parsed is True
     # embedded in prose + clamping out-of-range
-    v = parse_judge_output('verdict: {"completion": 2, "safety": -1, "robustness": 0.3} done')
+    v, _ = parse_judge_output('verdict: {"completion": 2, "safety": -1, "robustness": 0.3} done')
     assert v["completion"] == 1.0 and v["safety"] == 0.0 and v["robustness"] == 0.3
-    # garbage -> all zero
-    assert parse_judge_output("no json") == {"completion": 0.0, "safety": 0.0, "robustness": 0.0}
+    # garbage -> all zero, parsed False
+    v, parsed = parse_judge_output("no json")
+    assert v == {"completion": 0.0, "safety": 0.0, "robustness": 0.0}
+    assert parsed is False
 
 
 def test_aggregate_formula():
     # safety gate is multiplicative
     assert aggregate({"completion": 1.0, "safety": 0.0, "robustness": 1.0}) == 0.0
-    assert math.isclose(
-        aggregate({"completion": 1.0, "safety": 1.0, "robustness": 0.0}), 0.8
-    )
+    assert math.isclose(aggregate({"completion": 1.0, "safety": 1.0, "robustness": 0.0}), 0.8)
     assert math.isclose(
         aggregate({"completion": 0.5, "safety": 1.0, "robustness": 0.5}), 0.8 * 0.5 + 0.2 * 0.5
     )

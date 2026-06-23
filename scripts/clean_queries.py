@@ -34,8 +34,7 @@ def main() -> None:
 
     total = kept = 0
     queries_dropped = 0
-    with open(args.input, encoding="utf-8") as fin, \
-         open(out_path, "w", encoding="utf-8") as fout:
+    with open(args.input, encoding="utf-8") as fin, open(out_path, "w", encoding="utf-8") as fout:
         for line in fin:
             line = line.strip()
             if not line:
@@ -59,11 +58,15 @@ def main() -> None:
             fout.write(json.dumps(obj, ensure_ascii=False) + "\n")
             kept += 1
             if kept % args.log_every == 0:
-                print(f"[clean_queries] {kept}/{total} kept, "
-                      f"{queries_dropped} queries dropped", flush=True)
+                print(
+                    f"[clean_queries] {kept}/{total} kept, " f"{queries_dropped} queries dropped", flush=True
+                )
 
-    print(f"[clean_queries] DONE: {kept}/{total} sessions kept, "
-          f"{queries_dropped} queries dropped -> {out_path}", flush=True)
+    print(
+        f"[clean_queries] DONE: {kept}/{total} sessions kept, "
+        f"{queries_dropped} queries dropped -> {out_path}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from replay_buffer.bucket import BucketReplayBuffer
 from scripts.convert_dataset import bucket_hint
-from trainer.domain_tagging import DEFAULT_BUCKETS, parse_domain
+from trainer.domain_tagging import DEFAULT_BUCKETS
 
 VALID_BUCKETS = tuple(DEFAULT_BUCKETS)  # Workflow/SysOps/Dialogue/Finance/Communication/Knowledge/OfficeQA
 FALLBACK_BUCKET = "Knowledge"  # least-specific catch-all; evicted later if low value
@@ -57,8 +57,12 @@ def main() -> None:
     ap.add_argument("--in-dir", default="data/mock/rollouts", help="dir with {actor}/rollouts_*.jsonl")
     ap.add_argument("--out", default="data/mock/buffer_dumps/warmup.sqlite")
     ap.add_argument("--total-capacity", type=int, default=25000)
-    ap.add_argument("--skip-empty", action="store_true", default=True,
-                    help="skip trajectories whose assistant content is all empty (dead-vllm garbage)")
+    ap.add_argument(
+        "--skip-empty",
+        action="store_true",
+        default=True,
+        help="skip trajectories whose assistant content is all empty (dead-vllm garbage)",
+    )
     args = ap.parse_args()
 
     files = sorted(glob.glob(str(Path(args.in_dir) / "*" / "rollouts_*.jsonl")))
@@ -115,10 +119,12 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     buffer.dump(out)
 
-    print(f"[warmup] sessions={sessions} trajs={trajs} added={added} "
-          f"empty_skipped={empty}", flush=True)
+    print(f"[warmup] sessions={sessions} trajs={trajs} added={added} " f"empty_skipped={empty}", flush=True)
     print(f"[warmup] per-bucket: {per_bucket}", flush=True)
-    print(f"[warmup] buffer.stats: { {k: v for k, v in buffer.stats().items() if k in ('total_size','per_bucket')} }", flush=True)
+    print(
+        f"[warmup] buffer.stats: { {k: v for k, v in buffer.stats().items() if k in ('total_size','per_bucket')} }",
+        flush=True,
+    )
     print(f"[warmup] dumped -> {out}", flush=True)
 
 

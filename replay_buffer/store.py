@@ -50,9 +50,7 @@ class TrajectoryStore:
 
     def __init__(self, backend: str = "memory", path: str | None = None):
         if backend != "memory":
-            raise NotImplementedError(
-                f"backend={backend!r} not supported in v1; only 'memory' available."
-            )
+            raise NotImplementedError(f"backend={backend!r} not supported in v1; only 'memory' available.")
         self.backend = backend
         self.path = path
         self._store: dict[str, tuple[Any, dict]] = {}

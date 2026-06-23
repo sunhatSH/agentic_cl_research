@@ -15,9 +15,7 @@ from trainer.replay_forward import build_replay_rows
 from trainer.trajectory_adapter import replay_sample_to_metadata
 
 
-def effective_replay_batch_size(
-    buffer: Any, batch_size: int, warmup_size: int
-) -> int:
+def effective_replay_batch_size(buffer: Any, batch_size: int, warmup_size: int) -> int:
     """Linearly ramp the replay batch size from 0 to ``batch_size`` while the
     buffer fills (cold-start warmup, doc/CL_Update_Sunhao.md "冷启动处理").
 

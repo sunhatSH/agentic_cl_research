@@ -28,6 +28,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import random
+
 from agents.base import resolve_observer_client, resolve_questioner_client
 from agents.observer import Observer
 from agents.personas import sample_persona
@@ -37,7 +39,6 @@ from inference.generate import HTTPGenerateFn
 from rollout.collect import make_react_agent_fn
 from rollout.session_pool import SessionSandboxPool
 from rollout.usersim_collect import run_usersim_session
-import random
 
 
 def iter_seeds(queries_path, limit):
@@ -96,9 +97,14 @@ def run_one_session(args, generate_fn, observer, questioner, record_id, seed, id
     pool = SessionSandboxPool(slots=1, backend=args.backend, seed=args.seed + idx)
     agent_fn = make_react_agent_fn(generate_fn, max_turns=args.max_turns)
     res = run_usersim_session(
-        pool, seed, agent_fn,
-        persona=persona, observer=observer, questioner=questioner,
-        k_max=args.k_max, seed=args.seed + idx,
+        pool,
+        seed,
+        agent_fn,
+        persona=persona,
+        observer=observer,
+        questioner=questioner,
+        k_max=args.k_max,
+        seed=args.seed + idx,
     )
     trajs = []
     for t in res.trajectories:
@@ -121,7 +127,9 @@ def run_one_session(args, generate_fn, observer, questioner, record_id, seed, id
 
 def main():
     ap = argparse.ArgumentParser(description="Multi-turn user-sim rollout collection (no reward).")
-    ap.add_argument("--queries", required=True, help="queries JSONL path (output of prepare_queries / data-filter)")
+    ap.add_argument(
+        "--queries", required=True, help="queries JSONL path (output of prepare_queries / data-filter)"
+    )
     ap.add_argument("--actor", required=True, choices=["local", "remote"])
     ap.add_argument("--actor-base", required=True, help="actor OpenAI base (local vllm or tokenhub)")
     ap.add_argument("--actor-model", required=True)
@@ -156,8 +164,11 @@ def main():
         sys.exit(5)
 
     generate_fn = HTTPGenerateFn(
-        base_url=args.actor_base, model=args.actor_model, api_key=args.actor_key,
-        temperature=args.temperature, max_new_tokens=args.max_new_tokens,
+        base_url=args.actor_base,
+        model=args.actor_model,
+        api_key=args.actor_key,
+        temperature=args.temperature,
+        max_new_tokens=args.max_new_tokens,
     )
 
     # Fail-fast: actor endpoint must be reachable AND produce non-empty output.
@@ -166,16 +177,25 @@ def main():
     try:
         probe = generate_fn([{"role": "user", "content": "ping"}])
         if not (probe.text or "").strip():
-            print(f"[rollout] FATAL: actor {args.actor_base} returned EMPTY output "
-                  f"(endpoint up but model not serving?). ABORT.", flush=True)
+            print(
+                f"[rollout] FATAL: actor {args.actor_base} returned EMPTY output "
+                f"(endpoint up but model not serving?). ABORT.",
+                flush=True,
+            )
             sys.exit(6)
     except Exception as e:  # noqa: BLE001
-        print(f"[rollout] FATAL: actor {args.actor_base} unreachable: {type(e).__name__}: {e}. ABORT.", flush=True)
+        print(
+            f"[rollout] FATAL: actor {args.actor_base} unreachable: {type(e).__name__}: {e}. ABORT.",
+            flush=True,
+        )
         sys.exit(6)
     print(f"[rollout] actor self-check OK ({args.actor_model})", flush=True)
 
-    print(f"[rollout] actor={args.actor} ({args.actor_model} @ {args.actor_base}) "
-          f"backend={args.backend} conc={args.concurrency} -> {out_file}", flush=True)
+    print(
+        f"[rollout] actor={args.actor} ({args.actor_model} @ {args.actor_base}) "
+        f"backend={args.backend} conc={args.concurrency} -> {out_file}",
+        flush=True,
+    )
 
     seeds = list(iter_seeds(args.queries, args.limit))
     if args.num_nodes > 1:
@@ -184,8 +204,7 @@ def main():
     total = len(seeds)
     done = failed = 0
     t0 = time.time()
-    with open(out_file, "w", encoding="utf-8") as fh, \
-         ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+    with open(out_file, "w", encoding="utf-8") as fh, ThreadPoolExecutor(max_workers=args.concurrency) as ex:
         futs = {
             ex.submit(run_one_session, args, generate_fn, observer, questioner, rid, seed, i): rid
             for i, (rid, seed) in enumerate(seeds)
@@ -205,11 +224,16 @@ def main():
                 print(f"[rollout] session {rid} failed: {type(e).__name__}: {e}", flush=True)
             if (done + failed) % args.log_every == 0:
                 rate = (done + failed) / max(1e-9, time.time() - t0)
-                print(f"[rollout] {done+failed}/{total} done={done} failed={failed} "
-                      f"({rate:.2f}/s)", flush=True)
+                print(
+                    f"[rollout] {done+failed}/{total} done={done} failed={failed} " f"({rate:.2f}/s)",
+                    flush=True,
+                )
 
-    print(f"[rollout] DONE actor={args.actor} sessions={total} done={done} failed={failed} "
-          f"in {time.time()-t0:.0f}s -> {out_file}", flush=True)
+    print(
+        f"[rollout] DONE actor={args.actor} sessions={total} done={done} failed={failed} "
+        f"in {time.time()-t0:.0f}s -> {out_file}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

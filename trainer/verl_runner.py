@@ -114,7 +114,10 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
         replay_rows: dict = {}
         if lambda_replay > 0:
             replay_rows = prepare_replay_rows(
-                buffer, weighting, tokenizer, replay_batch_size,
+                buffer,
+                weighting,
+                tokenizer,
+                replay_batch_size,
                 warmup_size=replay_warmup_size,
             )
             if replay_rows:
@@ -205,8 +208,13 @@ def _append_replay_rows(batch: Any, replay_rows: dict[str, Any]) -> Any:
 
     # Response-width fields (right-pad), prompt-width fields (left-pad).
     resp_width_keys = {
-        "responses", "response_mask", REPLAY_MASK_KEY, REPLAY_WEIGHTS_KEY,
-        "old_log_probs", "ref_log_prob", "advantages",
+        "responses",
+        "response_mask",
+        REPLAY_MASK_KEY,
+        REPLAY_WEIGHTS_KEY,
+        "old_log_probs",
+        "ref_log_prob",
+        "advantages",
     }
 
     def _align(rows: dict[str, Any]) -> dict[str, Any]:
@@ -304,17 +312,16 @@ class CLTaskRunner:
 
     def run(self, config, resume_from: str | None = None) -> None:
         """Mirror ``TaskRunner.run`` with CL buffer + loss injection."""
-        from pprint import pprint
-
         import socket
+        from pprint import pprint
 
         from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler
         from verl.trainer.ppo.ray_trainer import RayPPOTrainer
-        from verl.utils.config import validate_config
-        from verl.utils.fs import copy_to_local
-        from verl.utils import hf_processor, hf_tokenizer
         from verl.trainer.ppo.utils import need_critic, need_reference_policy
+        from verl.utils import hf_processor, hf_tokenizer
+        from verl.utils.config import validate_config
         from verl.utils.dataset.rl_dataset import collate_fn
+        from verl.utils.fs import copy_to_local
 
         config = merge_verl_config(config)
         print(f"CLTaskRunner hostname: {socket.gethostname()}")
@@ -389,16 +396,16 @@ def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
     """Initialize Ray and run CL training (production entry)."""
     import ray
     from omegaconf import OmegaConf
-
     from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
-    from verl.trainer.main_ppo import run_ppo
 
     cfg = merge_verl_config(cfg)
 
     if not ray.is_initialized():
         ray_init_kwargs = cfg.get("ray_kwargs", {}).get("ray_init", {})
         runtime_env = OmegaConf.merge(get_ppo_ray_runtime_env(), ray_init_kwargs.get("runtime_env", {}))
-        ray_init_kwargs = OmegaConf.create({**OmegaConf.to_container(ray_init_kwargs), "runtime_env": runtime_env})
+        ray_init_kwargs = OmegaConf.create(
+            {**OmegaConf.to_container(ray_init_kwargs), "runtime_env": runtime_env}
+        )
         ray.init(**OmegaConf.to_container(ray_init_kwargs))
 
     task_runner_class = ray.remote(num_cpus=1)(CLTaskRunner)
@@ -414,11 +421,11 @@ def build_trainer(cfg: Any, buffer: Any | None = None):
     """
     from verl.trainer.main_ppo import TaskRunner, create_rl_dataset, create_rl_sampler
     from verl.trainer.ppo.ray_trainer import RayPPOTrainer
-    from verl.utils.config import validate_config
-    from verl.utils.fs import copy_to_local
-    from verl.utils import hf_processor, hf_tokenizer
     from verl.trainer.ppo.utils import need_critic, need_reference_policy
+    from verl.utils import hf_processor, hf_tokenizer
+    from verl.utils.config import validate_config
     from verl.utils.dataset.rl_dataset import collate_fn
+    from verl.utils.fs import copy_to_local
 
     cfg = merge_verl_config(cfg)
     runner = TaskRunner()
@@ -441,11 +448,19 @@ def build_trainer(cfg: Any, buffer: Any | None = None):
     processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
     resource_pool_manager = runner.init_resource_pool_mgr(cfg)
     train_dataset = create_rl_dataset(
-        cfg.data.train_files, cfg.data, tokenizer, processor, is_train=True,
+        cfg.data.train_files,
+        cfg.data,
+        tokenizer,
+        processor,
+        is_train=True,
         max_samples=cfg.data.get("train_max_samples", -1),
     )
     val_dataset = create_rl_dataset(
-        cfg.data.val_files, cfg.data, tokenizer, processor, is_train=False,
+        cfg.data.val_files,
+        cfg.data,
+        tokenizer,
+        processor,
+        is_train=False,
         max_samples=cfg.data.get("val_max_samples", -1),
     )
     train_sampler = create_rl_sampler(cfg.data, train_dataset)

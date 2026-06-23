@@ -33,7 +33,6 @@ from typing import Protocol
 
 from rollout.sandbox_env import load_sandbox_runtime_env
 
-
 # =========================================================================== #
 # INTERFACE -- the contract every backend implements. The rollout loop depends  #
 # ONLY on this (run_code -> ExecResult, kill); it never imports a vendor class.  #
@@ -69,9 +68,11 @@ class SandboxClient(Protocol):
       - ``kill()`` releases the instance; best-effort, must not raise on teardown.
     """
 
-    def run_code(self, code: str, language: str = "python") -> ExecResult: ...
+    def run_code(self, code: str, language: str = "python") -> ExecResult:
+        ...
 
-    def kill(self) -> None: ...
+    def kill(self) -> None:
+        ...
 
 
 # =========================================================================== #
@@ -125,10 +126,10 @@ class LocalSandbox:
 class E2BSandbox:
     """Tencent Agent Runtime / E2B-compatible sandbox (cluster backend).
 
-    Uses the REST API directly: create returns ``envdAccessToken``; run-code
-  host is ``49999-<sandboxID>.<E2B_DOMAIN>`` with header ``X-Access-Token``.
-  (The pip ``e2b_code_interpreter`` SDK uses a different host/auth shape on
-  Tencent and returns 401 on ``/execute`` without this path.)
+      Uses the REST API directly: create returns ``envdAccessToken``; run-code
+    host is ``49999-<sandboxID>.<E2B_DOMAIN>`` with header ``X-Access-Token``.
+    (The pip ``e2b_code_interpreter`` SDK uses a different host/auth shape on
+    Tencent and returns 401 on ``/execute`` without this path.)
     """
 
     _RUN_CODE_PORT = 49999
@@ -282,9 +283,7 @@ def make_sandbox(backend: str = "local", **kwargs) -> SandboxClient:
     try:
         builder = _BACKENDS[backend]
     except KeyError:
-        raise ValueError(
-            f"unknown sandbox backend: {backend!r}; registered: {sorted(_BACKENDS)}"
-        ) from None
+        raise ValueError(f"unknown sandbox backend: {backend!r}; registered: {sorted(_BACKENDS)}") from None
     return builder(**kwargs)
 
 

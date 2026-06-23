@@ -181,8 +181,9 @@ def make_cl_loss(
             _rl_cell["fn"] = _resolve_ppo_loss(actor_cfg)
         fn = _rl_cell["fn"]
         if fn is None:  # verl absent (mock test path)
-
-            lp = model_output["log_probs"] if isinstance(model_output, dict) else model_output.get("log_probs")
+            lp = (
+                model_output["log_probs"] if isinstance(model_output, dict) else model_output.get("log_probs")
+            )
             return lp.sum() * 0.0, {}
         return fn(model_output=model_output, data=data, dp_group=dp_group)
 

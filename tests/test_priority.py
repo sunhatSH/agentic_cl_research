@@ -16,8 +16,7 @@ def test_alpha_must_sum_to_one():
 def test_forgetting_risk_positive_drift():
     p = Priority(alpha=(1.0, 0.0, 0.0, 0.0))
     # Original logprobs higher than current -> drift positive -> forgetting.
-    traj = {"original_logprobs": [-1.0, -1.0, -1.0],
-            "current_logprobs": [-1.5, -1.5, -1.5]}
+    traj = {"original_logprobs": [-1.0, -1.0, -1.0], "current_logprobs": [-1.5, -1.5, -1.5]}
     score = p.compute(traj, {"pattern_counts": {}})
     assert math.isclose(score, 0.5, abs_tol=1e-6)
 
@@ -25,8 +24,7 @@ def test_forgetting_risk_positive_drift():
 def test_forgetting_risk_negative_drift_clipped_to_zero():
     p = Priority(alpha=(1.0, 0.0, 0.0, 0.0))
     # Model improved on this trajectory.
-    traj = {"original_logprobs": [-2.0, -2.0],
-            "current_logprobs": [-1.0, -1.0]}
+    traj = {"original_logprobs": [-2.0, -2.0], "current_logprobs": [-1.0, -1.0]}
     assert p.compute(traj, {"pattern_counts": {}}) == 0.0
 
 
@@ -43,9 +41,7 @@ def test_rarity_normalized_within_unit_interval():
     for count in (0, 1, 10, 1000):
         r = p.compute({"pattern_id": "p"}, {"pattern_counts": {"p": count}})
         assert 0.0 <= r <= 1.0
-    assert math.isclose(
-        p.compute({"pattern_id": "p"}, {"pattern_counts": {"p": 0}}), 1.0, abs_tol=1e-9
-    )
+    assert math.isclose(p.compute({"pattern_id": "p"}, {"pattern_counts": {"p": 0}}), 1.0, abs_tol=1e-9)
 
 
 def test_zero_alpha_short_circuits_signal():

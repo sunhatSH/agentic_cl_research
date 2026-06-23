@@ -38,9 +38,7 @@ class VerlRolloutGenerateFn:
         import asyncio
         from uuid import uuid4
 
-        prompt_ids = self.tokenizer.apply_chat_template(
-            messages, tokenize=True, add_generation_prompt=True
-        )
+        prompt_ids = self.tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
         if isinstance(prompt_ids, dict):
             prompt_ids = prompt_ids["input_ids"]
         prompt_ids = list(prompt_ids)

@@ -40,14 +40,22 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         content = json.dumps(VERDICT)
-        self._send(200, {
-            "id": "mock-judge-0",
-            "object": "chat.completion",
-            "model": "mock-judge",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
-                         "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        })
+        self._send(
+            200,
+            {
+                "id": "mock-judge-0",
+                "object": "chat.completion",
+                "model": "mock-judge",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            },
+        )
 
     def log_message(self, *a):  # silence per-request logging
         pass

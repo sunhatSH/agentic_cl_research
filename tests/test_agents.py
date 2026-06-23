@@ -148,6 +148,25 @@ def test_questioner_api_error_distinguished():
     assert q2.last_query_was_error is False
 
 
+def test_questioner_truncation_is_error_not_end_session():
+    """A truncated reply (thinking model hit max_tokens) is an ERROR, not
+    a satisfied '<end_session>'. Without the guard an empty/truncated reply
+    would silently end the session."""
+
+    class TruncChat:
+        def chat(self, messages, *, max_tokens=512):
+            from agents.base import TruncatedOutputError
+
+            raise TruncatedOutputError("finish_reason=length")
+
+    q = Questioner(client=TruncChat())
+    out = q.next_query(PERSONAS[0], ObservationReport(final=[{"path": "x"}]), [])
+    assert out is None
+    # Truncation MUST be flagged as an error (patience/telemetry path), not a
+    # satisfied end, otherwise a thinking-model session silently aborts.
+    assert q.last_query_was_error is True
+
+
 # --- patience mechanism (§3.6.5) --------------------------------------------
 
 
@@ -370,8 +389,10 @@ def test_rotating_client_thread_safety():
 
 
 def test_parse_endpoints_json_array():
-    raw = '[{"base_url":"http://a/v1","model":"model-a","api_key":"key-a"},' \
-          '{"base_url":"http://b/v1","model":"model-b","api_key":"key-b"}]'
+    raw = (
+        '[{"base_url":"http://a/v1","model":"model-a","api_key":"key-a"},'
+        '{"base_url":"http://b/v1","model":"model-b","api_key":"key-b"}]'
+    )
     entries = _parse_endpoints(raw)
     assert len(entries) == 2
     assert entries[0] == {"base_url": "http://a/v1", "model": "model-a", "api_key": "key-a"}

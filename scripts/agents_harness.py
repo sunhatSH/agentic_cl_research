@@ -107,14 +107,22 @@ def _mock_generate(messages: list[dict[str, Any]]) -> GenStep:
     """
     last = str(messages[-1].get("content", "")) if messages else ""
     if "[Sandbox Output]" in last:
-        return GenStep(text="Done. Wrote report.txt (Q3 total = 123).",
-                       response_ids=[1, 2, 3], logprobs=[-0.1, -0.2, -0.1],
-                       prompt_tokens=40, completion_tokens=12)
+        return GenStep(
+            text="Done. Wrote report.txt (Q3 total = 123).",
+            response_ids=[1, 2, 3],
+            logprobs=[-0.1, -0.2, -0.1],
+            prompt_tokens=40,
+            completion_tokens=12,
+        )
     code = "open('report.txt', 'w').write('Q3 total = 123'); print('wrote report.txt')"
     payload = json.dumps({"tool": "python", "code": code})
-    return GenStep(text=f"<toolcall>{payload}</toolcall>",
-                   response_ids=[1, 2], logprobs=[-0.3, -0.2],
-                   prompt_tokens=30, completion_tokens=8)
+    return GenStep(
+        text=f"<toolcall>{payload}</toolcall>",
+        response_ids=[1, 2],
+        logprobs=[-0.3, -0.2],
+        prompt_tokens=30,
+        completion_tokens=8,
+    )
 
 
 def _make_scored_agent_fn(backend_runs: bool):
@@ -125,8 +133,9 @@ def _make_scored_agent_fn(backend_runs: bool):
     """
     react = make_react_agent_fn(_mock_generate, max_turns=4, default_bucket="finance")
 
-    def agent_fn(client: Any, query: str, state: Any, slot_idx: int,
-                 history: list[dict[str, Any]] | None = None) -> Trajectory:
+    def agent_fn(
+        client: Any, query: str, state: Any, slot_idx: int, history: list[dict[str, Any]] | None = None
+    ) -> Trajectory:
         traj = react(client, query, state, slot_idx, history)
         # deterministic, slot-dependent reward in [0,1]
         traj.reward = round(min(1.0, 0.55 + 0.05 * slot_idx), 3)
@@ -156,9 +165,7 @@ def _print_report(idx: int, report: Any) -> None:
 def _run(args: argparse.Namespace) -> int:
     rng = random.Random(args.seed)
     persona: Persona = (
-        next((p for p in PERSONAS if p.name == args.persona), None)
-        if args.persona
-        else sample_persona(rng)
+        next((p for p in PERSONAS if p.name == args.persona), None) if args.persona else sample_persona(rng)
     )
     if persona is None:
         raise SystemExit(f"persona {args.persona!r} not found; options e.g. {[p.name for p in PERSONAS[:5]]}")
@@ -182,6 +189,7 @@ def _run(args: argparse.Namespace) -> int:
         # Questioner: optionally demonstrate RotatingChatClient with mock clients.
         if args.rotation:
             from agents.base import RotatingChatClient
+
             rotating = RotatingChatClient(
                 [
                     ScriptedChat(replies=["Looks good, can you add a Q4 column?"], default=END_SESSION),
@@ -193,7 +201,9 @@ def _run(args: argparse.Namespace) -> int:
             questioner = Questioner(client=rotating)
         else:
             questioner = Questioner(
-                client=ScriptedChat(replies=["Looks good, can you also add a Q4 column?"], default=END_SESSION)
+                client=ScriptedChat(
+                    replies=["Looks good, can you also add a Q4 column?"], default=END_SESSION
+                )
             )
         judge = MockJudge()
 
@@ -201,22 +211,35 @@ def _run(args: argparse.Namespace) -> int:
     pool = SessionSandboxPool(slots=pool_slots, backend=args.backend, seed=args.seed)
     agent_fn = _make_scored_agent_fn(backend_runs=args.backend != "local")
 
-    print(f"=== agents_harness | mode={args.mode} backend={args.backend} "
-          f"persona={persona.name!r} ({persona.profession}, tone={persona.tone}) seed={args.seed} "
-          f"real={args.real} rotation={args.rotation} ===")
+    print(
+        f"=== agents_harness | mode={args.mode} backend={args.backend} "
+        f"persona={persona.name!r} ({persona.profession}, tone={persona.tone}) seed={args.seed} "
+        f"real={args.real} rotation={args.rotation} ==="
+    )
     print(f"seed query: {args.seed_query!r}\n")
 
     if args.mode == "simulated":
         result = run_simulated_session(
-            pool, args.seed_query, agent_fn,
-            persona=persona, observer=observer, questioner=questioner,
-            k_max=args.k_max, seed=args.seed, reward_judge=judge,
+            pool,
+            args.seed_query,
+            agent_fn,
+            persona=persona,
+            observer=observer,
+            questioner=questioner,
+            k_max=args.k_max,
+            seed=args.seed,
+            reward_judge=judge,
         )
     else:
         result = run_usersim_session(
-            pool, args.seed_query, agent_fn,
-            persona=persona, observer=observer, questioner=questioner,
-            k_max=args.k_max, seed=args.seed,
+            pool,
+            args.seed_query,
+            agent_fn,
+            persona=persona,
+            observer=observer,
+            questioner=questioner,
+            k_max=args.k_max,
+            seed=args.seed,
         )
 
     for i, report in enumerate(result.reports, start=1):
@@ -224,9 +247,7 @@ def _run(args: argparse.Namespace) -> int:
         if i - 1 < len(result.generated_queries):
             print(f"      QUESTIONER -> next query: {result.generated_queries[i - 1]!r}")
 
-    followup_rewards = [
-        t.meta["followup_reward"] for t in result.trajectories if "followup_reward" in t.meta
-    ]
+    followup_rewards = [t.meta["followup_reward"] for t in result.trajectories if "followup_reward" in t.meta]
     if followup_rewards:
         print(f"\n  REWARD (follow-up turns): {followup_rewards}")
 
@@ -240,15 +261,28 @@ def _run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", choices=["simulated", "collect"], default="simulated",
-                    help="simulated = 8-slot + winner-sync + all 3 agents; collect = 1-slot observer+questioner")
+    ap.add_argument(
+        "--mode",
+        choices=["simulated", "collect"],
+        default="simulated",
+        help="simulated = 8-slot + winner-sync + all 3 agents; collect = 1-slot observer+questioner",
+    )
     ap.add_argument("--backend", choices=["local", "e2b", "aliyun"], default="local")
-    ap.add_argument("--real", action="store_true",
-                    help="resolve observer/questioner/reward from env (OBSERVER_*/USERSIM_*/REWARD_*) instead of mocks")
-    ap.add_argument("--use-llm", action="store_true",
-                    help="enable the OPTIONAL observer LLM (default: deterministic forensics, no model call)")
-    ap.add_argument("--rotation", action="store_true",
-                    help="demonstrate multi-model rotation with mock clients (anti mode-collapse)")
+    ap.add_argument(
+        "--real",
+        action="store_true",
+        help="resolve observer/questioner/reward from env (OBSERVER_*/USERSIM_*/REWARD_*) instead of mocks",
+    )
+    ap.add_argument(
+        "--use-llm",
+        action="store_true",
+        help="enable the OPTIONAL observer LLM (default: deterministic forensics, no model call)",
+    )
+    ap.add_argument(
+        "--rotation",
+        action="store_true",
+        help="demonstrate multi-model rotation with mock clients (anti mode-collapse)",
+    )
     ap.add_argument("--seed-query", default="Make a short report of the Q3 total and save it to report.txt.")
     ap.add_argument("--persona", default=None, help="fixed persona name (default: sampled)")
     ap.add_argument("--k-max", type=int, default=3, help="follow-up budget upper bound (K ~ U{1..k_max})")

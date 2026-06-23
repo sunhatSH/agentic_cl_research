@@ -83,7 +83,5 @@ def test_adapter_skips_when_no_bucket_and_no_tag():
 def test_adapter_respects_valid_buckets():
     msgs = [[{"role": "assistant", "content": "<task_domain>Finance</task_domain>"}]]
     # Finance not in the configured set -> unresolved -> skipped.
-    out = extract_trajectories_from_batch(
-        FakeBatch({"messages": msgs}), valid_buckets=["Workflow", "SysOps"]
-    )
+    out = extract_trajectories_from_batch(FakeBatch({"messages": msgs}), valid_buckets=["Workflow", "SysOps"])
     assert out == []

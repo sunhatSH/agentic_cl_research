@@ -91,8 +91,7 @@ def build_observer_prompt(
         parts.append(
             "# Environment evidence (sandbox diff -- GROUND TRUTH)\n"
             "The following diff was auto-collected by system probes running inside "
-            "the sandbox. It shows exactly what changed this turn.\n\n"
-            + state_diff.strip()
+            "the sandbox. It shows exactly what changed this turn.\n\n" + state_diff.strip()
         )
     if file_tree.strip():
         parts.append("# Workspace file tree\n" + file_tree.strip())
@@ -146,8 +145,7 @@ _TONE_GUIDANCE = {
         "patient and constructive. You give the assistant the benefit of the doubt."
     ),
     "neutral": (
-        "Your tone is straightforward and business-like — neither overly patient "
-        "nor visibly frustrated."
+        "Your tone is straightforward and business-like — neither overly patient " "nor visibly frustrated."
     ),
     "hot": (
         "Your tone is impatient and direct. When something is wrong, you express "
@@ -186,9 +184,7 @@ def _history_block(session_history: list[dict[str, Any]], max_msgs: int = 12) ->
         role = m.get("role", "?")
         content = m.get("content", "")
         if isinstance(content, list):
-            content = " ".join(
-                (c.get("text", "") if isinstance(c, dict) else str(c)) for c in content
-            )
+            content = " ".join((c.get("text", "") if isinstance(c, dict) else str(c)) for c in content)
         lines.append(f"[{role}] {str(content).strip()}")
     return "\n".join(lines) if lines else "(no prior turns)"
 
@@ -206,10 +202,10 @@ def build_questioner_prompt(
     system = QUESTIONER_SYSTEM + "\n\n" + tone_guidance
     user = (
         "# Your persona\n" + _persona_block(persona) + "\n\n"
-        "# What the assistant actually produced (objective report)\n"
-        + _report_block(report) + "\n\n"
+        "# What the assistant actually produced (objective report)\n" + _report_block(report) + "\n\n"
         "# Conversation so far (your prior turns are the 'user' lines)\n"
-        + _history_block(session_history) + "\n\n"
+        + _history_block(session_history)
+        + "\n\n"
         "# Your turn\nSend your next message to the assistant, or '<end_session>'."
     )
     return [

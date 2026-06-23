@@ -102,9 +102,15 @@ def test_w0_proportional_to_priority():
 
 
 def test_u_shape_endpoints_higher_than_middle():
-    tw = TokenWeighting(scheme="W2", gamma=0.5, delta=0.5, segmenter="equal_length",
-                        equal_length_K=10, long_block_threshold=10_000,
-                        clip_quantiles=(0.0, 1.0))
+    tw = TokenWeighting(
+        scheme="W2",
+        gamma=0.5,
+        delta=0.5,
+        segmenter="equal_length",
+        equal_length_K=10,
+        long_block_threshold=10_000,
+        clip_quantiles=(0.0, 1.0),
+    )
     batch = [{"response_token_ids": list(range(100)), "priority": 1.0}]
     weights = tw.compute(batch)
     w = weights[0]
@@ -114,9 +120,15 @@ def test_u_shape_endpoints_higher_than_middle():
 
 
 def test_u_shape_symmetric_when_gamma_eq_delta():
-    tw = TokenWeighting(scheme="W2", gamma=0.5, delta=0.5, segmenter="equal_length",
-                        equal_length_K=10, long_block_threshold=10_000,
-                        clip_quantiles=(0.0, 1.0))
+    tw = TokenWeighting(
+        scheme="W2",
+        gamma=0.5,
+        delta=0.5,
+        segmenter="equal_length",
+        equal_length_K=10,
+        long_block_threshold=10_000,
+        clip_quantiles=(0.0, 1.0),
+    )
     batch = [{"response_token_ids": list(range(100)), "priority": 1.0}]
     w = tw.compute(batch)[0]
     # Block 0 and block 9 should have the same weight when gamma == delta.
@@ -126,9 +138,15 @@ def test_u_shape_symmetric_when_gamma_eq_delta():
 def test_gamma_delta_equals_one_yields_flat():
     """gamma=delta=1.0 should give equal U weight 1.0 across all blocks
     (degenerate to W0 modulo priority scaling)."""
-    tw = TokenWeighting(scheme="W2", gamma=1.0, delta=1.0, segmenter="equal_length",
-                        equal_length_K=10, long_block_threshold=10_000,
-                        clip_quantiles=(0.0, 1.0))
+    tw = TokenWeighting(
+        scheme="W2",
+        gamma=1.0,
+        delta=1.0,
+        segmenter="equal_length",
+        equal_length_K=10,
+        long_block_threshold=10_000,
+        clip_quantiles=(0.0, 1.0),
+    )
     batch = [{"response_token_ids": list(range(100)), "priority": 1.0}]
     w = tw.compute(batch)[0]
     # All weights equal -> normalized to 1/100 each.
@@ -136,8 +154,7 @@ def test_gamma_delta_equals_one_yields_flat():
 
 
 def test_normalize_sums_to_one():
-    tw = TokenWeighting(scheme="W2", gamma=0.8, delta=0.8,
-                        segmenter="equal_length", equal_length_K=5)
+    tw = TokenWeighting(scheme="W2", gamma=0.8, delta=0.8, segmenter="equal_length", equal_length_K=5)
     batch = [
         {"response_token_ids": list(range(20)), "priority": 0.5},
         {"response_token_ids": list(range(10)), "priority": 0.9},
@@ -148,8 +165,7 @@ def test_normalize_sums_to_one():
 
 
 def test_message_block_fallback_to_equal_length():
-    tw = TokenWeighting(scheme="W2", segmenter="message_block",
-                        equal_length_K=5, clip_quantiles=(0.0, 1.0))
+    tw = TokenWeighting(scheme="W2", segmenter="message_block", equal_length_K=5, clip_quantiles=(0.0, 1.0))
     # No 'messages' key -> KeyError -> fallback to equal_length
     batch = [{"response_token_ids": list(range(20)), "priority": 1.0}]
     weights = tw.compute(batch)
@@ -162,16 +178,24 @@ def test_resplit_state_does_not_leak_across_trajectories():
     short = {"response_token_ids": list(range(20)), "priority": 1.0}
 
     # Short trajectory computed alone (no prior re-split state).
-    tw_alone = TokenWeighting(scheme="W2", segmenter="equal_length",
-                              equal_length_K=5, long_block_threshold=10,
-                              clip_quantiles=(0.0, 1.0))
+    tw_alone = TokenWeighting(
+        scheme="W2",
+        segmenter="equal_length",
+        equal_length_K=5,
+        long_block_threshold=10,
+        clip_quantiles=(0.0, 1.0),
+    )
     alone = tw_alone.compute([short])[0]
 
     # Same short trajectory placed AFTER a long trajectory that re-splits.
     long_traj = {"response_token_ids": list(range(100)), "priority": 1.0}
-    tw_after = TokenWeighting(scheme="W2", segmenter="equal_length",
-                              equal_length_K=5, long_block_threshold=10,
-                              clip_quantiles=(0.0, 1.0))
+    tw_after = TokenWeighting(
+        scheme="W2",
+        segmenter="equal_length",
+        equal_length_K=5,
+        long_block_threshold=10,
+        clip_quantiles=(0.0, 1.0),
+    )
     after_long, after_short = tw_after.compute([long_traj, short])
 
     # The short trajectory's weights must be identical regardless of ordering.

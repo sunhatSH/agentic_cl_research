@@ -283,10 +283,7 @@ class TokenWeighting:
                 (self.gamma ** parent_map[b] + self.delta ** (ok - 1 - parent_map[b])) / 2.0
                 for b in block_ids
             ]
-        return [
-            (self.gamma ** b + self.delta ** (k_i - 1 - b)) / 2.0
-            for b in block_ids
-        ]
+        return [(self.gamma**b + self.delta ** (k_i - 1 - b)) / 2.0 for b in block_ids]
 
     def _clip_and_normalize(self, weights: list[list[float]]) -> list[list[float]]:
         """Clip to quantile range, then normalize per batch so sum = 1."""

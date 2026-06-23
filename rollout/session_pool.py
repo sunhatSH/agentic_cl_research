@@ -138,8 +138,7 @@ class SessionSandboxPool:
             raise RuntimeError("pool already spawned; call destroy_all() first")
         init = self._initial_state()
         self._slots = [
-            _Slot(idx=i, client=self._make_client(), state=copy.deepcopy(init))
-            for i in range(self.n_slots)
+            _Slot(idx=i, client=self._make_client(), state=copy.deepcopy(init)) for i in range(self.n_slots)
         ]
 
     def _make_client(self) -> Any:
@@ -204,7 +203,9 @@ class SessionSandboxPool:
     def sync_to_winner(self, winner_idx: int, trajs: Sequence[Trajectory]) -> None:
         """Align all 8 slots' disk state AND conversation history to the winner."""
         winner = trajs[winner_idx]
-        self._sync_fn(self._slots, winner.next_state if winner.next_state is not None else winner.meta.get("state"))
+        self._sync_fn(
+            self._slots, winner.next_state if winner.next_state is not None else winner.meta.get("state")
+        )
         # conversation正史 = winner trajectory (§3 ①): losers drop out of history
         self.session_history.extend(winner.messages)
 

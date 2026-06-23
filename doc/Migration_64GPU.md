@@ -225,7 +225,7 @@ registry.cn-tj-01.sensecore.cn/ccr-devsfttj/verl:cu129_lightllm_sandbox_megatron
 | **每节点 GPU** | 8（共 64 卡） |
 | **镜像** | 见 §A.3 |
 
-B1 是纯 RL 遗忘基线（无 KL、无 replay、**无 agentic rollout**），最简配置，用来验证全栈链路。
+B1 是纯 RL 遗忘基线（无 KL、无 replay）。B1 与 R4 **共用同一套 agentic 多轮 rollout**（CLSchedulerAgentLoopManager + 16×8 winner-sync + ReAct 沙箱），差异仅在 CL 项——否则拿"多轮执行完成"的 R4 与单轮 B1 比遗忘不公平。最简配置，用来验证全栈链路。
 
 跑别的实验（如 R4）：
 ```bash
@@ -275,9 +275,9 @@ bash /mnt/afs_toolcall/sunhao4/agentic_cl_research/scripts/run_phases.sh configs
 - `start_train.sh`：`JUDGE_MODEL == "mock-judge"` 才启动 mock（当前 `gpt-5.1` → 不启动）
 - 如需回退 mock：在 `.env` 里把 `JUDGE_MODEL` 改回 `mock-judge`
 
-**B1 不走沙箱：**
-- `b1.yaml` 显式设 `rollout.agent: null`，覆盖 `cluster.yaml` 的 agentic rollout
-- R4 仍走 e2b 腾讯沙箱（`sandbox_backend: e2b`）
+**B1 与 R4 同走沙箱（方法学一致性）：**
+- `b1.yaml` 与 `r4.yaml` 都继承 `cluster.yaml` 的 agentic rollout（CLSchedulerAgentLoopManager + e2b 沙箱），差异仅在 CL 项（B1 关 replay / 无 KL）。
+- 旧的 `rollout.agent: null`（B1 单轮）已废弃——拿多轮 R4 和单轮 B1 比遗忘不公平。
 
 **AFS 限制：**
 - `HF_HOME` / `HF_DATASETS_CACHE` 指向 `/tmp`（AFS 不支持 `fcntl.flock`）

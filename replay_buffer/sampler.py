@@ -75,9 +75,7 @@ class TwoLevelSampler:
         rng: random.Random | None = None,
     ):
         if within_bucket_sampling not in ("priority", "uniform"):
-            raise ValueError(
-                f"unknown within_bucket_sampling {within_bucket_sampling!r}"
-            )
+            raise ValueError(f"unknown within_bucket_sampling {within_bucket_sampling!r}")
         self.buffer = buffer
         self.bucket_mix_ratio = bucket_mix_ratio
         self.starvation_boost = starvation_boost
@@ -150,10 +148,7 @@ class TwoLevelSampler:
             return None
         if self.within_bucket_sampling == "uniform":
             return self.rng.choice(ids)
-        priorities = [
-            max(self.buffer.store.get_metadata(tid)["priority"], 1e-9)
-            for tid in ids
-        ]
+        priorities = [max(self.buffer.store.get_metadata(tid)["priority"], 1e-9) for tid in ids]
         return self.rng.choices(ids, weights=priorities, k=1)[0]
 
     def _sample_within_bucket(self, bucket: str, k: int) -> list[str]:
@@ -162,8 +157,5 @@ class TwoLevelSampler:
         ids = self.buffer.store.list_by_bucket(bucket)
         if not ids:
             return []
-        priorities = [
-            max(self.buffer.store.get_metadata(tid)["priority"], 1e-9)
-            for tid in ids
-        ]
+        priorities = [max(self.buffer.store.get_metadata(tid)["priority"], 1e-9) for tid in ids]
         return _weighted_choice_without_replacement(self.rng, ids, priorities, k)

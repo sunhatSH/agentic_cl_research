@@ -90,9 +90,7 @@ def test_backfill_forgetting_activates_signal():
             },
         )
 
-    updated = backfill_forgetting(
-        buf, ["traj-A", "traj-B"], current_means=[-2.0, -0.1]
-    )
+    updated = backfill_forgetting(buf, ["traj-A", "traj-B"], current_means=[-2.0, -0.1])
     assert updated == 2
 
     meta_a = buf.store.get_metadata("traj-A")

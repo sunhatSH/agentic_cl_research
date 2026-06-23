@@ -10,17 +10,20 @@ to use forward_native instead of forward_cuda.
 Usage: same args as `python -m vllm.entrypoints.openai.api_server ...`
     python scripts/vllm_serve_patched.py --model ... --tensor-parallel-size 8 ...
 """
-import sys
 import runpy
+import sys
 
 
 def _apply_patch():
     from vllm.model_executor.models.qwen3_next import ChunkGatedDeltaRule
+
     ChunkGatedDeltaRule.forward_cuda = ChunkGatedDeltaRule.forward_native
     _orig_init = ChunkGatedDeltaRule.__init__
+
     def _patched_init(self):
         _orig_init(self)
         self._forward_method = self.forward_native
+
     ChunkGatedDeltaRule.__init__ = _patched_init
     print("[patch] ChunkGatedDeltaRule -> forward_native (bypass broken FlashInfer GDN on sm90)", flush=True)
 

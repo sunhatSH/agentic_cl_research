@@ -66,8 +66,7 @@ def _traj(slot, resp_ids, logprobs=None, mask=None, bucket="Finance", sid="s0"):
     return Trajectory(
         slot_idx=slot,
         trajectory_id=f"{sid}-q0-s{slot}",
-        messages=[{"role": "user", "content": "make a report"},
-                  {"role": "assistant", "content": "done"}],
+        messages=[{"role": "user", "content": "make a report"}, {"role": "assistant", "content": "done"}],
         response_token_ids=resp_ids,
         logprobs=logprobs or [],
         bucket=bucket,
@@ -146,8 +145,7 @@ def test_extract_queries_from_raw_prompt():
     class _DP:
         non_tensor_batch = {
             "raw_prompt": np.array(
-                [[{"role": "user", "content": "task A"}],
-                 [{"role": "user", "content": "task B"}]],
+                [[{"role": "user", "content": "task A"}], [{"role": "user", "content": "task B"}]],
                 dtype=object,
             )
         }

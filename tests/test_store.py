@@ -88,9 +88,11 @@ def test_invalid_metadata_rejected():
 
 def test_sqlite_snapshot_roundtrip(tmp_path):
     s = TrajectoryStore()
-    s.put("a1", [{"role": "assistant", "content": "hi"}],
-          {"bucket": "Workflow", "priority": 0.7, "pattern_id": "p1",
-           "original_logprobs": [-1.0, -2.0]})
+    s.put(
+        "a1",
+        [{"role": "assistant", "content": "hi"}],
+        {"bucket": "Workflow", "priority": 0.7, "pattern_id": "p1", "original_logprobs": [-1.0, -2.0]},
+    )
     s.put("b1", "raw-text", {"bucket": "SysOps", "priority": 0.3, "pattern_id": "p2"})
     snap = tmp_path / "snap.sqlite"
     s.save_sqlite(snap)

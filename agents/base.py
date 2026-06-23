@@ -29,9 +29,31 @@ from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
+# finish_reason values that mean the reply was cut off mid-generation (hit the
+# max_tokens ceiling). Thinking models (gpt-5.1, claude-opus-thinking, ...) can
+# burn the whole token budget on hidden reasoning and emit little/ no visible
+# content; if we swallow that as a "complete" answer, every downstream agent
+# silently corrupts. Detect it here, centrally, for ALL model calls.
+_TRUNCATION_REASONS = ("length", "length_tokens")
+
+
+class TruncatedOutputError(RuntimeError):
+    """Raised when a model reply was cut off (``finish_reason`` == length*).
+
+    The visible ``content`` is partial and MUST NOT be consumed as a final
+    answer. Callers react per their semantics: retry with a larger budget,
+    fall back to a deterministic path, or flag a judge error -- but never treat
+    the half-output as complete.
+    """
+
 
 class ChatClient(Protocol):
-    """Minimal chat surface the agents depend on."""
+    """Minimal chat surface the agents depend on.
+
+    ``chat`` / ``chat_with_tools`` raise ``TruncatedOutputError`` when the
+    model hit its token ceiling (``finish_reason == length*``); callers that
+    need a complete reply must catch it.
+    """
 
     def chat(self, messages: list[dict[str, str]], *, max_tokens: int = 512) -> str:
         """Return the assistant message text for the given chat messages."""
@@ -70,7 +92,9 @@ class OpenAIChatClient:
             timeout=self.timeout,
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        data = resp.json()
+        _raise_if_truncated(data, self.model)
+        return data["choices"][0]["message"]["content"]
 
     def chat_with_tools(
         self,
@@ -103,7 +127,40 @@ class OpenAIChatClient:
             timeout=self.timeout,
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]
+        data = resp.json()
+        _raise_if_truncated(data, self.model)
+        return data["choices"][0]["message"]
+
+
+def _raise_if_truncated(data: dict, model: str) -> None:
+    """Raise ``TruncatedOutputError`` when the reply was cut off by max_tokens.
+
+    OpenAI ``finish_reason`` taxonomy: ``stop`` (complete), ``length`` / ``length_tokens``
+    (hit max_tokens mid-output), ``tool_calls`` (complete, requesting a tool).
+    Thinking models can spend the whole budget on hidden reasoning and emit a
+    fragment -- treat any ``length*`` reason as corruption, NOT as a final answer.
+    Some gateways omit ``finish_reason``; then we fall back to a content check:
+    an empty ``content`` AND no ``tool_calls`` is also suspicious -> raise.
+    """
+    try:
+        choice = data["choices"][0]
+    except (KeyError, IndexError, TypeError):
+        return  # malformed upstream; let callers see whatever they parse
+    finish = choice.get("finish_reason") or ""
+    if str(finish).lower() in _TRUNCATION_REASONS:
+        raise TruncatedOutputError(
+            f"model {model!r} reply truncated (finish_reason={finish!r}); increase "
+            "max_tokens or the output is partial. Do NOT consume as a final answer."
+        )
+    # Gateway may not report finish_reason (tokenhub gpt-5.1 sometimes omits it).
+    # A truly empty reply (no content AND no tool_calls) almost always means the
+    # thinking budget ate everything -- flag it rather than silently returning "".
+    msg = choice.get("message") or {}
+    if not finish and not (msg.get("content") or msg.get("tool_calls")):
+        raise TruncatedOutputError(
+            f"model {model!r} returned empty content with no finish_reason and no "
+            "tool_calls; likely the thinking budget consumed all max_tokens."
+        )
 
 
 def _resolve(prefix: str, *, temperature: float) -> OpenAIChatClient:
@@ -257,9 +314,7 @@ def _parse_endpoints(raw: str) -> list[dict[str, str]]:
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError) as exc:
-        raise ValueError(
-            f"USERSIM_ENDPOINTS must be a JSON array of objects, got: {raw[:200]!r}"
-        ) from exc
+        raise ValueError(f"USERSIM_ENDPOINTS must be a JSON array of objects, got: {raw[:200]!r}") from exc
     if not isinstance(data, list) or not data:
         raise ValueError("USERSIM_ENDPOINTS must be a non-empty JSON array")
     entries: list[dict[str, str]] = []
@@ -269,14 +324,14 @@ def _parse_endpoints(raw: str) -> list[dict[str, str]]:
         base = str(item.get("base_url", "")).strip()
         model = str(item.get("model", "")).strip()
         if not base or not model:
-            raise ValueError(
-                f"USERSIM_ENDPOINTS entry #{i + 1} missing 'base_url' or 'model': {item!r}"
-            )
-        entries.append({
-            "base_url": base,
-            "model": model,
-            "api_key": str(item.get("api_key", "")).strip() or "sk-local",
-        })
+            raise ValueError(f"USERSIM_ENDPOINTS entry #{i + 1} missing 'base_url' or 'model': {item!r}")
+        entries.append(
+            {
+                "base_url": base,
+                "model": model,
+                "api_key": str(item.get("api_key", "")).strip() or "sk-local",
+            }
+        )
     return entries
 
 

@@ -6,12 +6,9 @@ agent_fn, mock Observer/Questioner, and an injected reward judge.
 
 from __future__ import annotations
 
-import random
-
 from agents.observer import Observer
 from agents.personas import PERSONAS
 from agents.questioner import Questioner
-from agents.schema import ObservationReport
 from rollout.session_pool import SessionSandboxPool, Trajectory
 from rollout.simulated_session import run_simulated_session
 
@@ -157,9 +154,7 @@ def test_session_scores_followups_with_injected_judge():
         reward_judge=Judge(),
     )
     # follow-up turns (turn>1) carry an observation-grounded reward
-    followup_winners = [
-        t for t in res.trajectories if t.meta.get("followup_reward") is not None
-    ]
+    followup_winners = [t for t in res.trajectories if t.meta.get("followup_reward") is not None]
     if res.num_turns > 1:
         assert followup_winners, "expected at least one scored follow-up winner"
         assert followup_winners[0].meta["followup_reward"]["score"] == 1.0

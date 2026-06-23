@@ -160,8 +160,10 @@ def resolve_questioner(config_path: Path | str | None = None) -> ResolvedQuestio
     if env_base and env_model:
         # Single-model env override -> no rotation
         fallback = ResolvedEndpoint(
-            base_url=env_base, model=env_model,
-            api_key=env_key or "sk-local", temperature=temperature,
+            base_url=env_base,
+            model=env_model,
+            api_key=env_key or "sk-local",
+            temperature=temperature,
         )
         return ResolvedQuestionerConfig(rotation=[], fallback=fallback, rotate_every=rotate_every)
 
@@ -174,9 +176,14 @@ def resolve_questioner(config_path: Path | str | None = None) -> ResolvedQuestio
             key_env = entry.get("key_env", "TOKENHUB_API_KEY")
             api_key = _resolve_key(key_env, prefix_env="TOKENHUB_API_KEY")
             if base and model:
-                rotation.append(ResolvedEndpoint(
-                    base_url=base, model=model, api_key=api_key, temperature=temperature,
-                ))
+                rotation.append(
+                    ResolvedEndpoint(
+                        base_url=base,
+                        model=model,
+                        api_key=api_key,
+                        temperature=temperature,
+                    )
+                )
         if rotation:
             fallback = None
             if fallback_cfg:
@@ -188,8 +195,10 @@ def resolve_questioner(config_path: Path | str | None = None) -> ResolvedQuestio
                 fb_key = _resolve_key(fb_key_env, prefix_env="TOKENHUB_API_KEY")
                 if fb_base and fb_model:
                     fallback = ResolvedEndpoint(
-                        base_url=fb_base, model=fb_model,
-                        api_key=fb_key, temperature=temperature,
+                        base_url=fb_base,
+                        model=fb_model,
+                        api_key=fb_key,
+                        temperature=temperature,
                     )
             return ResolvedQuestionerConfig(rotation=rotation, fallback=fallback, rotate_every=rotate_every)
 
@@ -203,8 +212,10 @@ def resolve_questioner(config_path: Path | str | None = None) -> ResolvedQuestio
         fb_key = _resolve_key(fb_key_env, prefix_env="TOKENHUB_API_KEY")
         if fb_base and fb_model:
             fallback = ResolvedEndpoint(
-                base_url=fb_base, model=fb_model,
-                api_key=fb_key, temperature=temperature,
+                base_url=fb_base,
+                model=fb_model,
+                api_key=fb_key,
+                temperature=temperature,
             )
             return ResolvedQuestionerConfig(rotation=[], fallback=fallback, rotate_every=rotate_every)
 
@@ -283,7 +294,7 @@ def validate_model_distinctness(config_path: Path | str | None = None) -> list[s
     # Pairwise distinct check (Observer vs Reward)
     labels_ok = list(configured.keys())
     for i, a in enumerate(labels_ok):
-        for b in labels_ok[i + 1:]:
+        for b in labels_ok[i + 1 :]:
             if configured[a] == configured[b]:
                 warnings.append(
                     f"{a} and {b} use the same model '{configured[a]}' "

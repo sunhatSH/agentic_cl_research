@@ -7,8 +7,10 @@ from replay_buffer.bucket import BucketReplayBuffer, allocate_quota
 
 def test_allocate_quota_sums_to_capacity():
     targets = allocate_quota(
-        total_capacity=25000, q_min=2000,
-        bucket_task_counts=[54, 52, 38, 18, 12, 11, 10], alpha=0.5,
+        total_capacity=25000,
+        q_min=2000,
+        bucket_task_counts=[54, 52, 38, 18, 12, 11, 10],
+        alpha=0.5,
     )
     assert sum(targets) == 25000
     assert all(t >= 2000 for t in targets)
@@ -16,8 +18,7 @@ def test_allocate_quota_sums_to_capacity():
 
 def test_allocate_quota_respects_q_min():
     # Equal weights -> equal soft targets (above q_min).
-    targets = allocate_quota(total_capacity=10000, q_min=1000,
-                             bucket_task_counts=[1, 1, 1, 1, 1], alpha=0.5)
+    targets = allocate_quota(total_capacity=10000, q_min=1000, bucket_task_counts=[1, 1, 1, 1, 1], alpha=0.5)
     assert sum(targets) == 10000
     assert max(targets) - min(targets) <= 1  # rounding
 
@@ -34,13 +35,14 @@ def test_allocate_quota_alpha_dampens_large_buckets():
 
 def test_allocate_quota_raises_when_q_min_too_large():
     with pytest.raises(ValueError):
-        allocate_quota(total_capacity=1000, q_min=500,
-                       bucket_task_counts=[1, 1, 1], alpha=0.5)
+        allocate_quota(total_capacity=1000, q_min=500, bucket_task_counts=[1, 1, 1], alpha=0.5)
 
 
 def test_buffer_add_and_stats():
     buf = BucketReplayBuffer(
-        num_buckets=7, total_capacity=14000, q_min=500,
+        num_buckets=7,
+        total_capacity=14000,
+        q_min=500,
         alpha=0.5,
     )
     buf.set_step(1)
@@ -61,8 +63,12 @@ def test_buffer_rejects_unknown_bucket():
 def test_eviction_kicks_in_above_soft_target():
     # Tiny buffer to force eviction quickly.
     buf = BucketReplayBuffer(
-        num_buckets=2, total_capacity=20, q_min=2,
-        bucket_names=["A", "B"], bucket_task_counts=[1, 1], alpha=0.5,
+        num_buckets=2,
+        total_capacity=20,
+        q_min=2,
+        bucket_names=["A", "B"],
+        bucket_task_counts=[1, 1],
+        alpha=0.5,
     )
     # Soft target for A = 10. Fill 15 -> should evict 5.
     for i in range(15):
@@ -77,9 +83,10 @@ def test_eviction_kicks_in_above_soft_target():
 def test_single_bucket_collapse_for_r0():
     # num_buckets=1 with inherited 7-name list -> collapse to one "All" bucket.
     buf = BucketReplayBuffer(
-        num_buckets=1, total_capacity=10000, q_min=10000,
-        bucket_names=["Workflow", "SysOps", "Dialogue", "Finance",
-                      "Communication", "Knowledge", "OfficeQA"],
+        num_buckets=1,
+        total_capacity=10000,
+        q_min=10000,
+        bucket_names=["Workflow", "SysOps", "Dialogue", "Finance", "Communication", "Knowledge", "OfficeQA"],
         bucket_task_counts=[54, 52, 38, 18, 12, 11, 10],
     )
     assert buf.bucket_names == ["All"]
@@ -88,9 +95,14 @@ def test_single_bucket_collapse_for_r0():
 
 def test_reservoir_eviction_caps_size():
     buf = BucketReplayBuffer(
-        num_buckets=1, total_capacity=10, q_min=10,
-        bucket_names=["All"], bucket_task_counts=[195],
-        eviction_type="reservoir", within_bucket_sampling="uniform", seed=0,
+        num_buckets=1,
+        total_capacity=10,
+        q_min=10,
+        bucket_names=["All"],
+        bucket_task_counts=[195],
+        eviction_type="reservoir",
+        within_bucket_sampling="uniform",
+        seed=0,
     )
     for i in range(1000):
         buf.add_trajectory({"messages": []}, "All", metadata={"pattern_id": str(i)})

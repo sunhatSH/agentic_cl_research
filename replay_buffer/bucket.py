@@ -54,10 +54,8 @@ def allocate_quota(
     """
     k = len(bucket_task_counts)
     if total_capacity < k * q_min:
-        raise ValueError(
-            f"total_capacity ({total_capacity}) must be >= K * q_min ({k * q_min})"
-        )
-    weights = [n ** alpha for n in bucket_task_counts]
+        raise ValueError(f"total_capacity ({total_capacity}) must be >= K * q_min ({k * q_min})")
+    weights = [n**alpha for n in bucket_task_counts]
     s = sum(weights)
     remaining = total_capacity - k * q_min
     targets = [q_min + int(remaining * w / s) for w in weights]
@@ -105,8 +103,13 @@ class BucketReplayBuffer:
     ):
         if bucket_names is None:
             bucket_names = [
-                "Workflow", "SysOps", "Dialogue", "Finance",
-                "Communication", "Knowledge", "OfficeQA",
+                "Workflow",
+                "SysOps",
+                "Dialogue",
+                "Finance",
+                "Communication",
+                "Knowledge",
+                "OfficeQA",
             ]
         if bucket_task_counts is None:
             bucket_task_counts = [54, 52, 38, 18, 12, 11, 10]
@@ -118,9 +121,7 @@ class BucketReplayBuffer:
             bucket_task_counts = [sum(bucket_task_counts)]
 
         if len(bucket_names) != num_buckets or len(bucket_task_counts) != num_buckets:
-            raise ValueError(
-                "bucket_names and bucket_task_counts must each have length num_buckets"
-            )
+            raise ValueError("bucket_names and bucket_task_counts must each have length num_buckets")
 
         self.num_buckets = num_buckets
         self.total_capacity = total_capacity
@@ -132,7 +133,7 @@ class BucketReplayBuffer:
         self.within_bucket_sampling = within_bucket_sampling
 
         targets = allocate_quota(total_capacity, q_min, bucket_task_counts, alpha)
-        self.soft_target = dict(zip(self.bucket_names, targets))
+        self.soft_target = dict(zip(self.bucket_names, targets, strict=True))
 
         self._rng = random.Random(seed)
         self.store = TrajectoryStore(backend="memory")
@@ -295,9 +296,7 @@ class BucketReplayBuffer:
                 "evictions": self._eviction_counts[name],
             }
         active_signals = (
-            self.priority_fn.active_signals()
-            if hasattr(self.priority_fn, "active_signals")
-            else {}
+            self.priority_fn.active_signals() if hasattr(self.priority_fn, "active_signals") else {}
         )
         return {
             "total_size": len(self.store),

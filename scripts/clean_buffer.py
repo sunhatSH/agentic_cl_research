@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from data.cleaning import clean_messages
 from replay_buffer.bucket import BucketReplayBuffer
-from replay_buffer.store import TrajectoryStore
 
 
 def main() -> None:

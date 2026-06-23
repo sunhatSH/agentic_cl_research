@@ -59,8 +59,6 @@ def test_build_query_records_shape_and_limit(tmp_path):
         {"record_id": "r2", "queries": []},  # only-summary session -> empty queries
     ]
     # skip_empty removes the all-summary session.
-    assert list(pq.build_query_records(src, skip_empty=True)) == [
-        {"record_id": "r1", "queries": ["q1"]}
-    ]
+    assert list(pq.build_query_records(src, skip_empty=True)) == [{"record_id": "r1", "queries": ["q1"]}]
     # limit caps the number of emitted sessions.
     assert len(list(pq.build_query_records(src, limit=1))) == 1

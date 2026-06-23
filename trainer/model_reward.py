@@ -92,9 +92,7 @@ def build_judge_prompt(*, task: str, trajectory: str, rubric: str) -> list[dict[
     # trajectory, so it passes an empty trajectory -> skip the section entirely.
     if trajectory.strip():
         parts.append(f"# Agent trajectory\n{trajectory.strip()}")
-    parts.append(
-        '# Output\nReturn JSON like {"completion": 0.0, "safety": 1.0, "robustness": 0.0}.'
-    )
+    parts.append('# Output\nReturn JSON like {"completion": 0.0, "safety": 1.0, "robustness": 0.0}.')
     return [
         {"role": "system", "content": _JUDGE_SYSTEM},
         {"role": "user", "content": "\n\n".join(parts)},
@@ -109,11 +107,19 @@ def _clamp01(x: Any) -> float:
     return 0.0 if v < 0 else 1.0 if v > 1 else v
 
 
-def parse_judge_output(text: str) -> dict[str, float]:
-    """Robustly parse the judge's JSON verdict; missing dims default to 0."""
+def parse_judge_output(text: str) -> tuple[dict[str, float], bool]:
+    """Robustly parse the judge's JSON verdict.
+
+    Returns ``(verdict, parsed)`` where ``verdict`` maps each dimension to a
+    float in [0,1] (missing dims -> 0) and ``parsed`` is True only when a JSON
+    object with at least one verdict key was successfully extracted. ``parsed``
+    lets the caller distinguish a genuine all-zero verdict from a parse failure
+    (truncated / non-JSON thinking-model output) so the latter is flagged as a
+    judge error instead of a silent zero reward.
+    """
     verdict = {d: 0.0 for d in JUDGE_DIMENSIONS}
     if not text:
-        return verdict
+        return verdict, False
     obj: Any = None
     try:
         obj = json.loads(text)
@@ -128,7 +134,9 @@ def parse_judge_output(text: str) -> dict[str, float]:
         for d in JUDGE_DIMENSIONS:
             if d in obj:
                 verdict[d] = _clamp01(obj[d])
-    return verdict
+        parsed = any(d in obj for d in JUDGE_DIMENSIONS)
+        return verdict, parsed
+    return verdict, False
 
 
 def aggregate(verdict: Mapping[str, float]) -> float:
@@ -177,8 +185,25 @@ class OpenAIJudgeClient:
             timeout=self.timeout,
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        return parse_judge_output(content)
+        data = resp.json()
+        # Truncation guard (thinking models): a reply cut off mid-JSON would
+        # otherwise parse to all-zeros with judge_error=0 -- a SILENT zero
+        # reward with no signal. Raising here routes it to compute_score's
+        # except branch -> judge_error=1.0, so the failure is visible in logs.
+        from agents.base import TruncatedOutputError, _raise_if_truncated
+
+        _raise_if_truncated(data, self.model)
+        content = data["choices"][0]["message"]["content"]
+        verdict, parsed = parse_judge_output(content)
+        if not parsed:
+            # Content present but no verdict JSON extracted (e.g. thinking-model
+            # emitted prose, or partial JSON). Flag it rather than returning a
+            # silent all-zero -- the trainer can then see judge_error=1.0.
+            raise TruncatedOutputError(
+                f"judge {self.model!r} produced no parseable verdict JSON "
+                f"(content head: {content[:120]!r})"
+            )
+        return verdict
 
 
 def get_judge() -> JudgeClient:
@@ -231,6 +256,7 @@ def set_judge(judge: JudgeClient | None) -> None:
 
 
 # --- verl entry ---------------------------------------------------------------
+
 
 def _as_dict(extra_info: Any) -> dict[str, Any]:
     return dict(extra_info) if isinstance(extra_info, Mapping) else {}

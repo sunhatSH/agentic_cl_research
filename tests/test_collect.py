@@ -59,7 +59,9 @@ def test_react_agent_collects_native_fields():
     roles = [m["role"] for m in traj.messages]
     assert "assistant" in roles
     # sandbox observations use role='user' with '[Sandbox Output]' prefix
-    sandbox_msgs = [m for m in traj.messages if m["role"] == "user" and m["content"].startswith("[Sandbox Output]")]
+    sandbox_msgs = [
+        m for m in traj.messages if m["role"] == "user" and m["content"].startswith("[Sandbox Output]")
+    ]
     assert len(sandbox_msgs) >= 1
 
 

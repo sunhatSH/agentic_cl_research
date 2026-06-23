@@ -79,13 +79,10 @@ def trajectories_to_dataproto(
 
     resp_ids = [list(t.response_token_ids) for t in trajectories]
     resp_masks = [
-        list(t.meta.get("response_mask") or [1] * len(r))
-        for t, r in zip(trajectories, resp_ids, strict=True)
+        list(t.meta.get("response_mask") or [1] * len(r)) for t, r in zip(trajectories, resp_ids, strict=True)
     ]
     logprobs = [list(t.logprobs or []) for t in trajectories]
-    has_logprobs = all(
-        len(lp) == len(r) for lp, r in zip(logprobs, resp_ids, strict=True)
-    ) and any(logprobs)
+    has_logprobs = all(len(lp) == len(r) for lp, r in zip(logprobs, resp_ids, strict=True)) and any(logprobs)
 
     P = max((len(p) for p in prompt_token_ids), default=1) or 1
     R = max((len(r) for r in resp_ids), default=1) or 1
@@ -100,7 +97,7 @@ def trajectories_to_dataproto(
     for i in range(n):
         p, r, m = prompt_token_ids[i], resp_ids[i], resp_masks[i]
         prompts[i] = torch.tensor(_left_pad(p, P, pad_token_id), dtype=torch.long)
-        prompt_attn[i, P - len(p):] = 1
+        prompt_attn[i, P - len(p) :] = 1
         responses[i] = torch.tensor(_right_pad(r, R, pad_token_id), dtype=torch.long)
         resp_attn[i, : len(r)] = 1
         response_mask[i, : len(m)] = torch.tensor(m[:R], dtype=torch.long)
@@ -200,7 +197,9 @@ def make_cl_scheduler_manager_cls():
                 "max_tokens": int(rcfg.get("response_length", 1024)),
             }
             gen_fn = VerlRolloutGenerateFn(self.llm_client, tokenizer, sampling_params=sp)
-            agent_fn = make_react_agent_fn(gen_fn, max_turns=int(rcfg.get("multi_turn", {}).get("max_turns", 6)))
+            agent_fn = make_react_agent_fn(
+                gen_fn, max_turns=int(rcfg.get("multi_turn", {}).get("max_turns", 6))
+            )
             agent_cfg = rcfg.get("agent", {}) or {}
             return RolloutScheduler(
                 agent_fn,

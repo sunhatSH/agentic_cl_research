@@ -51,7 +51,7 @@ def mock_policy(query: str, expected: int, rng: random.Random) -> str:
     expr = f"({a} * {b}) + {c}" if buggy else f"({a} * {b}) - {c}"
     return (
         f"我来计算：{query}\n"
-        f"<toolcall>{{\"tool\": \"sandbox.exec_python\", \"code\": \"print({expr})\"}}</toolcall>\n"
+        f'<toolcall>{{"tool": "sandbox.exec_python", "code": "print({expr})"}}</toolcall>\n'
         "这是一道结构化业务规则计算题。\n"
         "<task_domain>Finance</task_domain>"
     )

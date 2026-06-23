@@ -68,10 +68,7 @@ def _check_endpoint(ep: ResolvedEndpoint, *, verbose: bool = False) -> dict:
             available_models = []
             model_list = data.get("data", [])
             if isinstance(model_list, list):
-                available_models = [
-                    m.get("id", "") if isinstance(m, dict) else str(m)
-                    for m in model_list
-                ]
+                available_models = [m.get("id", "") if isinstance(m, dict) else str(m) for m in model_list]
             if ep.model in available_models:
                 result["ok"] = True
                 if verbose:
@@ -135,23 +132,26 @@ def _try_minimal_chat(ep: ResolvedEndpoint) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Verify model endpoints from configs/agents.yaml"
-    )
+    parser = argparse.ArgumentParser(description="Verify model endpoints from configs/agents.yaml")
     parser.add_argument(
-        "--config", default=None,
+        "--config",
+        default=None,
         help="Path to agents.yaml (default: configs/agents.yaml)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Only resolve endpoints without making network calls",
     )
     parser.add_argument(
-        "--strict", action="store_true",
+        "--strict",
+        action="store_true",
         help="Exit non-zero on anti self-preference warnings too",
     )
     parser.add_argument(
-        "--verbose", "-v", action="store_true",
+        "--verbose",
+        "-v",
+        action="store_true",
         help="Show more detail",
     )
     args = parser.parse_args()

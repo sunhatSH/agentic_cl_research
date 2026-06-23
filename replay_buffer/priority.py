@@ -54,7 +54,7 @@ class Priority:
 
         Surfaced via ``BucketReplayBuffer.stats()`` so a disabled signal (e.g.
         diversity in v1) is observable rather than silently contributing 0."""
-        return {n: w for n, w in zip(self._SIGNAL_NAMES, self.alpha) if w > 0}
+        return {n: w for n, w in zip(self._SIGNAL_NAMES, self.alpha, strict=True) if w > 0}
 
     def compute(self, trajectory, bucket_view) -> float:
         """Composite priority for a trajectory in its bucket.

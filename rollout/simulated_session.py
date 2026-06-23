@@ -92,8 +92,10 @@ def run_simulated_session(
             turn += 1
             # #2: reuse prior winner's post as baseline; snapshot fresh only on turn 1
             # (all 8 slots are bit-identical at turn start, synced to the prior winner).
-            baseline = prev_post if prev_post is not None else (
-                observer.snapshot(pool._slots[0].client) if pool._slots else None
+            baseline = (
+                prev_post
+                if prev_post is not None
+                else (observer.snapshot(pool._slots[0].client) if pool._slots else None)
             )
             trajs = pool.run_query(query, agent_fn)
             result.trajectories.extend(trajs)

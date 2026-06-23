@@ -16,7 +16,10 @@ from omegaconf import OmegaConf
 from trainer.cl_main import build_buffer, load_config
 
 CONFIG_ROOT = Path(__file__).resolve().parents[1] / "configs"
-EXPERIMENT_CONFIGS = sorted(CONFIG_ROOT.glob("phase*/*.yaml"))
+# `smoke_*` configs are 4-GPU sanity probes, not formal experiments: they pin an
+# absolute verl `_generated_ppo_trainer.yaml` path (cluster-only) and self-declare
+# "不是正式实验配置". Exclude them from the experiment roster / schema checks.
+EXPERIMENT_CONFIGS = sorted(p for p in CONFIG_ROOT.glob("phase*/*.yaml") if not p.stem.startswith("smoke"))
 
 
 def test_found_all_experiment_configs():

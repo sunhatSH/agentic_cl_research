@@ -48,8 +48,13 @@ from rollout.session_pool import SessionSandboxPool
 
 # The 7 capability buckets (must match BucketReplayBuffer / configs/base.yaml).
 VALID_BUCKETS = (
-    "Workflow", "SysOps", "Dialogue", "Finance",
-    "Communication", "Knowledge", "OfficeQA",
+    "Workflow",
+    "SysOps",
+    "Dialogue",
+    "Finance",
+    "Communication",
+    "Knowledge",
+    "OfficeQA",
 )
 
 
@@ -88,7 +93,9 @@ def build_buffer() -> BucketReplayBuffer:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Cold-start trajectory collection (no scoring).")
-    ap.add_argument("--queries", required=True, help="queries JSONL path (output of prepare_queries / data-filter)")
+    ap.add_argument(
+        "--queries", required=True, help="queries JSONL path (output of prepare_queries / data-filter)"
+    )
     ap.add_argument("--limit", type=int, default=10000, help="number of sessions/seeds to collect")
     ap.add_argument("-m", "--group-size", type=int, default=8, help="slots (rollouts) per query")
     ap.add_argument("--backend", default="e2b", choices=["e2b", "aliyun", "local"])
@@ -103,7 +110,8 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-clean", action="store_true", help="skip text cleaning (ZW strip + garble filter)")
     ap.add_argument(
-        "--tokenizer", default=None,
+        "--tokenizer",
+        default=None,
         help="HuggingFace tokenizer name/path for token ID recovery from vllm logprobs. "
         "vllm /chat/completions returns token text but not integer IDs; with a tokenizer "
         "the IDs are recovered via encode(). Default: None (placeholder IDs, count still correct).",

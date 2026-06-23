@@ -160,7 +160,7 @@ def build_replay_rows(
     built_tids: list[str] = []
 
     tw = token_weights if token_weights is not None else [None] * len(samples)
-    for (_tid, _traj, meta), w in zip(samples, tw):
+    for (_tid, _traj, meta), w in zip(samples, tw, strict=True):
         messages = meta.get("messages") or []
         if not messages:
             continue
@@ -191,7 +191,7 @@ def build_replay_rows(
     prompt_mask = torch.zeros((n, P), dtype=torch.long)
     resp_attn = torch.zeros((n, R), dtype=torch.long)
     replay_response_mask = torch.zeros((n, R), dtype=torch.long)
-    for i, (p, r) in enumerate(zip(prompt_rows, resp_rows)):
+    for i, (p, r) in enumerate(zip(prompt_rows, resp_rows, strict=True)):
         prompts[i, P - len(p) :] = torch.tensor(p, dtype=torch.long)
         prompt_mask[i, P - len(p) :] = 1
         responses[i, : len(r)] = torch.tensor(r, dtype=torch.long)

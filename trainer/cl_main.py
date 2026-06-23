@@ -114,8 +114,7 @@ def _preload_warmup(buffer, warmup_path) -> None:
     stats = buffer.stats()
     dist = {b: v["size"] for b, v in stats["per_bucket"].items()}
     print(
-        f"[cl] warm-started buffer from {path}: "
-        f"{stats['total_size']} trajectories, per-bucket={dist}",
+        f"[cl] warm-started buffer from {path}: " f"{stats['total_size']} trajectories, per-bucket={dist}",
         flush=True,
     )
 

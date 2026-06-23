@@ -155,7 +155,7 @@ def make_react_agent_fn(
             turns.append({"role": "user", "content": f"[Sandbox Output]\n{obs}"})
             all_resp_ids.extend(obs_ids)
             all_logprobs.extend([0.0] * len(obs_ids))  # not policy tokens
-            response_mask.extend([0] * len(obs_ids))    # masked out of loss
+            response_mask.extend([0] * len(obs_ids))  # masked out of loss
             full_text_parts.append(obs)
 
         full_text = "\n".join(full_text_parts)
@@ -173,8 +173,12 @@ def make_react_agent_fn(
             logprobs=all_logprobs,
             bucket=bucket,
             next_state=new_state,
-            meta={"response_mask": response_mask, "num_turns": len(full_text_parts),
-                  "prompt_tokens": prompt_tokens_total, "completion_tokens": completion_tokens_total},
+            meta={
+                "response_mask": response_mask,
+                "num_turns": len(full_text_parts),
+                "prompt_tokens": prompt_tokens_total,
+                "completion_tokens": completion_tokens_total,
+            },
         )
 
     return agent_fn

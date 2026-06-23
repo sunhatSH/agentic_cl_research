@@ -28,14 +28,22 @@ from eval.metrics import cl_score, new_task_performance, old_task_forgetting
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=str, required=True)
-    parser.add_argument("--baseline-ckpt", type=str, default=None,
-                        help="Reference ckpt for forgetting computation.")
+    parser.add_argument(
+        "--baseline-ckpt", type=str, default=None, help="Reference ckpt for forgetting computation."
+    )
     parser.add_argument("--output-dir", type=str, default="eval/results")
     parser.add_argument("--num-runs", type=int, default=3, help="Pass^N standard.")
-    parser.add_argument("--tasks-file", type=str, default=None,
-                        help="ClawEval task manifest (JSON list; see load_tasks docstring).")
-    parser.add_argument("--include-multimodal", action="store_true",
-                        help="Include multimodal tasks (default: text-only 195 subset).")
+    parser.add_argument(
+        "--tasks-file",
+        type=str,
+        default=None,
+        help="ClawEval task manifest (JSON list; see load_tasks docstring).",
+    )
+    parser.add_argument(
+        "--include-multimodal",
+        action="store_true",
+        help="Include multimodal tasks (default: text-only 195 subset).",
+    )
     return parser.parse_args()
 
 
@@ -131,10 +139,10 @@ def score_task(per_run_results: list[dict]) -> dict[str, Any]:
     return {
         "task_id": per_run_results[0]["task_id"],
         "passed_all": all(r["passed"] for r in per_run_results),
-        "safety":     sum(r["safety"]     for r in per_run_results) / n,
+        "safety": sum(r["safety"] for r in per_run_results) / n,
         "completion": sum(r["completion"] for r in per_run_results) / n,
         "robustness": sum(r["robustness"] for r in per_run_results) / n,
-        "reward":     sum(r["reward"]     for r in per_run_results) / n,
+        "reward": sum(r["reward"] for r in per_run_results) / n,
     }
 
 
@@ -147,9 +155,7 @@ def evaluate(ckpt: str, tasks: list[dict], num_runs: int) -> list[dict]:
     return results
 
 
-def aggregate(
-    current_results: list[dict], baseline_results: list[dict] | None
-) -> dict[str, float]:
+def aggregate(current_results: list[dict], baseline_results: list[dict] | None) -> dict[str, float]:
     """Compute new_task_perf, forgetting, cl_score from per-task results."""
     new_perf = new_task_performance(current_results)
     if baseline_results:

@@ -42,7 +42,7 @@ import json
 from collections.abc import Sequence
 from typing import Any, Protocol
 
-from agents.base import ChatClient, resolve_observer_client
+from agents.base import ChatClient, TruncatedOutputError, resolve_observer_client
 from agents.prompts import build_observer_prompt
 from agents.schema import ObservationReport
 
@@ -61,11 +61,10 @@ def flatten_trajectory(messages: Sequence[dict[str, Any]] | str) -> str:
             continue
         content = m.get("content", "")
         if isinstance(content, list):
-            content = " ".join(
-                (c.get("text", "") if isinstance(c, dict) else str(c)) for c in content
-            )
+            content = " ".join((c.get("text", "") if isinstance(c, dict) else str(c)) for c in content)
         lines.append(f"[{m.get('role', '?')}] {str(content).strip()}")
     return "\n".join(lines)
+
 
 # Rendering caps for the prompt / report (#4): bound size regardless of workspace.
 _MAX_RENDER_FILES = 50
@@ -436,22 +435,26 @@ def build_deterministic_report(
             }
             # If this file was later modified in the same turn, it's intermediate
             if path in modified_paths:
-                intermediate.append({
-                    "desc": "intermediate file (modified later in same turn)",
-                    "source": path,
-                    "value_excerpt": f.get("content_excerpt", "")[:200],
-                })
+                intermediate.append(
+                    {
+                        "desc": "intermediate file (modified later in same turn)",
+                        "source": path,
+                        "value_excerpt": f.get("content_excerpt", "")[:200],
+                    }
+                )
             else:
                 final.append(entry)
 
         for f in diff["modified"]:
             path = f["path"]
             if path not in added_paths:  # don't double-count
-                final.append({
-                    "path": path,
-                    "kind": f.get("kind", "?"),
-                    "content_excerpt": f.get("content_excerpt", ""),
-                })
+                final.append(
+                    {
+                        "path": path,
+                        "kind": f.get("kind", "?"),
+                        "content_excerpt": f.get("content_excerpt", ""),
+                    }
+                )
 
         # Structural discrepancy checks (no LLM needed)
         for f in diff["added"] + diff["modified"]:
@@ -527,6 +530,7 @@ def _check_value_consistency(diff: dict[str, list] | None, discrepancies: list[s
 # Observer tools (OpenAI function-calling schema) for multi-turn tool-use.      #
 # Each tool wraps a sandbox probe that is backend-agnostic (uses run_code only). #
 # --------------------------------------------------------------------------- #
+
 
 def _read_file_probe(path: str) -> str:
     """Build a probe to read a single file's content (capped at 4 KB)."""
@@ -604,8 +608,7 @@ OBSERVER_TOOLS: list[dict] = [
         "function": {
             "name": "list_dir",
             "description": (
-                "List contents of a directory. Use to discover files not shown "
-                "in the diff or file tree."
+                "List contents of a directory. Use to discover files not shown " "in the diff or file tree."
             ),
             "parameters": {
                 "type": "object",
@@ -752,8 +755,7 @@ class Observer:
             diff = diff_snapshots(self._fs(baseline), post_fs)
             sys_diff = diff_system(self._sys(baseline), self._sys(post))
             # (a) extract changed rich-binary files to text, fold into the diff.
-            changed = [f["path"] for f in diff["added"] + diff["modified"]
-                       if f.get("kind") == "binary"]
+            changed = [f["path"] for f in diff["added"] + diff["modified"] if f.get("kind") == "binary"]
             if changed:
                 _merge_extracted(diff, extract_binaries(sandbox, changed))
             if _fs_diff_empty(diff) and _sys_diff_empty(sys_diff):
@@ -772,9 +774,7 @@ class Observer:
         # Deterministic report (degraded mode when LLM unavailable)          #
         # ------------------------------------------------------------------ #
         if not self._use_llm:
-            report = build_deterministic_report(
-                diff=diff, file_tree=file_tree, state_diff=state_diff
-            )
+            report = build_deterministic_report(diff=diff, file_tree=file_tree, state_diff=state_diff)
             report.actor_trajectory = traj_text
             return report
 
@@ -814,9 +814,7 @@ class Observer:
 
             for _round in range(self._max_tool_rounds):
                 if has_tool_support:
-                    msg = client.chat_with_tools(
-                        messages, tools=OBSERVER_TOOLS, max_tokens=self._max_tokens
-                    )
+                    msg = client.chat_with_tools(messages, tools=OBSERVER_TOOLS, max_tokens=self._max_tokens)
                 else:
                     # Fallback: single-shot without tools
                     content = client.chat(messages, max_tokens=self._max_tokens)
@@ -845,21 +843,30 @@ class Observer:
                     except (json.JSONDecodeError, TypeError):
                         tool_args = {}
                     tool_result = _execute_observer_tool(
-                        tool_name, tool_args, sandbox,
-                        state_diff, file_tree, baseline, post,
+                        tool_name,
+                        tool_args,
+                        sandbox,
+                        state_diff,
+                        file_tree,
+                        baseline,
+                        post,
                     )
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.get("id", ""),
-                        "content": tool_result,
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.get("id", ""),
+                            "content": tool_result,
+                        }
+                    )
 
             # Max rounds exceeded — ask for the final report without tools
-            messages.append({
-                "role": "user",
-                "content": "You have used all available investigation rounds. "
-                "Output the JSON observation report now based on the evidence gathered.",
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "You have used all available investigation rounds. "
+                    "Output the JSON observation report now based on the evidence gathered.",
+                }
+            )
             if has_tool_support:
                 final_msg = client.chat_with_tools(
                     messages, max_tokens=self._max_tokens
@@ -868,18 +875,19 @@ class Observer:
                 content = client.chat(messages, max_tokens=self._max_tokens)
                 final_msg = {"role": "assistant", "content": content}
             content = final_msg.get("content", "")
-            report = parse_observation_report(
-                content, fallback_tree=file_tree, fallback_diff=state_diff
-            )
+            report = parse_observation_report(content, fallback_tree=file_tree, fallback_diff=state_diff)
             report.file_tree = file_tree
             report.state_diff = state_diff
             return report
 
+        except TruncatedOutputError:
+            # The model's reply was cut off (thinking models hitting max_tokens).
+            # Do NOT parse the half-JSON as the final report -- degrade to the
+            # deterministic forensics report (which is always correct/complete).
+            return build_deterministic_report(diff=diff, file_tree=file_tree, state_diff=state_diff)
         except Exception:  # noqa: BLE001 — never crash the session
             # Degrade to deterministic report on any LLM failure
-            return build_deterministic_report(
-                diff=diff, file_tree=file_tree, state_diff=state_diff
-            )
+            return build_deterministic_report(diff=diff, file_tree=file_tree, state_diff=state_diff)
 
 
 def parse_observation_report(
