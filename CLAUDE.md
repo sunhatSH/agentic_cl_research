@@ -12,7 +12,7 @@ Continual Learning over Agentic LLM 的训练项目。仓库所有者：@孙豪�
 
 ### 当前阶段（交接背景，必读）
 
-代码已全部写完，在 CPU + 单卡 H800 上跑通 **200 单测**（唯一 skip = 全栈 GPU smoke，标 `@pytest.mark.gpu`）。**唯一阻塞是 64 卡集群 + 真实 Qwen3.6-27B 权重 + 数据**——全栈训练只能在多卡机器上做。
+代码已全部写完，CPU 本机跑通 **~290 单测**（`pytest` 全收 295，288 passed + 7 skipped；skip 全是 `verl not installed` / `no CUDA device`，即本机没装 verl 也没 GPU）。唯一需要多卡 verl 的是 `@pytest.mark.gpu` 标记的全栈 smoke（`tests/test_verl_smoke.py` + `tests/test_buffer_hooks_smoke.py`）。**唯一阻塞是 64 卡集群 + 真实 Qwen3.6-27B 权重 + 数据**——全栈训练只能在多卡机器上做。
 
 跨机器 / 跨 session 接手时的权威顺序：
 
@@ -67,7 +67,9 @@ bash docker/sandbox/ops/ops.sh query              # 查询腾讯沙箱 Tool / In
 bash scripts/validate_sandbox_dockerfile.sh       # 校验镜像 Dockerfile 快照约束
 ```
 
-> ⚠️ 测试分两类：默认全套（CPU/单卡）约 170 个；`@pytest.mark.gpu` 标记的全栈 smoke 需多卡 verl，本机会 skip。沙箱真实后端（腾讯云北京区，`X-Access-Token`）需账号凭证；无凭证用 `--backend local`。
+> **凭证加载**：训练前 `source scripts/load_training_env.sh`（读 gitignored `.env`，校验 `SWANLAB_API_KEY`）；沙箱前 `source scripts/load_tencent_env.sh`（读 `docker/sandbox/{tencent,image,runtime}.env`）。`scripts/train.sh` 已自动 source 训练 env，直接调用脚本可省。所有凭证文件均在 `.gitignore`，从不在代码里硬编码。
+
+> ⚠️ 测试分两类：默认全套 ~290 个 CPU 单测（本机无 verl/GPU 时 288 passed + 7 skipped）；`@pytest.mark.gpu` 标记的全栈 smoke（`tests/test_verl_smoke.py`、`tests/test_buffer_hooks_smoke.py`）需多卡 verl，本机 skip。沙箱真实后端（腾讯云北京区，`X-Access-Token`）需账号凭证；无凭证用 `--backend local`。
 
 ## 代码架构
 
@@ -172,8 +174,9 @@ flowchart TB
 ## 编码规范
 
 - Python ≥ 3.10，ruff line-length=110，black line-length=110
-- ruff 启用规则：E, F, W, I (isort), B (bugbear), UP (pyupgrade)
-- 训练配置用 OmegaConf/yaml（非 argparse dataclass），实验 yaml 继承 `configs/base.yaml`
+- ruff 启用规则：E, F, W, I (isort), B (bugbear), UP (pyupgrade)；`E501` 忽略（line-length 由 black 管）
+- 训练配置用 OmegaConf/yaml（非 argparse dataclass），实验 yaml 继承 `configs/base.yaml`，通过 `defaults: [../base]` 合并（解析在 `trainer/cl_main.py:load_config`）
+- `bin/` 下是独立的一次性数据管道工具（tab 缩进、自有风格），**ruff/black 已 `extend-exclude` 排除**——不要套项目规范，也别把它们当可 import 的库。`data/`（含 `cleaning.py`、mock 数据、采集样本）同样被 `.gitignore` 排除，是运行时产物不是源码。
 
 ## 目录结构
 
@@ -188,21 +191,28 @@ agentic_cl_research/
 ├── trainer/                 # CL Loss 与训练入口（基于 verl，零源码改动）
 ├── configs/                 # 实验配置（按 phase 分子目录）
 │   ├── base.yaml            #   共享默认配置
+│   ├── cluster.yaml         #   集群 64 卡引擎层 overlay
+│   ├── _generated_ppo_trainer.yaml  # verl 全量默认（集群 Hydra defaults 基底）
+│   ├── run/                 #   集群可运行配置（base + cluster + 实验语义）
 │   ├── phase1/              #   B1
 │   ├── phase2/              #   K1-K5, K2-R
 │   ├── phase3/              #   R0, R3-R6, R4-w, R4-K
 │   ├── phase4/              #   C1-C4
 │   ├── phase5/              #   S1, S2
 │   └── phase6/              #   X* (按需)
-├── scripts/                 # 训练 / 评测脚本（按 phase 分子目录）
-│   ├── train.sh             #   通用单实验入口
-│   ├── eval.sh              #   通用评测入口
-│   ├── phase1/run.sh        #   启动 Phase 1 全部实验
-│   ├── phase2/run.sh        #   启动 Phase 2 全部实验 (--only 选单个)
-│   ├── ...
-│   └── phase5/run.sh
+├── trainer/                 # CL Loss + 训练入口 + verl runner（零源码改动）
+├── replay_buffer/           # 7 桶 Buffer（纯 Python，与 verl 解耦）
+├── rollout/                 # 采样侧：沙箱客户端 / 会话池 / 轨迹采集 / simulated_session 驱动
+├── agents/                  # UserSim 三 agent：observer / questioner / reward(judge) + personas
+├── inference/               # 单步生成边界（VerlRolloutGenerateFn / HTTP）
 ├── eval/                    # ClawEval 评测
-├── tests/                   # 单元测试
+├── bin/                     # 独立数据管道工具（clean_zerowidth / detact / pipeline_cpp），ruff/black 排除
+├── scripts/                 # 训练 / 评测 / 沙箱 / 采集脚本（phase1–6）
+│   ├── train.sh             #   通用单实验入口（自动 source 训练 env）
+│   ├── eval.sh              #   通用评测入口
+│   ├── phaseN/run.sh        #   启动某 Phase 全部实验 (--only 选单个)
+│   └── ...                  #   sandbox_smoke / serve_reward_model / collect_cold 等
+├── tests/                   # ~290 单元测试 + verl 兼容性 smoke
 │
 │ ─── 运行时产物（gitignored）───
 ├── ckpts/                   # 训练 checkpoint 输出
