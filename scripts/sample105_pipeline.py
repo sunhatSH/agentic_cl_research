@@ -47,8 +47,9 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from data_pipeline.classify import classify_queries, make_default_client  # noqa: E402
+from data_pipeline.dag import build_session_dag, dag_summary  # noqa: E402
 from data_pipeline.extract import extract_first_queries  # noqa: E402
-from data_pipeline.route import route_trajectories  # noqa: E402
+from data_pipeline.route import route_subagents, route_trajectories  # noqa: E402
 
 
 def _load_jsonl(path: Path) -> list[dict]:
@@ -77,10 +78,10 @@ def cmd_extract(args) -> int:
 
 
 def cmd_classify(args) -> int:
-    records = _load_jsonl(Path(args.input))
-    client = make_default_client(args.config)
-    # 加载 .env（若存在），让 tokenhub key 进环境
+    # 先加载 .env 让 TOKENHUB_API_KEY 进环境，再构造 client（resolve 读 env）
     _maybe_load_env()
+    client = make_default_client(args.config)
+    records = _load_jsonl(Path(args.input))
     classified = classify_queries(records, client, max_tokens=args.max_tokens)
     _write_jsonl(Path(args.output), classified)
     from collections import Counter
@@ -102,6 +103,23 @@ def cmd_route(args) -> int:
     for b, c in sorted(stats["per_bucket"].items()):
         print(f"    {b:14s} {c}")
     print(f"  -> {args.out_dir}")
+    return 0
+
+
+def cmd_route_subagents(args) -> int:
+    """子会话事件流原样转 OpenAI chat、独立成训练样本（与主轨迹各自单独训练）。
+
+    规定：格式=原数据，只按文件顺序转 chat，不增减字段、不改内容、不重排；
+    主轨迹何时拿子数据看 Agent + 原数据，我们不编排。DAG 仅用于找存在的子日志。
+    """
+    nodes = build_session_dag(args.root)
+    summary = dag_summary(nodes)
+    print(f"[dag] {summary}")
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stats = route_subagents(nodes, out_dir)
+    print(f"[route-subagents] total={stats['total']} written={stats['written']} skipped={stats['skipped']}")
+    print(f"  -> {out_dir}")
     return 0
 
 
@@ -174,6 +192,11 @@ def main() -> int:
     p_route.add_argument("--input", default="data/first_queries_classified.jsonl")
     p_route.add_argument("--out-dir", default="data/buckets")
     p_route.set_defaults(func=cmd_route)
+
+    p_sub = sub.add_parser("route-subagents", help="子会话事件流原样转 chat、独立成样本")
+    p_sub.add_argument("--root", required=True, help="OpenClaw 采集根目录（含 000XXX/）")
+    p_sub.add_argument("--out-dir", default="data/subagent_trajectories")
+    p_sub.set_defaults(func=cmd_route_subagents)
 
     p_all = sub.add_parser("all", help="extract → classify → route 串联")
     p_all.add_argument("--root", required=True, help="OpenClaw 采集根目录")

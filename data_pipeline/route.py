@@ -1,21 +1,15 @@
-"""Step 3 — 按已标注的 bucket，把每个主会话的【完整轨迹】重建并路由进对应桶。
+"""Step 3 — 把会话事件流按文件顺序转成 OpenAI chat，路由成训练轨迹。
 
-输入：``classify_queries`` 的产出（每条带 ``record_id / bucket / sub_bucket /
-session_dir``）。对每条：
+主轨迹（``route_trajectories``）：按已标注的 bucket，把主会话 message 事件流
+按文件顺序重建为 OpenAI chat messages（``user`` / ``assistant(tool_calls)`` /
+``toolResult→tool``），system+tools 取自同名 ``*.trajectory.jsonl`` 的
+``context.compiled``，整条写入 ``data/buckets/<bucket>/<record_id>.jsonl``。
 
-1. 从 ``session_dir`` 重读主会话日志，把**全部** message 事件重建为 OpenAI
-   chat messages（顺序保持）：
-     - ``user``       → {role:user, content:str}
-     - ``assistant``  → {role:assistant, content:str, tool_calls:[...]}（toolCall
-                        part 转 OpenAI tool_calls；text/thinking part 并入 content，
-                        thinking 按"只取首 query / 不含推理过程"原则丢弃）
-     - ``toolResult`` → {role:tool, tool_call_id, content:str}（role 改名）
-2. 从同名 ``*.trajectory.jsonl`` 的 ``context.compiled`` 事件取 systemPrompt +
-   tools，prepend system message（主日志无 system role）。
-3. 整条轨迹写入 ``data/buckets/<bucket>/<record_id>.jsonl``，含 sub_bucket 字段。
-
-subagent 子会话**不处理**（本次范围外，主会话 ``sessions_spawn`` 的 toolCall
-已记录派生关系）。
+子轨迹（``route_subagents``）：每个子会话事件流**原样**按文件顺序转成 chat、
+独立成一条训练样本，写入 ``data/subagent_trajectories/<child_session_id>.jsonl``。
+**主轨迹与子轨迹各自单独训练、互不并入**；格式=原数据，只转 chat、不增减字段、
+不改内容、不重排顺序（文件顺序即因果顺序）。主轨迹何时拿子数据看 Agent +
+原数据，我们不编排。DAG（``data_pipeline.dag``）仅用于定位存在的子日志。
 
 输出对齐 ``doc/Buffer_冷启动数据需求.md §2.2`` 的轨迹字段（messages / bucket /
 record_id），但 token/logprob/reward 等需 π₀ 重跑的字段留空——本批数据只有
@@ -89,15 +83,15 @@ def _tool_result_to_openai(msg: dict) -> dict:
     }
 
 
-def rebuild_messages(session_dir: AnyPath) -> tuple[list[dict], list[dict]]:
-    """重建主会话完整轨迹为 OpenAI chat messages + tools。
+def rebuild_messages_from_log(log_path: AnyPath) -> tuple[list[dict], list[dict]]:
+    """从【指定日志文件路径】重建 OpenAI chat messages + tools（主/子会话通用）。
 
-    返回 ``(messages, tools)``。system message（若有 trajectory 的 systemPrompt）
-    prepend 到 messages 头部；tools 来自 trajectory ``context.compiled``。
-    无 systemPrompt 时 messages 不含 system（主日志本就无 system role）。
+    与 ``rebuild_messages`` 的区别：后者按 session_dir 找主会话日志
+    （``dyn-tmp-main-*``）；本函数直接吃一个日志路径，供子会话轨迹重建
+    （子会话日志名是纯 UUID，不是 dyn-tmp-main）。
     """
-    log_path = find_main_session_log(session_dir)
-    if log_path is None:
+    log_path = Path(log_path)
+    if not log_path.exists():
         return [], []
     messages: list[dict] = []
     for evt in iter_message_events(log_path):
@@ -115,11 +109,23 @@ def rebuild_messages(session_dir: AnyPath) -> tuple[list[dict], list[dict]]:
             messages.append(m)
         elif role == "toolResult":
             messages.append(_tool_result_to_openai(msg))
-    # system + tools 来自同名 trajectory
     system_prompt, tools = _load_system_and_tools(log_path)
     if system_prompt:
         messages.insert(0, {"role": "system", "content": system_prompt})
     return messages, tools
+
+
+def rebuild_messages(session_dir: AnyPath) -> tuple[list[dict], list[dict]]:
+    """重建主会话完整轨迹为 OpenAI chat messages + tools。
+
+    返回 ``(messages, tools)``。system message（若有 trajectory 的 systemPrompt）
+    prepend 到 messages 头部；tools 来自 trajectory ``context.compiled``。
+    无 systemPrompt 时 messages 不含 system（主日志本就无 system role）。
+    """
+    log_path = find_main_session_log(session_dir)
+    if log_path is None:
+        return [], []
+    return rebuild_messages_from_log(log_path)
 
 
 def _load_system_and_tools(log_path: AnyPath) -> tuple[str | None, list[dict]]:
@@ -221,4 +227,69 @@ def route_trajectories(
         with open(out_path, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(traj, ensure_ascii=False) + "\n")
         stats["per_bucket"][bucket] = stats["per_bucket"].get(bucket, 0) + 1
+    return stats
+
+
+# --------------------------------------------------------------------------- #
+# subagent 轨迹：子会话事件流原样转 OpenAI chat，独立成样本                    #
+# --------------------------------------------------------------------------- #
+#
+# 规定（与主轨迹一致）：
+#   - 主轨迹与子轨迹**各自单独训练**，互不并入。
+#   - **格式 = 原数据格式**，只把每个会话自己的事件流按文件顺序转成 OpenAI chat
+#     消息列表（user / assistant(tool_calls) / tool），不增减字段、不改内容、
+#     不重排顺序（文件里的顺序即因果顺序）。
+#   - 主轨迹何时拿到子会话数据，完全看 Agent 行为 + 原数据怎么记（spawn/yield/
+#     read 按原顺序保留），我们不替它编排、不假设出栈点。
+#   - 子轨迹就是子会话自己的事件流，转成 chat、独立成一条样本。不加自造的 meta
+#     字段、不清洗首条 user、不随父桶——字段全部来自原数据。
+#
+# DAG（``data_pipeline.dag``）的用途仅限：**找出哪些子会话日志存在、挂在哪个
+# 主会话目录下**，从而知道该把哪些子会话转成子轨迹。不用于编排顺序、不打 flag。
+
+
+def route_subagents(
+    dag_nodes: list,
+    out_root: AnyPath,
+) -> dict:
+    """把每个子会话事件流原样转成 OpenAI chat、独立写入训练样本。
+
+    遍历 DAG 节点（主会话），对每个已挂接子会话（``child_session_id`` 非空，
+    即子日志存在），用 ``rebuild_messages_from_log`` 把子会话事件流按文件顺序
+    转成 chat，原样写出（字段与主轨迹 ``_trajectory_record`` 同构，仅
+    ``record_id`` 取子会话 id、``bucket`` 留空待后续分桶）。
+
+    子日志缺失（unlinked）的 spawn 跳过——属原数据缺失，非转换错误。
+    返回统计：``{written, skipped, total}``。
+    """
+    out_root = Path(out_root)
+    stats: dict = {"written": 0, "skipped": 0, "total": 0}
+    for node in dag_nodes:
+        for link in node.spawns:
+            if not link.child_session_id or not link.child_session_dir:
+                continue  # unlinked（子日志缺失），跳过
+            stats["total"] += 1
+            sub_log = Path(link.child_session_dir) / f"{link.child_session_id}.jsonl"
+            messages, tools = rebuild_messages_from_log(sub_log)
+            if not messages:
+                stats["skipped"] += 1
+                continue
+            # 字段原样：子会话 id 作 record_id，bucket 留空（子轨迹分桶待后续）。
+            traj = {
+                "trajectory_id": link.child_session_id,
+                "record_id": link.child_session_id,
+                "session_id": link.child_session_id,
+                "bucket": None,
+                "sub_bucket": None,
+                "messages": messages,
+                "tools": tools,
+                "response_token_ids": None,
+                "logprobs": None,
+                "original_logprobs": None,
+                "reward": None,
+            }
+            out_path = out_root / f"{link.child_session_id}.jsonl"
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(traj, ensure_ascii=False) + "\n")
+            stats["written"] += 1
     return stats

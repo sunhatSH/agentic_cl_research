@@ -381,3 +381,5 @@ class TestRoute:
         stats = route_trajectories(classified, tmp_path / "out")
         assert stats["per_bucket"] == {}
         assert stats["unknown"] == 1
+
+
