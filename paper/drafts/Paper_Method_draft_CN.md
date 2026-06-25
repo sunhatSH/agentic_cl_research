@@ -85,7 +85,7 @@ $$w_t^{(i)} = \mathrm{normalize}\Big(\mathrm{clip}\big(\text{priority}_i \cdot \
 
 ### 4.5 经模拟用户在线构造多轮 Query
 
-> **数据归属与冷启动子集（实现说明）**：本节系统的**输入仅为 query 种子** $q_1$（真实首条 query，由数据侧提供）；**后续 query 的在线生成与 rollout 轨迹的结构化产出均为本系统的工作**——下游 buffer / 训练所消费的数据结构由此产出，而非种子的原始格式。系统初始化（冷启动数据采集）阶段先运行本节的 **observer + questioner 子集**：去掉奖励模型、不组 GRPO 组（单 query 单 rollout），仅产出"种子 + 在线 follow-up + 多轮轨迹 + 观察报告"的结构化数据；完整训练态再叠加奖励模型与 8 槽 winner 同步（§4.4）。
+> **数据归属与冷启动子集（实现说明）**：本节系统的**输入为 taskspec**——每个 task 含一份声明（`seed_query` = 真实首条 query $q_1$、`hidden_goal`、`verifier` 判分 rubric、`user_profile`）与一份初始文件系统 `files/`（沙箱 seed）；**后续 query 的在线生成与 rollout 轨迹的结构化产出均为本系统的工作**。系统初始化（冷启动数据采集）阶段先运行本节的 **observer + questioner 子集**：去掉奖励模型、不组 GRPO 组（单 query 单 rollout），仅产出"种子 + 在线 follow-up + 多轮轨迹 + 观察报告"的结构化数据；完整训练态再叠加奖励模型与 8 槽 winner 同步（§4.4）。每个 task 的 `files/` 物化为沙箱 seed（1 母版镜像 `COPY` 全部 seed，实例启动按 `task_id` 铺开），1 seed → fork 8 容器跑同一 `seed_query`（GRPO 8 路、起点位级一致）。
 
 信号污染的第二个来源是多轮数据。一条 follow-up query 通常引用上一轮的结果（例如"那份 PPT 第 3 页的数据错了"）。当这样的 follow-up 在数据采集时被写死、而实际状态 $e_k$ 是策略的随机函数时，该 follow-up 的前提仅以概率 $\Pr[\phi(q_{k+1})(e_k)] < 1$ 成立，且该概率随策略变强而*漂移*。前提失败会产生污染信号：模型要么因对不存在的问题硬编一个修复而被奖励，要么因如实指出该问题不存在而被惩罚。
 

@@ -19,6 +19,12 @@
 
 ## 记录（最新在最上面）
 
+### 2026-06-25 | 本机（开发机，CPU，无 GPU） | commit <pending>
+- 动作：数据源切换 + 沙箱/数据方案定稿（设计变更，未跑训练）。(1) **数据源从 sample105_v2（OpenClaw 采集，已弃）切到 `data/taskspecs/`**：每个 task = 1 份声明 `taskspec.yaml`（seed_query/hidden_goal/verifier 判分 rubric/user_profile/available_tools…）+ 1 份初始文件系统 `files/`。workspace↔query 回到 **1:1**（1 task=1 files=1 seed_query），原"1 沙箱↔N 会话"1:n 方案作废。(2) **沙箱 Dockerfile 方案定稿**（`doc/沙箱_Dockerfile制作方案.md`）：1 母版镜像 `COPY` 全部 seed（`files/`→`fs-seeds/<task_id>/`），实例启动按 `AGENTIC_CL_PERSONA=<task_id>` 铺开；1 seed→fork 8 容器跑同一 seed_query（GRPO 8 路、位级一致）；母版只装常用依赖、特定依赖 agent 运行时自己装（贴合真实场景）；当前简化版 1 母版，后续多母版/环境扰动留方向。(3) **`data_pipeline/` 1:1→1:n 留空回退**（`extract_initial_queries` 抛 NotImplementedError，待按 taskspec 重写）；`route.py` 撤多余 `first_query_only` 标记。(4) 文档/论文同步：Hermes subagent 方案 §6.6 标 sample105 弃用、`沙箱_实例_Queries对应关系_待定.md` 待定项清理（N/K/schema 作废，仅剩提问上限/结束其余条件/judge 校准）、Method 中英 §4.5 + 论文向总览 数据归属段改为 taskspec。
+- 结果：✅ 设计文档定稿；全量 `pytest -q` 306 passed / 7 skipped；ruff 全过。❌ 未跑训练/镜像/rollout（待 §3 自动化脚本 + build + rollout）。
+- 产物：`doc/沙箱_Dockerfile制作方案.md`（新）、`doc/沙箱_实例_Queries对应关系_待定.md`、`doc/Hermes_Subagent_训练数据方案.md`、`data_pipeline/extract.py`（留空）、`paper/drafts/{Paper_Method_draft_CN,EN,Paper_论文向总览}.md`、本条记录。
+- 解释：数据结构定稿是后续镜像制作 + rollout 采样的前提。taskspec 自带 verifier rubric 可直接当 reward judge 标准、user_profile 驱动 Questioner，比 sample105 干净。下一步：写 taskspec→fs-seeds 自动化脚本 → build 母版镜像 → 跑实例 → rollout 采样 → 据产出轨迹定 rollout 契约。
+
 ### 2026-06-23 | 本机（开发机，CPU，无 GPU） | commit <pending>
 - 动作：检查并继续优化——(1) **修 3 个失败配置测试**：`tests/test_configs.py` 的 `EXPERIMENT_CONFIGS` glob (`phase*/*.yaml`) 把 2026-06-17 加入的 `configs/phase1/smoke_1step.yaml` 当成第 22 个正式实验，导致 `test_found_all_experiment_configs`(期望 21) + 两个 `smoke_1step` 参数化用例（pin 了集群绝对路径的 verl `_generated_ppo_trainer.yaml`，本机不存在）失败。smoke 配置自述"不是正式实验配置"，故按 `smoke*` stem 前缀从实验花名册排除（非把计数改成 22）。(2) **ruff 核心库 14 项**：autofix F401/I001/UP035（含 `replay_metrics.py` 死 `import torch`、`verl_runner.py` 未用 import），手动给 6 处 `zip()` 加 `strict=`——5 处等长配对用 `strict=True`（bucket names↔targets / signal names↔alpha / samples↔token_weights / prompt↔resp rows / tids↔means，长度失配应暴露 bug），`trajectory_adapter.py` 的 ids↔mask 用 `strict=False`（padding 下可不等长，保留重叠而非崩溃，附注释）。(3) **lint 门禁可用**：1213/1248 个 ruff 报错全集中在 `bin/{detact,clean_zerowidth}.py` 两个 tab 缩进的一次性工具——给 ruff+black 都加 `bin/` exclude，`ruff check .` 从 1248 错→全过。(4) **black 仓库级格式化**：54 文件 reformat（line-length=110，bin/ 已排除）。
 - 结果：✅ `ruff check .` 全过、`black --check .` 全过（89 文件）、全量 `pytest -q` **288 passed / 7 skipped**（先前 3 failed 已修；7 skip 全为 verl/CUDA 门控，本机无）。

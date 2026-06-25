@@ -200,12 +200,9 @@ OpenClaw 采集数据与 Hermes 的同步假设**不符**，出入栈方案不�
 3. **DAG 父子 join**：spawn result 的 `childSessionKey` ↔ 子会话 trajectory `sessionKey` join，得 `parent_session_id / spawn_toolcall_id / child_session_id`。注意子会话**文件名 id ≠ childSessionKey 里的 subagent UUID**，需用 sessionKey join（已实测可靠）。该 join 仅用于定位存在的子日志，不进训练数据字段。
 4. **Questioner 纠错分支不写死补救方式**（训练时层）：主 agent 补做 vs 重 spawn 由训练数据分布 + 模型自主决定。
 
-### 6.6 OpenClaw 数据现状（实测 sample105_v2）
+### 6.6 数据现状说明
 
-- 105 主会话，346 次 `sessions_spawn`，其中 98 个子会话日志**存在**（已 link、可转子轨迹），238 个子日志**缺失**（采集时未落盘，属原数据缺失，跳过）。
-- 2 个子会话 timeout/error（`LLM idle timeout` 等）。
-- 主轨迹多轮分布：单轮 105、多轮 106（4–17 轮）。
-- 子轨迹转换后：`record_id`=子会话 id、`messages` 按文件顺序的 OpenAI chat、`tools` 来自子会话 trajectory、`bucket` 留空待分桶。
+> sample105_v2（OpenClaw 采集）已**弃用**（数据结构不符——每会话一独立 workspace_init，非"1 沙箱↔N 会话"）。本节 subagent 处理方案（主子各自单独训练、格式原样、DAG 仅定位子日志）**设计有效**，待新数据结构（`data/taskspecs/` taskspec）产出含子 agent 的轨迹后再落地。taskspec 当前只含单 task 声明 + 初始 `files/`，不含已采集轨迹——主/子轨迹均由 rollout 现场产（见 `doc/沙箱_Dockerfile制作方案.md`）。
 
 ### 6.6.1 `workspace_init/` 与 `workspace_final/` 的用途边界
 
