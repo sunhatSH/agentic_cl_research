@@ -1,23 +1,34 @@
-"""Step 1 — 从 OpenClaw 采集目录抽取每个主会话的【首 query】。
+"""Step 1 — 抽取【初始 query】（待重写：1 沙箱 ↔ N 会话 ↔ N 首 query）。
 
-OpenClaw 会话目录结构（实测，见 ``data_pipeline/__init__.py``）::
+⚠️ 本模块当前为留空状态——数据单元逻辑待重写。
 
-    <root>/<NNNNNN>/                 # 6 位序号目录（会话单元）
-      agent/sessions/
-        dyn-tmp-main-*.jsonl         # 主会话日志（每目录恰 1 个，本步取它）
-        dyn-tmp-main-*.trajectory.jsonl   # 遥测（systemPrompt+tools，Step 3 用）
-        <UUID>.jsonl                 # subagent 子会话（本步跳过）
-      workspace_init/                # 沙箱初始状态种子
-      workspace_final/               # 沙箱终态
+**当前正确的数据单元关系**（见 ``doc/沙箱_实例_Queries对应关系_待定.md``）::
 
-主会话日志是事件流，``type=="message"`` 的事件携带 ``message.{role, content}``，
-``role ∈ {user, assistant, toolResult}``。**首 query** = 文件中第一个
-``role=="user"`` 的 message 的文本拼接。
+    1 个沙箱（workspace_init / Dockerfile）
+       ├── 会话_1（首 query_1）
+       ├── 会话_2（首 query_2）
+       ├── ...
+       └── 会话_N（首 query_N）
+    每个会话的首 query → 8 实例（GRPO 8 路）→ 共 8N 实例
 
-只取主会话（``dyn-tmp-main-*``，排除 ``trajectory`` 与 subagent 纯-UUID 文件）：
-subagent 是主会话 ``sessions_spawn`` 派生的子任务，不是独立样本（本次范围外）。
+即：**一个沙箱对应 N 个会话、N 个首 query**。N 个首 query 互不依赖、都从同一
+沙箱初始状态起跑。
 
-纯函数 + 流式读文件，不联网、不依赖 GPU，可离线单测。
+**为什么留空**：sample105_v2 数据结构是错的（每个会话一个独立 workspace_init，
+而非"N 会话共享 1 沙箱"），数据侧后续会改正。在正确数据结构给出前，"按沙箱聚合
+N 个会话的首 query"逻辑无法写实——需要知道：
+
+  1. 正确数据怎么标识"哪 N 个会话属于同一个沙箱"（沙箱 id / Dockerfile 标识）。
+  2. 每个会话的"首 query"在数据里怎么取（仍是会话首个 user message？）。
+  3. 1 沙箱 ↔ N 会话的清单 schema。
+
+这些待开会定。本模块先留空，函数体抛 NotImplementedError，等数据结构定了重写。
+
+旧的 1:1 假设（"每会话取 1 个首 query"）已删除——见 git 历史。
+
+**保留的通用工具函数**（不依赖 1:1，可在重写后复用）：
+  - ``iter_session_dirs`` / ``find_main_session_log`` / ``iter_message_events`` /
+    ``extract_text``：OpenClaw 会话目录/日志解析的底层工具，与 query 聚合逻辑无关。
 """
 
 from __future__ import annotations
@@ -25,7 +36,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
-# str | Path 都接受（type alias，供签名注解）。
 AnyPath = "str | Path"
 
 # 主会话日志文件名前缀（OpenClaw 固定），trajectory / subagent 不以此开头或带后缀。
@@ -59,7 +69,6 @@ def find_main_session_log(session_dir: AnyPath) -> Path | None:
         return None
     candidates.sort(key=lambda p: p.name)
     if len(candidates) > 1:
-        # 数据异常：一个目录里多个主会话。取首个但暴露给调用方（返回首个 + 不静默）。
         import sys
 
         print(
@@ -75,14 +84,14 @@ def iter_message_events(log_path: AnyPath) -> Iterator[dict]:
 
     文件追加顺序即事件发生顺序；malformed 行跳过（JSONL 容错）。
     """
+    import json
+
     with open(log_path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
                 continue
             try:
-                import json
-
                 evt = json.loads(line)
             except (json.JSONDecodeError, ValueError):
                 continue
@@ -91,11 +100,7 @@ def iter_message_events(log_path: AnyPath) -> Iterator[dict]:
 
 
 def extract_text(content) -> str:
-    """把 message.content（str | content-parts list | None）拍平为纯文本。
-
-    user/assistant 的 content 通常是 ``[{type:text, text}, ...]``；
-    str 直接返回；其它降级为空串。
-    """
+    """把 message.content（str | content-parts list | None）拍平为纯文本。"""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -111,57 +116,49 @@ def extract_text(content) -> str:
     return "" if content is None else str(content)
 
 
-def first_user_query(session_dir: AnyPath) -> tuple[str, str] | None:
-    """取一个会话目录主会话的首个 user query。
+def first_user_query_text(log_path: AnyPath) -> str | None:
+    """从一个会话日志取首个 ``role=user`` 的文本（底层工具，不含 1:1 假设）。
 
-    返回 ``(session_id, query_text)``；无主会话日志或无 user message 时返回 None。
+    返回 query 文本（无 session_id）；无 user message 时返回 None。重写后的
+    "1 沙箱 ↔ N 会话"聚合可复用此函数逐个会话取首 query。
     """
-    log_path = find_main_session_log(session_dir)
-    if log_path is None:
-        return None
-    session_id = log_path.stem  # dyn-tmp-main-...（去 .jsonl）
     for evt in iter_message_events(log_path):
         msg = evt.get("message") or {}
         if msg.get("role") != "user":
             continue
         text = extract_text(msg.get("content"))
         if text.strip():
-            return session_id, text
+            return text
     return None
 
 
-def extract_first_queries(
-    root: AnyPath,
-    *,
-    limit: int | None = None,
-) -> list[dict]:
-    """遍历所有会话目录，抽取首 query 记录。
+# --------------------------------------------------------------------------- #
+# 待重写：1 沙箱 ↔ N 会话 ↔ N 首 query 聚合                                    #
+# --------------------------------------------------------------------------- #
 
-    每条::
 
-        {"record_id": "000001",          # 会话目录序号（稳定 join key）
-         "session_id": "dyn-tmp-main-...",# OpenClaw session id
-         "first_query": "...",            # 首 user query 文本
-         "session_dir": "<root>/000001",  # 原始会话目录绝对路径
-         "workspace_init": "<root>/000001/workspace_init"}  # 沙箱种子路径（可能不存在）
+def extract_initial_queries(root: AnyPath, *, limit: int | None = None) -> list[dict]:
+    """【待重写】按沙箱聚合 N 个会话的首 query（1 沙箱 ↔ N 首 query）。
 
-    跳过无主会话日志 / 无 user query 的目录（计入返回的 skipped 统计见 CLI）。
+    正确产出形态（待数据结构定稿）::
+
+        [{"sandbox_id": "<沙箱/Dockerfile 标识>",
+          "workspace_init": "<沙箱初始状态路径>",
+          "sessions": [
+              {"session_id": "...", "record_id": "...", "first_query": "...",
+               "session_dir": "..."},
+              ...
+          ]},
+         ...]
+
+    依赖待定项：
+      - 正确数据怎么标识"哪 N 个会话属于同一沙箱"（sample105 是错的：每会话一沙箱）。
+      - 沙箱清单 schema。
+
+    等开会定稿 + 数据侧改正结构后实现。当前抛 NotImplementedError。
     """
-    records: list[dict] = []
-    for session_dir in iter_session_dirs(root):
-        got = first_user_query(session_dir)
-        if got is None:
-            continue
-        session_id, query = got
-        records.append(
-            {
-                "record_id": session_dir.name,
-                "session_id": session_id,
-                "first_query": query,
-                "session_dir": str(session_dir.resolve()),
-                "workspace_init": str(session_dir.joinpath("workspace_init").resolve()),
-            }
-        )
-        if limit is not None and len(records) >= limit:
-            break
-    return records
+    raise NotImplementedError(
+        "extract_initial_queries 待重写：1 沙箱 ↔ N 会话 ↔ N 首 query 聚合逻辑"
+        "依赖正确数据结构（sample105 当前是错的）。见 "
+        "doc/沙箱_实例_Queries对应关系_待定.md。"
+    )

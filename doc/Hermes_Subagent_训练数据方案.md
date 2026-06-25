@@ -207,6 +207,21 @@ OpenClaw 采集数据与 Hermes 的同步假设**不符**，出入栈方案不�
 - 主轨迹多轮分布：单轮 105、多轮 106（4–17 轮）。
 - 子轨迹转换后：`record_id`=子会话 id、`messages` 按文件顺序的 OpenAI chat、`tools` 来自子会话 trajectory、`bucket` 留空待分桶。
 
+### 6.6.1 `workspace_init/` 与 `workspace_final/` 的用途边界
+
+每个会话目录还含两份沙箱快照（当前数据管道**两者都没读**——只读 `agent/sessions/*.jsonl` 事件流转 chat）：
+
+| 用途 | 需要 `workspace_init/` | 需要 `workspace_final/` |
+|------|------------------------|-------------------------|
+| **训练轨迹**（messages + tools，主/子各一条） | ❌ 不需要 | ❌ 不需要 |
+| **冷启动沙箱镜像种子**（rollout 复现采集期初始环境） | ✅ 需要 | ❌ 不需要 |
+| **Ground-truth 终态对照**（observer diff / reward 判分参照） | ❌ | ⚠️ 可选（当前 reward 走 LLM judge 不靠它） |
+
+**结论**：
+- 只做训练数据 → `init`/`final` **都不需要**。
+- 做冷启动沙箱镜像（`Buffer_冷启动数据需求.md` 里 @吴健 负责的"每会话首条 query + 对应沙箱镜像"）→ **只要 `workspace_init/`**，不要 `final`。镜像机制见 `docker/sandbox/fs-seeds/` + `bin/seed_workspace.sh`。
+- `workspace_final/` 训练侧用不上（agent 训练时自己跑产生终态）；仅当要做"终态对照评测"时才考虑。
+
 ### 6.7 OpenClaw 待落地项（训练时层，非本次范围）
 
 - [ ] observer 取证层：子任务"声称产文件但未落盘"写入 `discrepancies`（部分已有，需确认覆盖 spawn 场景）

@@ -48,8 +48,9 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from data_pipeline.classify import classify_queries, make_default_client  # noqa: E402
 from data_pipeline.dag import build_session_dag, dag_summary  # noqa: E402
-from data_pipeline.extract import extract_first_queries  # noqa: E402
 from data_pipeline.route import route_subagents, route_trajectories  # noqa: E402
+
+# extract_initial_queries 在 cmd 内延迟 import（当前抛 NotImplementedError，待 1:n 重写）
 
 
 def _load_jsonl(path: Path) -> list[dict]:
@@ -70,10 +71,17 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 
 
 def cmd_extract(args) -> int:
-    records = extract_first_queries(args.root, limit=args.limit)
+    # extract 的 1:1 聚合逻辑已留空待重写（1 沙箱 ↔ N 会话 ↔ N 首 query），
+    # 见 data_pipeline/extract.py::extract_initial_queries 的 NotImplementedError。
+    from data_pipeline.extract import extract_initial_queries
+
+    try:
+        records = extract_initial_queries(args.root, limit=args.limit)
+    except NotImplementedError as e:
+        print(f"[extract] 待重写：{e}", file=__import__("sys").stderr)
+        return 1
     _write_jsonl(Path(args.output), records)
-    total_q = sum(1 for r in records if r["first_query"].strip())
-    print(f"[extract] sessions={len(records)} with_first_query={total_q} -> {args.output}")
+    print(f"[extract] -> {args.output}")
     return 0
 
 
@@ -141,11 +149,17 @@ def _maybe_load_env() -> None:
 
 
 def cmd_all(args) -> int:
-    # extract
-    records = extract_first_queries(args.root, limit=args.limit)
+    # extract（1:n 聚合待重写）
+    from data_pipeline.extract import extract_initial_queries
+
+    try:
+        records = extract_initial_queries(args.root, limit=args.limit)
+    except NotImplementedError as e:
+        print(f"[extract] 待重写：{e}", file=__import__("sys").stderr)
+        return 1
     fq_path = Path(args.out_dir) / "first_queries.jsonl"
     _write_jsonl(fq_path, records)
-    print(f"[extract] sessions={len(records)} -> {fq_path}")
+    print(f"[extract] -> {fq_path}")
 
     # classify
     _maybe_load_env()

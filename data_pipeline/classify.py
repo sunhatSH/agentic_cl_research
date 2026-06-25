@@ -177,7 +177,7 @@ def classify_queries(
 ) -> list[dict]:
     """批量分类：对每条首 query 记录调用 LLM，附上分类结果。
 
-    输入是 ``extract_first_queries`` 的产出；输出每条加 ``bucket / sub_bucket /
+    输入是 extract 产出的首 query 记录（1:n 重写后为 query 列表）；输出每条加 ``bucket / sub_bucket /
     rationale / model / ok``。单条失败不影响其它（逐条 try）。
     """
     out: list[dict] = []

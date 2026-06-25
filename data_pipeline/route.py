@@ -175,7 +175,6 @@ def _trajectory_record(record: dict, messages: list[dict], tools: list[dict]) ->
             "source": "sample105_v2",
             "policy": "pi0",  # OpenClaw 采集用的是采集期模型，近似 pi0 基座语义
             "cold_seed": True,
-            "first_query_only": True,
             "classifier_model": record.get("model", ""),
             "classifier_rationale": record.get("rationale", ""),
         },

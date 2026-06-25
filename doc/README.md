@@ -32,6 +32,8 @@
 | [Sandbox_冒烟指南.md](Sandbox_冒烟指南.md) | 沙箱冒烟精简步骤 |
 | [ColdRollout_采集.md](ColdRollout_采集.md) | 冷启动采集运行手册 |
 | [Buffer_冷启动数据需求.md](Buffer_冷启动数据需求.md) | replay buffer 冷启动预热数据规格 |
+| [Hermes_Subagent_训练数据方案.md](Hermes_Subagent_训练数据方案.md) | Hermes 同步出入栈 + OpenClaw 主子各自训练方案 |
+| [沙箱_实例_Queries对应关系_待定.md](沙箱_实例_Queries对应关系_待定.md) | 1 沙箱↔N会话↔N首query + 实例生命周期/会话结束条件（待定） |
 
 ## ③ 过程记录（append-only / 一次性，不主动维护）
 

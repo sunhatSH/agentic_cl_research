@@ -18,10 +18,9 @@ from data_pipeline.classify import (
     parse_classify_output,
 )
 from data_pipeline.extract import (
-    extract_first_queries,
     extract_text,
     find_main_session_log,
-    first_user_query,
+    first_user_query_text,
     iter_message_events,
 )
 from data_pipeline.route import rebuild_messages, route_trajectories
@@ -146,6 +145,12 @@ def sample_root(tmp_path: Path) -> Path:
 
 
 class TestExtract:
+    """底层工具函数测试（1:1 聚合逻辑已留空待重写，见 extract.py）。
+
+    extract_text / find_main_session_log / iter_message_events / first_user_query_text
+    是与 query 聚合无关的底层工具，1:n 重写后仍复用，故保留测试。
+    """
+
     def test_extract_text_flattens_parts(self) -> None:
         assert extract_text([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "a\nb"
         assert extract_text("plain") == "plain"
@@ -158,25 +163,9 @@ class TestExtract:
         assert "trajectory" not in log.name
         assert log.name.startswith("dyn-tmp-main")
 
-    def test_first_user_query_returns_first_user(self, sample_root: Path) -> None:
-        got = first_user_query(sample_root / "000002")
-        assert got is not None
-        session_id, query = got
+    def test_first_user_query_text_returns_first_user(self, sample_root: Path) -> None:
+        query = first_user_query_text(find_main_session_log(sample_root / "000002"))
         assert query == "第一轮问题"
-        assert session_id.startswith("dyn-tmp-main")
-
-    def test_extract_first_queries_skips_non_digit_dirs(self, sample_root: Path) -> None:
-        records = extract_first_queries(sample_root)
-        ids = [r["record_id"] for r in records]
-        assert ids == ["000001", "000002"]
-        assert records[0]["first_query"] == "帮我算一下 Q3 营收"
-        # workspace_init 路径记录
-        assert "workspace_init" in records[0]["workspace_init"]
-
-    def test_extract_first_queries_limit(self, sample_root: Path) -> None:
-        records = extract_first_queries(sample_root, limit=1)
-        assert len(records) == 1
-        assert records[0]["record_id"] == "000001"
 
     def test_iter_message_events_skips_malformed(self, sample_root: Path) -> None:
         log = find_main_session_log(sample_root / "000001")
@@ -186,6 +175,15 @@ class TestExtract:
         events = list(iter_message_events(log))
         # 坏行被跳过，原 4 个 message 事件仍在
         assert len(events) == 4
+
+    def test_extract_initial_queries_not_implemented(self) -> None:
+        """1:n 聚合逻辑待重写，当前抛 NotImplementedError。"""
+        import pytest
+
+        with pytest.raises(NotImplementedError):
+            from data_pipeline.extract import extract_initial_queries
+
+            extract_initial_queries("/nonexistent")
 
 
 # --------------------------------------------------------------------------- #
