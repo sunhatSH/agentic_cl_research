@@ -1,24 +1,204 @@
 {
-  "_comment": "Persona filesystem corpus for the sandbox 'user machine'. Each persona is a directory copied verbatim into the agent workspace at instance start (bin/seed_workspace.sh). Add new personas by creating a dir + an entry here. 'buckets' lets the scheduler pick a persona that fits the target query's capability bucket; otherwise selection is a stable hash of AGENTIC_CL_FS_SEED.",
-  "version": 1,
+  "_comment": "taskspec seeds: 1 task = 1 seed dir, laid out at instance start by bin/seed_workspace.sh (AGENTIC_CL_PERSONA=<task_id>). Metadata/runtime excluded to prevent reward hacking.",
+  "version": 2,
   "personas": [
     {
-      "id": "finance_analyst",
-      "dir": "finance_analyst",
-      "buckets": ["Finance", "OfficeQA"],
-      "summary": "Quarterly financials, a reconciliation note, and a budget spreadsheet (csv)."
+      "id": "s_092666ab61907bb7_t0",
+      "dir": "s_092666ab61907bb7_t0",
+      "buckets": [],
+      "summary": "基于以下竞品矩阵和舆情数据，挖掘 Singapore 用户真实需求，分析好评关键词和差评痛点，输出用户画像和需求优先级清单。竞品矩阵和舆情报告参考已给路径，目标品类有7类（健康营养补充剂、美容护肤、宠物用品、母婴产品、家居厨房、功能性食品饮"
     },
     {
-      "id": "sysops_engineer",
-      "dir": "sysops_engineer",
-      "buckets": ["SysOps", "Workflow"],
-      "summary": "Service config, a rotating log, and an ops helper script."
+      "id": "s_250552131533780c_t1",
+      "dir": "s_250552131533780c_t1",
+      "buckets": [],
+      "summary": "把桌面各部门报表里4月那些文件夹,每个文件夹表1文件的汇总毛利那个sheet合到一个Excel里,加一列部门,部门名按文件夹/文件名来"
     },
     {
-      "id": "office_assistant",
-      "dir": "office_assistant",
-      "buckets": ["OfficeQA", "Communication", "Knowledge"],
-      "summary": "A meeting notes doc, a contacts csv, and a todo list."
+      "id": "s_250552131533780c_t3",
+      "dir": "s_250552131533780c_t3",
+      "buckets": [],
+      "summary": "用这个5月资金汇总表的银行日记账,先做代发工资那807笔的付款凭证,做007账套,从1号开始,不同银行不要在同一张凭证上,科目映射参考1-4月已有凭证,做成金蝶能导入的格式"
+    },
+    {
+      "id": "s_276058c3dcee7be5_t0",
+      "dir": "s_276058c3dcee7be5_t0",
+      "buckets": [],
+      "summary": "读取目录下的 pwr文件格式说明.md 并查看对应的py脚本，检查是否还有未能解析的未知数据"
+    },
+    {
+      "id": "s_65452c545283eae6_t0",
+      "dir": "s_65452c545283eae6_t0",
+      "buckets": [],
+      "summary": "帮我把最近7天的工作数据收集一下——日历、任务、会议、文档、消息都要，然后生成一份工作进展分析报告（飞书doc，按我的文档偏好），最后发个消息卡片汇报一下，附上报告链接"
+    },
+    {
+      "id": "s_70d700a84e123a37_t2",
+      "dir": "s_70d700a84e123a37_t2",
+      "buckets": [],
+      "summary": "定时跑因子 IC 分析、更新 factor_registry，并监控因子衰减情况，有方向翻转或衰减给我报告。"
+    },
+    {
+      "id": "s_806a6a9d449fcb64_t0",
+      "dir": "s_806a6a9d449fcb64_t0",
+      "buckets": [],
+      "summary": "检查昨天16点到现在的会话记录,我们要做的是逆向分析;v52.0今天继续深挖;告诉我你的v48.0和v52.0逆向的程度是多少,v52.0距离完成度100%还差多少?"
+    },
+    {
+      "id": "s_9e10e3cafdf7f622_t0",
+      "dir": "s_9e10e3cafdf7f622_t0",
+      "buckets": [],
+      "summary": "我要准备第三次测验了，前两次学得还行但考试常常完全不会做。课件在随机过程文件夹里（AI提取的可能有误差）。我思想大概懂一点但计算完全不会——伊藤公式、鞅、债券价格、托宾Q都是知道思路算不出来。这次开卷，还有两小时左右准备时间，你帮我讲一讲，"
+    },
+    {
+      "id": "s_a366b25368a47be4_t0",
+      "dir": "s_a366b25368a47be4_t0",
+      "buckets": [],
+      "summary": "帮我把桌面『各部门报表』下4月各部门文件夹里表1文件的汇总毛利那个sheet都合并到一个Excel里，加一列部门名，部门名按文件夹/文件名取"
+    },
+    {
+      "id": "s_a366b25368a47be4_t2",
+      "dir": "s_a366b25368a47be4_t2",
+      "buckets": [],
+      "summary": "用5月资金汇总表里的代发工资付款，做成金蝶能导入的007账套凭证，借外部成本薪资带部门客户维度、贷银行存款，同一银行同一天合并一张，客户和银行编码按客户表和1-4月凭证匹配"
+    },
+    {
+      "id": "s_b9043bf4b085c3e4_t1",
+      "dir": "s_b9043bf4b085c3e4_t1",
+      "buckets": [],
+      "summary": "从第一模块开始进行深入研究"
+    },
+    {
+      "id": "s_c509c030a08112d4_t0",
+      "dir": "s_c509c030a08112d4_t0",
+      "buckets": [],
+      "summary": "帮我完善这套设备巡检脚本，电源、CPU、内存、风扇都要能正确解析H3C、华为、锐捷、迈普、山石所有厂商的数据。华三设备电源全部解析失败要修，迈普大量失败要修，锐捷S8610E格式要支持，还要新增华为USG9520防火墙和S5700交换机的三"
+    },
+    {
+      "id": "s_db70705439faf9d2_t0",
+      "dir": "s_db70705439faf9d2_t0",
+      "buckets": [],
+      "summary": "请对马来西亚跨境电商 Top 10 选品进行独立风险评审。从市场、供应链、合规、财务、运营、汇率六个维度评估，每个 SKU 给综合风险评级、主要风险点、风险缓解方案和进入建议，最后给整体投资组合建议。报告保存到 reports/malays"
+    },
+    {
+      "id": "s_defea18b175d40c9_t0",
+      "dir": "s_defea18b175d40c9_t0",
+      "buckets": [],
+      "summary": "重新读取巡检文件夹下的fan_format_document格式文件，按风扇巡检要求对最新日期文件夹的日志巡检，新增对华为USG9520防火墙和S5700交换机的风扇解析支持，并把格式和要求保存进python脚本"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "s_092666ab61907bb7_t0",
+      "dir": "s_092666ab61907bb7_t0",
+      "bucket": null,
+      "task_family": "multi_doc_summary",
+      "difficulty": 4,
+      "summary": "基于以下竞品矩阵和舆情数据，挖掘 Singapore 用户真实需求，分析好评关键词和差评痛点，输出用户画像和需求优先级清单。竞品矩阵和舆情报告参考已给路径，目标品类有7类（健康营养补充剂、美容护肤、宠物用品、母婴产品、家居厨房、功能性食品饮"
+    },
+    {
+      "id": "s_250552131533780c_t1",
+      "dir": "s_250552131533780c_t1",
+      "bucket": null,
+      "task_family": "data_extract",
+      "difficulty": 5,
+      "summary": "把桌面各部门报表里4月那些文件夹,每个文件夹表1文件的汇总毛利那个sheet合到一个Excel里,加一列部门,部门名按文件夹/文件名来"
+    },
+    {
+      "id": "s_250552131533780c_t3",
+      "dir": "s_250552131533780c_t3",
+      "bucket": null,
+      "task_family": "data_extract",
+      "difficulty": 5,
+      "summary": "用这个5月资金汇总表的银行日记账,先做代发工资那807笔的付款凭证,做007账套,从1号开始,不同银行不要在同一张凭证上,科目映射参考1-4月已有凭证,做成金蝶能导入的格式"
+    },
+    {
+      "id": "s_276058c3dcee7be5_t0",
+      "dir": "s_276058c3dcee7be5_t0",
+      "bucket": null,
+      "task_family": "data_extract",
+      "difficulty": 4,
+      "summary": "读取目录下的 pwr文件格式说明.md 并查看对应的py脚本，检查是否还有未能解析的未知数据"
+    },
+    {
+      "id": "s_65452c545283eae6_t0",
+      "dir": "s_65452c545283eae6_t0",
+      "bucket": null,
+      "task_family": "multi_doc_summary",
+      "difficulty": 4,
+      "summary": "帮我把最近7天的工作数据收集一下——日历、任务、会议、文档、消息都要，然后生成一份工作进展分析报告（飞书doc，按我的文档偏好），最后发个消息卡片汇报一下，附上报告链接"
+    },
+    {
+      "id": "s_70d700a84e123a37_t2",
+      "dir": "s_70d700a84e123a37_t2",
+      "bucket": null,
+      "task_family": "data_extract",
+      "difficulty": 4,
+      "summary": "定时跑因子 IC 分析、更新 factor_registry，并监控因子衰减情况，有方向翻转或衰减给我报告。"
+    },
+    {
+      "id": "s_806a6a9d449fcb64_t0",
+      "dir": "s_806a6a9d449fcb64_t0",
+      "bucket": null,
+      "task_family": "multi_doc_summary",
+      "difficulty": 4,
+      "summary": "检查昨天16点到现在的会话记录,我们要做的是逆向分析;v52.0今天继续深挖;告诉我你的v48.0和v52.0逆向的程度是多少,v52.0距离完成度100%还差多少?"
+    },
+    {
+      "id": "s_9e10e3cafdf7f622_t0",
+      "dir": "s_9e10e3cafdf7f622_t0",
+      "bucket": null,
+      "task_family": "multi_doc_summary",
+      "difficulty": 4,
+      "summary": "我要准备第三次测验了，前两次学得还行但考试常常完全不会做。课件在随机过程文件夹里（AI提取的可能有误差）。我思想大概懂一点但计算完全不会——伊藤公式、鞅、债券价格、托宾Q都是知道思路算不出来。这次开卷，还有两小时左右准备时间，你帮我讲一讲，"
+    },
+    {
+      "id": "s_a366b25368a47be4_t0",
+      "dir": "s_a366b25368a47be4_t0",
+      "bucket": null,
+      "task_family": "data_extract",
+      "difficulty": 5,
+      "summary": "帮我把桌面『各部门报表』下4月各部门文件夹里表1文件的汇总毛利那个sheet都合并到一个Excel里，加一列部门名，部门名按文件夹/文件名取"
+    },
+    {
+      "id": "s_a366b25368a47be4_t2",
+      "dir": "s_a366b25368a47be4_t2",
+      "bucket": null,
+      "task_family": "data_extract",
+      "difficulty": 5,
+      "summary": "用5月资金汇总表里的代发工资付款，做成金蝶能导入的007账套凭证，借外部成本薪资带部门客户维度、贷银行存款，同一银行同一天合并一张，客户和银行编码按客户表和1-4月凭证匹配"
+    },
+    {
+      "id": "s_b9043bf4b085c3e4_t1",
+      "dir": "s_b9043bf4b085c3e4_t1",
+      "bucket": null,
+      "task_family": "multi_doc_summary",
+      "difficulty": 4,
+      "summary": "从第一模块开始进行深入研究"
+    },
+    {
+      "id": "s_c509c030a08112d4_t0",
+      "dir": "s_c509c030a08112d4_t0",
+      "bucket": null,
+      "task_family": "data_extract",
+      "difficulty": 5,
+      "summary": "帮我完善这套设备巡检脚本，电源、CPU、内存、风扇都要能正确解析H3C、华为、锐捷、迈普、山石所有厂商的数据。华三设备电源全部解析失败要修，迈普大量失败要修，锐捷S8610E格式要支持，还要新增华为USG9520防火墙和S5700交换机的三"
+    },
+    {
+      "id": "s_db70705439faf9d2_t0",
+      "dir": "s_db70705439faf9d2_t0",
+      "bucket": null,
+      "task_family": "multi_doc_summary",
+      "difficulty": 4,
+      "summary": "请对马来西亚跨境电商 Top 10 选品进行独立风险评审。从市场、供应链、合规、财务、运营、汇率六个维度评估，每个 SKU 给综合风险评级、主要风险点、风险缓解方案和进入建议，最后给整体投资组合建议。报告保存到 reports/malays"
+    },
+    {
+      "id": "s_defea18b175d40c9_t0",
+      "dir": "s_defea18b175d40c9_t0",
+      "bucket": null,
+      "task_family": "data_extract",
+      "difficulty": 4,
+      "summary": "重新读取巡检文件夹下的fan_format_document格式文件，按风扇巡检要求对最新日期文件夹的日志巡检，新增对华为USG9520防火墙和S5700交换机的风扇解析支持，并把格式和要求保存进python脚本"
     }
   ]
 }

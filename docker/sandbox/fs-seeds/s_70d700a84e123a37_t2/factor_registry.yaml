@@ -1,0 +1,79 @@
+factors:
+  momentum_12m:
+    direction: 1
+    weight: 0.22
+    ic: 0.041
+    ir: 0.58
+    status: active
+  reversal_5d:
+    direction: -1
+    weight: 0.15
+    ic: 0.033
+    ir: 0.49
+    status: active
+  rsi_14:
+    direction: -1
+    weight: 0.02
+    ic: 0.018
+    ir: 0.21
+    status: active
+  volatility_20d:
+    direction: -1
+    weight: 0.12
+    ic: 0.028
+    ir: 0.40
+    status: active
+  value_pb:
+    direction: 1
+    weight: 0.10
+    ic: 0.022
+    ir: 0.31
+    status: active
+  size:
+    direction: -1
+    weight: 0.08
+    ic: 0.015
+    ir: 0.19
+    status: active
+  turnover:
+    direction: -1
+    weight: 0.05
+    ic: 0.012
+    ir: 0.16
+    status: active
+  earnings_yield:
+    direction: 1
+    weight: 0.09
+    ic: 0.026
+    ir: 0.34
+    status: active
+  macd_signal:
+    direction: 1
+    weight: 0.04
+    ic: 0.009
+    ir: 0.11
+    status: active
+  beta:
+    direction: -1
+    weight: 0.03
+    ic: 0.007
+    ir: 0.09
+    status: active
+  amihud_illiq:
+    direction: 1
+    weight: 0.04
+    ic: 0.011
+    ir: 0.14
+    status: active
+  accruals:
+    direction: -1
+    weight: 0.02
+    ic: 0.006
+    ir: 0.08
+    status: watch
+  gross_profit:
+    direction: 1
+    weight: 0.04
+    ic: 0.013
+    ir: 0.17
+    status: active
