@@ -23,11 +23,19 @@
 - 每个初始 query 跑 8 个实例（GRPO 组内 8 路，`base.yaml: rollout.n=8`）。
 - 总实例数 = 8N。
 
+**N 个 query 的并发度**（已定）：
+- 单个 query 内：8 个实例**并行**（GRPO 组）。
+- N 个 query 之间：**不全部并行**——选 **K 个并行**（K 可被 N 整除），K 组同时跑（峰值 8K 个实例），跑完一批再跑下一批。
+- **K 数值待定**（开会商量）。
+- 例：N=8、K=2 → 每批 2 个 query（16 实例）并行，共 4 批，总实例化 64 个（=8N）。
+
 ### 1.1 实例生命周期与会话结束条件
 
 **实例生命周期**：每个初始 query 的 8 个实例，从沙箱初始状态 fork 出来 → 跑该 query → **跑完即销毁**（不跨 query 存活，独立 query 无"下一轮依赖上一轮 winner"，故无 winner-sync）。下一个 query 从沙箱初始状态**重新 fork** 8 个实例。
 
-> 这与现有 `rollout/session_pool.py` 的"多轮依赖 + winner 跨轮存活"模型不同——独立模型是 per-query 生命周期，现有代码是 per-session 生命周期（winner 贯穿所有 query、仅 session 结束才 destroy_all）。详见 §2.2。
+**winner**（已定）：保留。独立模型下仍选 winner = **优势（advantage）最大的那条轨迹**（等价于 reward 最高，与现有 `select_winner` 一致）。winner 用于固化/记录（如旧 `sandbox_smoke.py` 的"winner 固化"概念），但**不用于跨 query 状态同步**（独立 query 间无依赖，winner 不传给下一 query）。即 winner 只在"单 query 内"有意义——选出来固化、收轨迹算 advantage，跑完该 query 即弃。
+
+> 这与现有 `rollout/session_pool.py` 的"多轮依赖 + winner 跨轮存活"模型不同——独立模型是 per-query 生命周期（winner 不跨 query），现有代码是 per-session 生命周期（winner 贯穿所有 query、sync 给下一轮）。详见 §2.2。
 
 **会话结束条件（当前确定 2 种，其余待定）**：
 
@@ -41,6 +49,8 @@
 
 **未决问题（开会讨论）**：
 - [ ] N 个初始 query 的**来源/结构**：是从 sample105 会话数据取，还是另配一组独立 query 清单？sample105 单会话只有 1 个首 user（后续轮次依赖前面，不是"初始"），给不出"N 个互不依赖的初始 query"——需定数据单元怎么定义。
+- [ ] **K 数值**（N 个 query 间的并行批大小，K 可被 N 整除）。
+- [ ] **Questioner 提问上限次数**的数值。
 - [ ] "1 个沙箱 = 1 个 Dockerfile" 与 sample105 的 `workspace_init/`（文件系统初始状态）如何对应：一个 workspace_init 是否就产出一个 Dockerfile？
 - [ ] 与现有 `rollout/session_pool.py` 的"多轮依赖(q1→winner→q2)"模型如何区分/共存。
 
