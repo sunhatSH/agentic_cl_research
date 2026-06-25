@@ -114,7 +114,7 @@ agentic_cl_research/
 
 推完后完整镜像地址示例：
 
-`ccr.ccs.tencentyun.com/agentos-cl-sandbox/agentic-cl-sandbox:v1`
+`tcr-rl.tencentcloudcr.com/agentos-cl-sandbox/agentic-cl-sandbox:v1`
 
 ### `configs/sandbox_tool.json`（仅 custom Tool）
 
@@ -133,18 +133,20 @@ push 镜像后改两处：
 2. **新建密钥** → 复制 SecretId、SecretKey → 写入 `tencent.env`
 3. **不要**把登录密码写进文件
 
-### 3.2 容器镜像服务 CCR（仅 custom 路线）
+### 3.2 容器镜像服务 TCR 企业版（仅 custom 路线）
 
-1. 打开 [容器镜像服务](https://console.cloud.tencent.com/tcr) → **个人版**
+> ⚠️ **本项目一律使用企业版 TCR（tcr-rl），禁止使用个人版 CCR（ccr.ccs.tencentyun.com）。**
+
+1. 打开 [容器镜像服务](https://console.cloud.tencent.com/tcr) → **企业版**（实例 tcr-rl）
 2. 首次 **初始化**
 3. **命名空间** → 新建（如 `agentos-cl-sandbox`）→ 名字写入 `image.env` 的 `CCR_NAMESPACE`
-4. **访问凭证** → 设置密码 → 本机执行 `docker login ccr.ccs.tencentyun.com`（用户名一般是主账号 ID）
+4. **访问凭证** → 设置密码 → 本机执行 `docker login tcr-rl.tencentcloudcr.com`（用户名一般是主账号 ID）
 
 ### 3.3 CAM 角色（custom 路线；builtin 可跳过）
 
 1. [访问管理 → 角色](https://console.cloud.tencent.com/cam/role) → **新建角色**
 2. 载体：**腾讯云产品服务** → **Agent Runtime**
-3. 策略：授予 **CCR 读权限**（个人版 CCR 或企业版 TCR）
+3. 策略：授予 **CCR 读权限**（企业版 CCR 或企业版 TCR）
 4. 角色名例如 `AgentOS-260506-test` → 写入 `AGS_ROLE_NAME`
 5. 给用户账号 **PassRole** 权限（见官方文档 §三）
 
@@ -224,10 +226,10 @@ python3 scripts/sandbox_smoke.py --backend e2b
 
 ```bash
 # 1. 登录 CCR
-docker login ccr.ccs.tencentyun.com
+docker login tcr-rl.tencentcloudcr.com
 
 # 2. 拉官方基底（需登录成功）
-docker pull ccr.ccs.tencentyun.com/ags-image/sandbox-code:latest
+docker pull tcr-rl.tencentcloudcr.com/ags-image/sandbox-code:latest
 
 # 3. 填好 image.env 后构建推送
 bash scripts/validate_sandbox_dockerfile.sh

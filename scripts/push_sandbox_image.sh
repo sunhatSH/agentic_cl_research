@@ -5,33 +5,26 @@
 #   bash scripts/push_sandbox_image.sh
 #
 # Requires docker login first, e.g.:
-#   docker login ccr.ccs.tencentyun.com
+#   docker login tcr-rl.tencentcloudcr.com
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ENV_FILE="${ROOT}/docker/sandbox/image.env"
+ROOT=/
+ENV_FILE=/docker/sandbox/image.env
 
-if [[ -f "$ENV_FILE" ]]; then
+if [[ -f  ]]; then
   set -a
   # shellcheck source=/dev/null
-  source "$ENV_FILE"
+  source 
   set +a
 fi
 
-: "${CCR_REGISTRY:=ccr.ccs.tencentyun.com}"
-: "${CCR_NAMESPACE:=REPLACE_WITH_YOUR_NAMESPACE}"
-: "${IMAGE_NAME:=agentic-cl-sandbox}"
-: "${IMAGE_TAG:=v1}"
+: tcr-rl.tencentcloudcr.com  # 企业版 TCR
+: REPLACE_WITH_YOUR_NAMESPACE
+: agentic-cl-sandbox
+: v1
 
-FULL_TAG="${CCR_REGISTRY}/${CCR_NAMESPACE}/${IMAGE_NAME}:${IMAGE_TAG}"
+FULL_TAG=tcr-rl.tencentcloudcr.com/REPLACE_WITH_YOUR_NAMESPACE/agentic-cl-sandbox:v1
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "[push_sandbox_image] ERROR: docker not found."
-  exit 1
-fi
-
-echo "[push_sandbox_image] pushing ${FULL_TAG}"
-docker push "${FULL_TAG}"
-echo "[push_sandbox_image] OK"
-echo "[push_sandbox_image] update configs/sandbox_tool.json CustomConfiguration.Image to: ${FULL_TAG}"
+  echo [push_sandbox_image]

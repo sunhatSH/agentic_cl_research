@@ -416,3 +416,29 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
      - 系统/沙箱状态：E2B `sandbox.files.read`/`files.list`/`watch_dir` 或 AgentBay `session.file_system`/`session.command.execute_command`（确定性快照/差分，模型只负责归纳）。
      - Agent 轨迹状态（可选增强）：OpenTelemetry GenAI 语义约定 + Langfuse / Arize Phoenix / OpenLLMetry。
    - **已就绪（本次 session 完成，2026-06-19）**：沙箱**接口/实现已解耦**——`SandboxClient` Protocol = 接口契约，`register_backend`/`make_sandbox` = 按名选择的注册表；`local`/`e2b`(腾讯) 为真实现，**其余厂商（如 `AliyunSandbox`/AgentBay）留空 stub**（接口+注册点就绪、body 待回集群用真 SDK/凭证填）。observer 修复时系统/沙箱取证可用 e2b（或实现后的 aliyun）后端文件 API。
+
+
+---
+
+## 企业版 TCR 统一配置记录（2026-06-24）
+
+### 变更内容
+所有腾讯云镜像配置从个人版 CCR（）统一改为企业版 TCR（）。**禁止使用个人版 CCR。**
+
+### 修改的文件
+| 文件 | 修改内容 |
+|------|---------|
+|  |  默认值 → 企业版 |
+|  | 注释中的基底镜像示例 → 企业版 |
+|  | 所有  → 企业版 |
+|  |  和  fallback 默认值 → 企业版 |
+|  |  fallback 默认值 → 企业版 |
+|  |  填入 （原为占位符） |
+|  | 所有个人版引用 → 企业版，增加企业版强制声明 |
+|  | 所有个人版引用 → 企业版 |
+
+### 论文文档清理
+- ：移除 Dockerfile/COPY/镜像 build 烘焙等实操细节
+- ：移除 base image COPY seed 等实现说明
+- 论文文档只保留方法论描述，不包含实际操作步骤
+

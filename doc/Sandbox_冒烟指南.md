@@ -11,7 +11,7 @@
 | `docker image` | **CCR 镜像** | `docker build` + `docker push`（仅 custom 路线） |
 | Compose / 启动配方 | **沙箱 Tool** | 控制台新建，或 `tccli ags CreateSandboxTool` |
 | `docker run` 起的容器 | **沙箱 Instance** | 调 API / SDK 自动起；控制台可看列表 |
-| 仓库登录 | **CCR 凭证** | `docker login ccr.ccs.tencentyun.com` |
+| 仓库登录 | **CCR 凭证** | `docker login tcr-rl.tencentcloudcr.com` |
 | 云 API 密钥 | **CAM SecretId/Key** | 控制台创建 → `tencent.env` |
 | 进容器执行命令 | **run_code / execute** | `rollout/sandbox_client` 或冒烟脚本 |
 
@@ -57,7 +57,7 @@ E2B_DOMAIN=ap-beijing.tencentags.com
 
 | 步骤 | 去哪 | 做什么 |
 |------|------|--------|
-| 命名空间 | [容器镜像 TCR/CCR](https://console.cloud.tencent.com/tcr) | 个人版 → 建命名空间（如 `agentos-cl-sandbox`）→ `image.env` |
+| 命名空间 | [容器镜像 TCR/CCR](https://console.cloud.tencent.com/tcr) | 企业版 → 建命名空间（如 `agentos-cl-sandbox`）→ `image.env` |
 | 访问凭证 | 同上 → 访问凭证 | 设密码 → 给有 Docker 的机器 `docker login` |
 | CAM 角色 | [CAM → 角色](https://console.cloud.tencent.com/cam/role) | 载体 Agent Runtime + CCR 读权限 → `AGS_ROLE_NAME` |
 | 建 custom Tool | Agent Runtime → 沙箱工具 | 类型 custom → 填 CCR 镜像地址 + 角色 + 端口 49999/49983 |
@@ -141,10 +141,10 @@ tccli ags DescribeSandboxInstanceList --region ap-beijing
 source scripts/load_tencent_env.sh
 
 # 登录 CCR（≈ docker login registry）
-docker login ccr.ccs.tencentyun.com   # 用户名一般是主账号 ID
+docker login tcr-rl.tencentcloudcr.com   # 用户名一般是主账号 ID
 
 # 拉官方基底（≈ docker pull 基础镜像）
-docker pull ccr.ccs.tencentyun.com/ags-image/sandbox-code:latest
+docker pull tcr-rl.tencentcloudcr.com/ags-image/sandbox-code:latest
 
 # 构建 + 推送（脚本读 image.env）
 bash scripts/validate_sandbox_dockerfile.sh
@@ -157,8 +157,8 @@ bash scripts/create_sandbox_via_api.sh custom
 
 | Docker 习惯 | 本项目命令 |
 |-------------|------------|
-| `docker login` | `docker login ccr.ccs.tencentyun.com` |
-| `docker pull` | `docker pull ccr.ccs.tencentyun.com/ags-image/sandbox-code:latest` |
+| `docker login` | `docker login tcr-rl.tencentcloudcr.com` |
+| `docker pull` | `docker pull tcr-rl.tencentcloudcr.com/ags-image/sandbox-code:latest` |
 | `docker build -t ...` | `bash scripts/build_sandbox_image.sh` |
 | `docker push` | `bash scripts/push_sandbox_image.sh` |
 | 定义服务/配方 | `tccli ags CreateSandboxTool` 或 `create_sandbox_via_api.sh` |

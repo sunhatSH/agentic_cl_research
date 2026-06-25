@@ -7,10 +7,10 @@
   "NetworkConfiguration": {
     "NetworkMode": "PUBLIC"
   },
-  "RoleArn": "qcs::cam::uin/100048510516:roleName/REPLACE_ROLE_NAME",
+  "RoleArn": "qcs::cam::uin/100048510516:roleName/AgentOS-260506-test",
   "CustomConfiguration": {
-    "Image": "ccr.ccs.tencentyun.com/REPLACE_NAMESPACE/agentic-cl-sandbox:v1",
-    "ImageRegistryType": "personal",
+    "Image": "tcr-rl.tencentcloudcr.com/agentos-cl-sandbox/agentic-cl-sandbox:v1",
+    "ImageRegistryType": "enterprise",
     "Ports": [
       {
         "Name": "run-code",
