@@ -193,6 +193,26 @@
 - 解释：真实沙盒须在有 SDK+凭证+网络的机器（64 卡集群或联网开发机）`--backend e2b` 跑，循环代码完全一致一行切换。本机用 local 子进程后端等价验证了"执行+采样"链路，与厂商解耦（§7 风险缓解）。
 
 
+### 2026-06-25 ~22:50 | 本机（macOS + Docker Desktop） | commit <pending>
+- 动作：企业版 TCR 全链路打通——build → push → 造 custom Tool → 起 RUNNING 实例。
+- 结果：✅ 全程成功。
+  - TCR 实例 `tcr-rl`（`tcr-hxya4oi8`，公网 `tcr-rl.tencentcloudcr.com`）下新建命名空间 `agentos-cl-sandbox`。
+  - `docker login tcr-rl.tencentcloudcr.com`（用 `tccli tcr CreateInstanceToken` 拿临时 Token，1h 有效）→ Login Succeeded。
+  - `bash scripts/build_sandbox_image.sh` → OK，tag `tcr-rl.tencentcloudcr.com/agentos-cl-sandbox/agentic-cl-sandbox:v1`（2GB，digest `sha256:0906eebb...aec92`）。
+  - `bash scripts/push_sandbox_image.sh` → OK，28 layer 全 Pushed，TCR 侧 `DescribeImages` 复核 digest 一致。
+  - `bash scripts/create_sandbox_via_api.sh custom` → 建 Tool `sdt-f4ygdu0a`（ToolName `agentic-cl-sandbox`）+ E2B API Key `ark_9327...`（已提示抄进 tencent.env）+ 起 Instance `a7dptvsoikpf2...` 状态 **RUNNING**。
+- 产物：镜像已上 TCR；Tool 已注册；测试实例 RUNNING（10 分钟超时自停）。`configs/sandbox_tool.json` 补实测必需字段（见下）。
+- 解释 / 踩坑（证据级）：
+  - **个人版 CCR 不可用**：`docker login ccr.ccs.tencentyun.com` 报 `unauthorized: no scope specify`，账号侧个人版访问凭证未配通；改走企业版 TCR 一次通。本项目已统一企业版，个人版弃用。
+  - **`sandbox_tool.json` 缺字段致 CreateSandboxTool 失败**：远程版缺 `CustomConfiguration.Command` 和 `Probe.HttpGet.Scheme`，tccli 报 `MissingParameter ... Command is required; Scheme is required`。参考已有 `node-python-openclaw` Tool 补：`Command=["/init"]`、`Scheme="HTTP"`、`Memory` 2Gi→4Gi、端口收敛为单 `envd:49983`。修复后建 Tool 成功。
+  - **Tool 创建异步**：建完 status=CREATING，立即起实例报 `ResourceUnavailable.SandboxTool ... not active`；轮询 ~3min 变 ACTIVE 后起实例成功。
+  - **远程 commit a7a1385 损坏两个文件**（本次本地修复）：`docker/sandbox/Dockerfile` 被截断为 7 行（丢 FROM/RUN/COPY 全部构建逻辑）、`scripts/push_sandbox_image.sh` 丢失所有 `$` 变量引用（`ROOT=/`、`source ` 空、`:` 裸命令）→ 已从本地完好版恢复，base/push 默认值改企业版。
+- 待集群 / 待办：
+  - E2B_API_KEY `ark_9327...` 抄进 `docker/sandbox/tencent.env`（控制台只显示一次）。
+  - `sandbox_smoke.py --backend e2b` 端到端验证待本机网络能通 `ap-beijing.tencentags.com`（本机公网可能不通，Tool/Instance 本身已证可用）。
+  - TCR 临时 Token 1h 过期，后续 push 需重新 `CreateInstanceToken`（或配长期凭证）。
+
+
 ### 2026-06-10 ~16:00 | 设计决策 | commit <pending>
 - 动作：定领域/入桶粒度——**per-query（非 per-session）**。
 - 结果：✅ 当前代码已是 per-trajectory(=per-query) 解析，**无需改逻辑**。固化契约进 `doc/SandboxRollout.md §5.5` + `domain_tagging` docstring。

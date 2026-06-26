@@ -63,3 +63,6 @@ docker/sandbox/tencent.env
 docker/sandbox/image.env
 docker/sandbox/runtime.env
 .claude/
+
+# macOS
+.DS_Store

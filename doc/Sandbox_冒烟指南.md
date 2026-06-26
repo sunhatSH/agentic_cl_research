@@ -140,8 +140,11 @@ tccli ags DescribeSandboxInstanceList --region ap-beijing
 ```bash
 source scripts/load_tencent_env.sh
 
-# 登录 CCR（≈ docker login registry）
-docker login tcr-rl.tencentcloudcr.com   # 用户名一般是主账号 ID
+# 登录 TCR 企业版（≈ docker login registry）
+#   企业版用临时令牌（非固定密码）：控制台「实例→访问凭证→生成临时登录指令」
+#   或 tccli: tccli tcr CreateInstanceToken --cli-unfold-argument --RegistryId tcr-hxya4oi8
+#   Token 默认 1 小时有效，过期重新生成
+docker login tcr-rl.tencentcloudcr.com -u <Username> -p <Token>
 
 # 拉官方基底（≈ docker pull 基础镜像）
 docker pull tcr-rl.tencentcloudcr.com/ags-image/sandbox-code:latest

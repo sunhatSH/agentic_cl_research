@@ -423,22 +423,27 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 ## 企业版 TCR 统一配置记录（2026-06-24）
 
 ### 变更内容
-所有腾讯云镜像配置从个人版 CCR（）统一改为企业版 TCR（）。**禁止使用个人版 CCR。**
+所有腾讯云镜像配置从个人版 CCR（`ccr.ccs.tencentyun.com`）统一改为企业版 TCR（`tcr-rl.tencentcloudcr.com`）。**禁止使用个人版 CCR。**
 
 ### 修改的文件
 | 文件 | 修改内容 |
 |------|---------|
-|  |  默认值 → 企业版 |
-|  | 注释中的基底镜像示例 → 企业版 |
-|  | 所有  → 企业版 |
-|  |  和  fallback 默认值 → 企业版 |
-|  |  fallback 默认值 → 企业版 |
-|  |  填入 （原为占位符） |
-|  | 所有个人版引用 → 企业版，增加企业版强制声明 |
-|  | 所有个人版引用 → 企业版 |
+| `docker/sandbox/Dockerfile` | `ARG SANDBOX_BASE_IMAGE` 默认值 → 企业版 |
+| `docker/sandbox/image.env.example` | 注释中的基底镜像示例 → 企业版 |
+| `docker/sandbox/image.env` | 所有 `ccr.ccs.tencentyun.com` → 企业版 |
+| `scripts/build_sandbox_image.sh` | `CCR_REGISTRY` 和 `SANDBOX_BASE_IMAGE` fallback 默认值 → 企业版 |
+| `scripts/push_sandbox_image.sh` | `CCR_REGISTRY` fallback 默认值 → 企业版 |
+| `configs/sandbox_tool.json` | `RoleArn` 填入 `AgentOS-260506-test`、`Image` → 企业版（原为占位符） |
+| `doc/Sandbox_腾讯云操作手册.md` | 所有个人版引用 → 企业版，增加企业版强制声明 |
+| `doc/Sandbox_冒烟指南.md` | 所有个人版引用 → 企业版 |
 
 ### 论文文档清理
-- ：移除 Dockerfile/COPY/镜像 build 烘焙等实操细节
-- ：移除 base image COPY seed 等实现说明
+- `paper/drafts/Paper_Method_draft_EN.md`：移除 Dockerfile/COPY/镜像 build 烘焙等实操细节
+- `paper/drafts/Paper_方向总览.md`：移除 base image COPY seed 等实现说明
 - 论文文档只保留方法论描述，不包含实际操作步骤
+
+### 2026-06-25 修复（本 session）
+- 远程 commit a7a1385 提交时 `docker/sandbox/Dockerfile` 被截断为 7 行（丢失 FROM/RUN/COPY 全部构建逻辑）、`scripts/push_sandbox_image.sh` 丢失所有 `$` 变量引用 → 已从本地完好版恢复（base image 默认值改企业版）。
+- `configs/sandbox_tool.json` 实测创建 Tool 必需字段补齐：`CustomConfiguration.Command=["/init"]`、`Probe.HttpGet.Scheme="HTTP"`、`Memory` 2Gi→4Gi、端口收敛为单 `envd:49983`（参考已有 `node-python-openclaw` Tool）。修复后 `create_sandbox_via_api.sh custom` 成功建 Tool `sdt-f4ygdu0a` + 起 RUNNING 实例。
+- 企业版 TCR 实例信息：实例 `tcr-rl`（`tcr-hxya4oi8`，公网 `tcr-rl.tencentcloudcr.com`），命名空间 `agentos-cl-sandbox`。docker login 用 `tccli tcr CreateInstanceToken` 拿临时 Token（默认 1 小时有效）。
 

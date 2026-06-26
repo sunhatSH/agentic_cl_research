@@ -1,8 +1,8 @@
 {
-  "_comment": "Agent Runtime custom sandbox TOOL template. Fill placeholders after image push + CAM role. See doc/Sandbox_腾讯云操作手册.md",
+  "_comment": "Agent Runtime custom sandbox TOOL. Image pushed to TCR enterprise (tcr-rl). See doc/Sandbox_腾讯云操作手册.md",
   "ToolName": "agentic-cl-sandbox",
   "ToolType": "custom",
-  "Description": "Agentic CL GRPO rollout — code-interpreter + project deps (pandas/aiohttp/...)",
+  "Description": "Agentic CL GRPO rollout — sandbox-code base + OpenClaw + project deps (pandas/aiohttp/...)",
   "DefaultTimeout": "30m",
   "NetworkConfiguration": {
     "NetworkMode": "PUBLIC"
@@ -11,12 +11,10 @@
   "CustomConfiguration": {
     "Image": "tcr-rl.tencentcloudcr.com/agentos-cl-sandbox/agentic-cl-sandbox:v1",
     "ImageRegistryType": "enterprise",
+    "Command": [
+      "/init"
+    ],
     "Ports": [
-      {
-        "Name": "run-code",
-        "Port": 49999,
-        "Protocol": "TCP"
-      },
       {
         "Name": "envd",
         "Port": 49983,
@@ -25,18 +23,19 @@
     ],
     "Resources": {
       "CPU": "2",
-      "Memory": "2Gi"
+      "Memory": "4Gi"
     },
     "Probe": {
       "HttpGet": {
         "Path": "/health",
-        "Port": 49999
+        "Port": 49983,
+        "Scheme": "HTTP"
       },
       "ReadyTimeoutMs": 30000,
-      "ProbeTimeoutMs": 1000,
-      "ProbePeriodMs": 1000,
+      "ProbeTimeoutMs": 2000,
+      "ProbePeriodMs": 5000,
       "SuccessThreshold": 1,
-      "FailureThreshold": 30
+      "FailureThreshold": 36
     }
   }
 }

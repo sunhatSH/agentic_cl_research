@@ -140,7 +140,16 @@ push 镜像后改两处：
 1. 打开 [容器镜像服务](https://console.cloud.tencent.com/tcr) → **企业版**（实例 tcr-rl）
 2. 首次 **初始化**
 3. **命名空间** → 新建（如 `agentos-cl-sandbox`）→ 名字写入 `image.env` 的 `CCR_NAMESPACE`
-4. **访问凭证** → 设置密码 → 本机执行 `docker login tcr-rl.tencentcloudcr.com`（用户名一般是主账号 ID）
+4. **访问凭证** → 企业版用**临时登录令牌**（不是固定密码）：
+   - 控制台「实例 → 访问凭证 → 生成临时登录指令」复制完整命令，或用 tccli：
+     ```bash
+     tccli tcr CreateInstanceToken --cli-unfold-argument --RegistryId tcr-hxya4oi8
+     # 返回 Username + Token（Token 默认 1 小时有效，过期重新生成）
+     ```
+   - 本机执行（Token 有时效，过期重生成）：
+     ```bash
+     docker login tcr-rl.tencentcloudcr.com -u <Username> -p <Token>
+     ```
 
 ### 3.3 CAM 角色（custom 路线；builtin 可跳过）
 
