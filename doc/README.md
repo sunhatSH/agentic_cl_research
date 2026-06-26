@@ -27,6 +27,7 @@
 | [Plan_训练链路补齐.md](Plan_训练链路补齐.md) | 64 卡前 Gap A–H 施工规格 |
 | [sandbox/Sandbox_概念与术语.md](sandbox/Sandbox_概念与术语.md) | **沙箱文档入口**：镜像/Tool/Instance + TCR/CCR/实例/命名空间概念 + 导航表（沙箱全部 10 篇文档在 `sandbox/` 下） |
 | [Buffer_冷启动数据需求.md](Buffer_冷启动数据需求.md) | replay buffer 冷启动预热数据规格 |
+| [Agent轨迹_Schema.md](Agent轨迹_Schema.md) | Agent 轨迹 schema（现状 mock vs 目标 buffer/训练，含 Hermes 主子轨迹 + 字段必填性） |
 | [Hermes_Subagent_训练数据方案.md](Hermes_Subagent_训练数据方案.md) | Hermes 同步出入栈 + OpenClaw 主子各自训练方案 |
 
 ## ③ 过程记录（append-only / 一次性，不主动维护）
