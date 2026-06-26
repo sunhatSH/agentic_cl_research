@@ -5,7 +5,11 @@
   "Description": "Agentic CL GRPO rollout — sandbox-code base + OpenClaw + project deps (pandas/aiohttp/...)",
   "DefaultTimeout": "30m",
   "NetworkConfiguration": {
-    "NetworkMode": "PUBLIC"
+    "NetworkMode": "VPC",
+    "VpcConfig": {
+      "SubnetIds": ["subnet-ljfuh7ln"],
+      "SecurityGroupIds": ["sg-irz5h5ed"]
+    }
   },
   "RoleArn": "qcs::cam::uin/100048510516:roleName/AgentOS-260506-test",
   "CustomConfiguration": {

@@ -193,6 +193,34 @@
 - 解释：真实沙盒须在有 SDK+凭证+网络的机器（64 卡集群或联网开发机）`--backend e2b` 跑，循环代码完全一致一行切换。本机用 local 子进程后端等价验证了"执行+采样"链路，与厂商解耦（§7 风险缓解）。
 
 
+### 2026-06-26 ~21:00 | 本机（macOS） | commit <pending>
+- 动作：排查沙箱实例规格"不生效"问题 + 找到真实规格获取方式。
+- 背景：Tool `sdt-81jenxfq` 配置 `Resources={4CPU, 8Gi, 20Gi}`，但 E2B 兼容 API `GET /sandboxes` 返回 `cpuCount=2/memoryMB=1024/diskSizeMB=1024`，一度以为规格没生效。
+- 结果：✅ **规格其实生效了**，E2B API 字段是假值。
+  - **问题原因**：`rollout/sandbox_client.py` 用的 E2B 兼容 API（`api.ap-beijing.tencentags.com`）返回的 `cpuCount/memoryMB/diskSizeMB` 是**固定占位值（永远 2/1024/1024）**，不反映实例真实分配。这是 E2B 兼容层的 bug/限制——它只返回 E2B 默认规格，没同步腾讯侧真实资源。
+  - **三方对比**（实例 `qgmr3yskxfb7pnkjidt35uixzujy223m2np2gv2m`，Tool `sdt-81jenxfq`）：
+    | 来源 | CPU | 内存 | 磁盘 |
+    |---|---|---|---|
+    | E2B API `GET /sandboxes` | 2 | 1024 MB | 1024 MB（**假值**）|
+    | Tool `CustomConfiguration.Resources` | 4 | 8 Gi | 20 Gi（声明值）|
+    | **envd `/metrics`（真实）** | 5 | 8.0 GiB | 20.7 GiB（**铁证**）|
+  - envd `/metrics` 返回 `mem_total=8438513664`（8.0GiB）、`disk_total=22202957824`（20.7GiB），与 Tool 配置一致。CPU 显示 5 是宿主逻辑核可见数（cgroup 限额是 CPU 配额，非核数可见性），正常。
+- **怎么获取真实规格**（关键）：
+  ```bash
+  # 起实例后，用官方 SDK 拿 Token（AcquireSandboxInstanceToken）
+  curl -H "X-Access-Token: <Token>" \
+    https://49983-<InstanceId>.ap-beijing.tencentags.com/metrics
+  # 返回 {cpu_count, mem_total, mem_used, disk_total, disk_used, cpu_used_pct, ts}
+  ```
+  - 端口 **49983**（envd），不是 49999
+  - Token 用官方 SDK `AcquireSandboxInstanceToken` 的 `Token`（管控面），不是 `TrafficToken`，不是 E2B API 的 `envdAccessToken`
+  - `/metrics` 是 envd 内置接口，返回内核级真实资源（最可靠）
+- 解释：
+  - 腾云工作人员后台看 Tool 是 4C8G（看的是 `CustomConfiguration.Resources`），跟 envd `/metrics` 一致——**规格一直生效，只是 E2B API 字段骗人**。
+  - `rollout/sandbox_client.py` 的 `E2BSandbox` 起实例走 E2B 兼容 API、run_code 走 `49999-{sid}/execute` —— 端口(49999)、Token(envdAccessToken)、路径(/execute) 全错，导致 run_code 500/404。需按官方 SDK 重写（B 阶段）。
+- 待办：run_code 正确路径仍在探测（49983 端口 `/execute` 404，要找 envd 0.2.10 的正确代码执行路径）。
+
+
 ### 2026-06-25 ~22:50 | 本机（macOS + Docker Desktop） | commit <pending>
 - 动作：企业版 TCR 全链路打通——build → push → 造 custom Tool → 起 RUNNING 实例。
 - 结果：✅ 全程成功。
