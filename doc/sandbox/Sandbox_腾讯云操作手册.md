@@ -108,13 +108,13 @@ agentic_cl_research/
 
 | 变量 | 填什么 | 去哪拿 |
 |------|--------|--------|
-| `CCR_NAMESPACE` | 命名空间名 | [容器镜像服务](https://console.cloud.tencent.com/tcr) → 命名空间；本项目建议 `agentos-cl-sandbox` |
+| `CCR_NAMESPACE` | 命名空间名 | [容器镜像服务](https://console.cloud.tencent.com/tcr) → 命名空间；本项目建议 `agentos-cl-namespace` |
 | `IMAGE_NAME` | `agentic-cl-sandbox` | 默认即可 |
 | `IMAGE_TAG` | `v1` | 自己定 |
 
 推完后完整镜像地址示例：
 
-`tcr-rl.tencentcloudcr.com/agentos-cl-sandbox/agentic-cl-sandbox:v1`
+`tcr-rl.tencentcloudcr.com/agentos-cl-namespace/agentic-cl-sandbox:v1`
 
 ### `configs/sandbox_tool.json`（仅 custom Tool）
 
@@ -139,7 +139,7 @@ push 镜像后改两处：
 
 1. 打开 [容器镜像服务](https://console.cloud.tencent.com/tcr) → **企业版**（实例 tcr-rl）
 2. 首次 **初始化**
-3. **命名空间** → 新建（如 `agentos-cl-sandbox`）→ 名字写入 `image.env` 的 `CCR_NAMESPACE`
+3. **命名空间** → 新建（如 `agentos-cl-namespace`）→ 名字写入 `image.env` 的 `CCR_NAMESPACE`
 4. **访问凭证** → 企业版用**临时登录令牌**（不是固定密码）：
    - 控制台「实例 → 访问凭证 → 生成临时登录指令」复制完整命令，或用 tccli：
      ```bash
@@ -238,7 +238,7 @@ python3 scripts/sandbox_smoke.py --backend e2b
 docker login tcr-rl.tencentcloudcr.com
 
 # 2. 拉官方基底（需登录成功）
-docker pull tcr-rl.tencentcloudcr.com/ags-image/sandbox-code:latest
+docker pull tcr-rl.tencentcloudcr.com/agentos-cl-namespace/sandbox-code:latest
 
 # 3. 填好 image.env 后构建推送
 bash scripts/validate_sandbox_dockerfile.sh
@@ -328,7 +328,7 @@ sbx.kill()
 
 | 项 | 状态 |
 |----|------|
-| `image.env` CCR_NAMESPACE | 如 `agentos-cl-sandbox` |
+| `image.env` CCR_NAMESPACE | 如 `agentos-cl-namespace` |
 | docker build + push | 需有 Docker daemon 的机器 |
 | `AGS_ROLE_NAME` + `sandbox_tool.json` | 角色 + 镜像地址 |
 | `create_sandbox_via_api.sh custom` | 最后一步 |
@@ -346,8 +346,8 @@ SDK `Sandbox(template=...)` 用 **ToolName**（字符串名）。
 **Q：AGS_ROLE_NAME 填什么？**  
 CAM 角色列表里的 **角色名称**（不是 ARN 整串）。builtin 可留空；custom 用团队 `AgentOS-260506-test` 或自建角色。
 
-**Q：命名空间填 clawgym 还是 agentos-cl-sandbox？**  
-CL 项目建议 **`agentos-cl-sandbox`**（`image.env`）；团队 RL 共用选 `agentos-rl-test260506`。
+**Q：命名空间填 clawgym 还是 agentos-cl-namespace？**  
+CL 项目建议 **`agentos-cl-namespace`**（`image.env`）；团队 RL 共用选 `agentos-rl-test260506`。
 
 **Q：Dockerfile 能写 WORKDIR / USER 吗？**  
 **不能**（快照启动会失败）。只能 `RUN pip install`。见 `scripts/validate_sandbox_dockerfile.sh`。

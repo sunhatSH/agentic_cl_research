@@ -57,7 +57,7 @@ E2B_DOMAIN=ap-beijing.tencentags.com
 
 | 步骤 | 去哪 | 做什么 |
 |------|------|--------|
-| 命名空间 | [容器镜像 TCR/CCR](https://console.cloud.tencent.com/tcr) | 企业版 → 建命名空间（如 `agentos-cl-sandbox`）→ `image.env` |
+| 命名空间 | [容器镜像 TCR/CCR](https://console.cloud.tencent.com/tcr) | 企业版 → 建命名空间（如 `agentos-cl-namespace`）→ `image.env` |
 | 访问凭证 | 同上 → 访问凭证 | 设密码 → 给有 Docker 的机器 `docker login` |
 | CAM 角色 | [CAM → 角色](https://console.cloud.tencent.com/cam/role) | 载体 Agent Runtime + CCR 读权限 → `AGS_ROLE_NAME` |
 | 建 custom Tool | Agent Runtime → 沙箱工具 | 类型 custom → 填 CCR 镜像地址 + 角色 + 端口 49999/49983 |
@@ -70,7 +70,7 @@ E2B_DOMAIN=ap-beijing.tencentags.com
 |------|------|----------------|
 | **VPC / 网络打通** | 网络 / 基础设施同事 | 训练机或开发机能访问 `ap-beijing.tencentags.com` 和 `api.ap-beijing.tencentags.com`；IDC 需 **北京 VPC 打通 + 域名解析**（公网不通则内网 endpoint） |
 | **Agent Runtime 配额 / 并发** | 云平台 / 沙箱管理员 | 单账号 Instance 并发上限、是否允许 PUBLIC 网络 |
-| **CCR 命名空间 / 团队镜像仓** | 账号管理员或 @孙豪 | 用独立命名空间 `agentos-cl-sandbox` 还是团队共用仓 |
+| **CCR 命名空间 / 团队镜像仓** | 账号管理员或 @孙豪 | 用独立命名空间 `agentos-cl-namespace` 还是团队共用仓 |
 | **CAM 角色 + PassRole** | 有 CAM 权限的同事 | custom 镜像需角色名如 `AgentOS-260506-test` |
 | **docker build / push** | 自己有 Docker 的机器 | 当前 Cursor Pod **无 Docker daemon**；用本机、GPU 机或 CI |
 | **E2B 域名 / 地域** | 沙箱管理员 | 确认 `E2B_DOMAIN=ap-beijing.tencentags.com` 与控制台地域一致 |
@@ -147,7 +147,7 @@ source scripts/load_tencent_env.sh
 docker login tcr-rl.tencentcloudcr.com -u <Username> -p <Token>
 
 # 拉官方基底（≈ docker pull 基础镜像）
-docker pull tcr-rl.tencentcloudcr.com/ags-image/sandbox-code:latest
+docker pull tcr-rl.tencentcloudcr.com/agentos-cl-namespace/sandbox-code:latest
 
 # 构建 + 推送（脚本读 image.env）
 bash scripts/validate_sandbox_dockerfile.sh
@@ -161,7 +161,7 @@ bash scripts/create_sandbox_via_api.sh custom
 | Docker 习惯 | 本项目命令 |
 |-------------|------------|
 | `docker login` | `docker login tcr-rl.tencentcloudcr.com` |
-| `docker pull` | `docker pull tcr-rl.tencentcloudcr.com/ags-image/sandbox-code:latest` |
+| `docker pull` | `docker pull tcr-rl.tencentcloudcr.com/agentos-cl-namespace/sandbox-code:latest` |
 | `docker build -t ...` | `bash scripts/build_sandbox_image.sh` |
 | `docker push` | `bash scripts/push_sandbox_image.sh` |
 | 定义服务/配方 | `tccli ags CreateSandboxTool` 或 `create_sandbox_via_api.sh` |

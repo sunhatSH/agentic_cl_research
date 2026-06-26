@@ -25,7 +25,7 @@
 # NOTE: base image is assumed Debian/Ubuntu (apt). If the AGS code-interpreter
 # base ships a different package manager, adjust the apt blocks accordingly.
 
-ARG SANDBOX_BASE_IMAGE=tcr-rl.tencentcloudcr.com/ags-image/sandbox-code:latest
+ARG SANDBOX_BASE_IMAGE=tcr-rl.tencentcloudcr.com/agentos-cl-namespace/sandbox-code:latest
 FROM ${SANDBOX_BASE_IMAGE}
 
 # OpenClaw runtime: Node 24 recommended (>=22.19 supported). Pin OpenClaw for

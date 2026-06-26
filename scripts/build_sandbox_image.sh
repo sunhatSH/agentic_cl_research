@@ -4,7 +4,7 @@
 # Prerequisites (when account is ready):
 #   1. docker installed
 #   2. docker login to Tencent CCR (see doc/sandbox/Sandbox_腾讯云操作手册.md §4.4)
-#   3. docker pull tcr-rl.tencentcloudcr.com/ags-image/sandbox-code:latest
+#   3. docker pull tcr-rl.tencentcloudcr.com/agentos-cl-namespace/sandbox-code:latest
 #
 # Usage:
 #   cp docker/sandbox/image.env.example docker/sandbox/image.env
@@ -32,7 +32,7 @@ fi
 : "${CCR_NAMESPACE:=REPLACE_WITH_YOUR_NAMESPACE}"
 : "${IMAGE_NAME:=agentic-cl-sandbox}"
 : "${IMAGE_TAG:=v1}"
-: "${SANDBOX_BASE_IMAGE:=tcr-rl.tencentcloudcr.com/ags-image/sandbox-code:latest}"  # 企业版 TCR
+: "${SANDBOX_BASE_IMAGE:=tcr-rl.tencentcloudcr.com/agentos-cl-namespace/sandbox-code:latest}"  # 企业版 TCR
 
 FULL_TAG="${CCR_REGISTRY}/${CCR_NAMESPACE}/${IMAGE_NAME}:${IMAGE_TAG}"
 

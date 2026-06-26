@@ -2,7 +2,7 @@
 
 > 沙箱相关文档的**入口**。先读本文搞懂三组概念，再按末尾导航表去具体文档查操作。
 >
-> 实物示例（2026-06-25 全链路打通用的真地址）：`tcr-rl.tencentcloudcr.com/agentos-cl-sandbox/agentic-cl-sandbox:v1`
+> 实物示例（2026-06-25 全链路打通用的真地址）：`tcr-rl.tencentcloudcr.com/agentos-cl-namespace/agentic-cl-sandbox:v1`
 
 ---
 
@@ -32,7 +32,7 @@ E2B SDK: run_code / commands.run → 拿 trajectory
 
 | 层 | 实物 |
 |---|---|
-| 镜像 | `tcr-rl.tencentcloudcr.com/agentos-cl-sandbox/agentic-cl-sandbox:v1` |
+| 镜像 | `tcr-rl.tencentcloudcr.com/agentos-cl-namespace/agentic-cl-sandbox:v1` |
 | Tool | ToolId `sdt-f4ygdu0a`（ToolName `agentic-cl-sandbox`） |
 | Instance | InstanceId `a7dptvsoikpf2...`（状态 RUNNING） |
 
@@ -56,7 +56,7 @@ E2B SDK: run_code / commands.run → 拿 trajectory
             │   本项目 = tcr-rl（公网 tcr-rl.tencentcloudcr.com，ID tcr-hxya4oi8）
             │
             └── 命名空间 (Namespace)  ← 第2层：隔离用
-                  │   本项目 = agentos-cl-sandbox
+                  │   本项目 = agentos-cl-namespace
                   │
                   └── 镜像 (Image):tag  ← 第3层：实际 push 的东西
                         本项目 = agentic-cl-sandbox:v1
@@ -65,7 +65,7 @@ E2B SDK: run_code / commands.run → 拿 trajectory
 ### 完整镜像地址 = 实例域名 / 命名空间 / 镜像名 : tag
 
 ```text
-tcr-rl.tencentcloudcr.com / agentos-cl-sandbox / agentic-cl-sandbox : v1
+tcr-rl.tencentcloudcr.com / agentos-cl-namespace / agentic-cl-sandbox : v1
         └─ 实例公网域名 ─┘   └─ 命名空间 ─┘   └─ 镜像名 ─┘   └tag┘
 ```
 

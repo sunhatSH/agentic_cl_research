@@ -9,7 +9,7 @@
   },
   "RoleArn": "qcs::cam::uin/100048510516:roleName/AgentOS-260506-test",
   "CustomConfiguration": {
-    "Image": "tcr-rl.tencentcloudcr.com/agentos-cl-sandbox/agentic-cl-sandbox:v1",
+    "Image": "tcr-rl.tencentcloudcr.com/agentos-cl-namespace/agentic-cl-sandbox:v1",
     "ImageRegistryType": "enterprise",
     "Command": [
       "/init"
@@ -22,8 +22,9 @@
       }
     ],
     "Resources": {
-      "CPU": "2",
-      "Memory": "4Gi"
+      "CPU": "4",
+      "Memory": "8Gi",
+      "Storage": "20Gi"
     },
     "Probe": {
       "HttpGet": {
