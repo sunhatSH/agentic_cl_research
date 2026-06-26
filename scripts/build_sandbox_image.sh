@@ -3,7 +3,7 @@
 #
 # Prerequisites (when account is ready):
 #   1. docker installed
-#   2. docker login to Tencent CCR (see doc/Sandbox_腾讯云操作手册.md §4.4)
+#   2. docker login to Tencent CCR (see doc/sandbox/Sandbox_腾讯云操作手册.md §4.4)
 #   3. docker pull tcr-rl.tencentcloudcr.com/ags-image/sandbox-code:latest
 #
 # Usage:

@@ -4,7 +4,7 @@
 Runs each candidate judge over a human-labeled set, computes judge↔human
 agreement (eval/judge_agreement), and recommends the smallest judge that clears
 the agreement bar. This is how the FINAL reward judge is chosen
-(trainer/model_reward.py); see doc/Sandbox_Agent架构.md §7b.
+(trainer/model_reward.py); see doc/sandbox/Sandbox_Agent架构.md §7b.
 
 Inputs
 ------

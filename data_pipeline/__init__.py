@@ -4,7 +4,7 @@
 "1 沙箱 ↔ N 会话 ↔ N 首 query"（1:n，N 个初始 query 互不依赖、都从同一沙箱
 初始状态起跑，每个 query 8 实例）。sample105_v2 数据结构当前是错的（每会话一
 独立 workspace_init，非"N 会话共享 1 沙箱"），数据侧后续改正。
-见 ``doc/沙箱_实例_Queries对应关系_待定.md``。
+见 ``doc/sandbox/沙箱_实例_Queries对应关系_待定.md``。
 
 sample105_v2 是 OpenClaw 平台采集产物：事件流（``agent/sessions/*.jsonl`` 的
 ``type=message`` 事件，role ∈ {user, assistant, toolResult}）+ ``*.trajectory.jsonl``

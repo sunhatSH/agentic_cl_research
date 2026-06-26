@@ -1,6 +1,6 @@
 # 沙盒密钥与镜像配置
 
-**完整操作（控制台 + 命令行 + 概念）：[`doc/Sandbox_腾讯云操作手册.md`](../../doc/Sandbox_腾讯云操作手册.md)**
+**完整操作（控制台 + 命令行 + 概念）：[`doc/Sandbox_腾讯云操作手册.md`](../../doc/sandbox/Sandbox_腾讯云操作手册.md)**
 
 本目录只放密钥和 Docker 构建文件（`*.env` 已 gitignore）。
 

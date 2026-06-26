@@ -30,7 +30,7 @@ if command -v agr >/dev/null 2>&1; then
   echo "agr found. To create:"
   echo "  agr tool create --request @${CFG} -o json"
 else
-  echo "agr CLI not installed. Use console or API (see doc/Sandbox_腾讯云操作手册.md)."
+  echo "agr CLI not installed. Use console or API (see doc/sandbox/Sandbox_腾讯云操作手册.md)."
 fi
 
 # Smoke-test E2B SDK access after tool is created:

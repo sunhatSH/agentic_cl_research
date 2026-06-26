@@ -3,7 +3,7 @@
 
 每个 task 的 ``files/``（初始文件系统）→ ``fs-seeds/<task_id>/``，作为沙箱实例
 启动时铺开的 seed（1 task ↔ 1 seed，1:1）。实例启动按 ``AGENTIC_CL_PERSONA=<task_id>``
-由 ``bin/seed_workspace.sh`` 铺开（见 ``doc/沙箱_Dockerfile制作方案.md``）。
+由 ``bin/seed_workspace.sh`` 铺开（见 ``doc/sandbox/沙箱_Dockerfile制作方案.md``）。
 
 **元数据过滤（防 reward 欺骗）**：拷贝时**排除**以下非业务文件——它们是 OS/编辑器
 元数据或 OpenClaw 运行态残留（含历史会话轨迹/答案），绝不能进实例 filesystem

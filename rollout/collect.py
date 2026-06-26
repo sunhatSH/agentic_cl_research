@@ -1,6 +1,6 @@
 """Trajectory collection: native fields from the framework, not a proxy (Gap D).
 
-Decision (doc/Sandbox_Agent架构.md §3): we orchestrate the 16×8 + winner-sync
+Decision (doc/sandbox/Sandbox_Agent架构.md §3): we orchestrate the 16×8 + winner-sync
 session loop, but every single generation step is produced by the RL framework's
 native generate (verl AgentLoopOutput: prompt_ids / response_ids / response_mask /
 rollout_log_probs). This module models that boundary with a ``GenerateFn`` and

@@ -1,6 +1,6 @@
 # 文档索引（doc/）
 
-> 本目录 **20 篇**文档按用途分三级。接手项目从「② 运行手册」的 Migration_64GPU.md 开始。
+> 本目录按用途分三级，沙箱相关文档统一在 [`sandbox/`](sandbox/) 子目录（入口 [`Sandbox_概念与术语.md`](sandbox/Sandbox_概念与术语.md)）。接手项目从「② 运行手册」的 Migration_64GPU.md 开始。
 >
 > ⚠️ 一次性技术报告（`RolloutCollect_技术报告.md`、`汇报_技术总报告.md`、`vllm_upgrade_0.19.md`）和踩坑复盘（`集群推理采集_经验复盘.md`）已归档到 `paper/refs/`。`集群训练启动指南.md` 已合并到 `Migration_64GPU.md` 附录。
 
@@ -25,15 +25,9 @@
 |------|------|
 | [Migration_64GPU.md](Migration_64GPU.md) | 跨机器交接 + 冷启动步骤 + 集群提交快速参考（附录） |
 | [Plan_训练链路补齐.md](Plan_训练链路补齐.md) | 64 卡前 Gap A–H 施工规格 |
-| [Sandbox_Agent架构.md](Sandbox_Agent架构.md) | 动作内/推理外 + OpenClaw |
-| [Sandbox_管理调度指南.md](Sandbox_管理调度指南.md) | 16×8 winner-sync 调度 |
-| [SandboxRollout.md](SandboxRollout.md) | 平台 Tool/Instance API 参考 |
-| [Sandbox_腾讯云操作手册.md](Sandbox_腾讯云操作手册.md) | 腾讯云控制台操作步骤 |
-| [Sandbox_冒烟指南.md](Sandbox_冒烟指南.md) | 沙箱冒烟精简步骤 |
-| [ColdRollout_采集.md](ColdRollout_采集.md) | 冷启动采集运行手册 |
+| [sandbox/Sandbox_概念与术语.md](sandbox/Sandbox_概念与术语.md) | **沙箱文档入口**：镜像/Tool/Instance + TCR/CCR/实例/命名空间概念 + 导航表（沙箱全部 10 篇文档在 `sandbox/` 下） |
 | [Buffer_冷启动数据需求.md](Buffer_冷启动数据需求.md) | replay buffer 冷启动预热数据规格 |
 | [Hermes_Subagent_训练数据方案.md](Hermes_Subagent_训练数据方案.md) | Hermes 同步出入栈 + OpenClaw 主子各自训练方案 |
-| [沙箱_实例_Queries对应关系_待定.md](沙箱_实例_Queries对应关系_待定.md) | 1 沙箱↔N会话↔N首query + 实例生命周期/会话结束条件（待定） |
 
 ## ③ 过程记录（append-only / 一次性，不主动维护）
 

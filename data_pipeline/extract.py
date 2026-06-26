@@ -2,7 +2,7 @@
 
 ⚠️ 本模块当前为留空状态——数据单元逻辑待重写。
 
-**当前正确的数据单元关系**（见 ``doc/沙箱_实例_Queries对应关系_待定.md``）::
+**当前正确的数据单元关系**（见 ``doc/sandbox/沙箱_实例_Queries对应关系_待定.md``）::
 
     1 个沙箱（workspace_init / Dockerfile）
        ├── 会话_1（首 query_1）
@@ -160,5 +160,5 @@ def extract_initial_queries(root: AnyPath, *, limit: int | None = None) -> list[
     raise NotImplementedError(
         "extract_initial_queries 待重写：1 沙箱 ↔ N 会话 ↔ N 首 query 聚合逻辑"
         "依赖正确数据结构（sample105 当前是错的）。见 "
-        "doc/沙箱_实例_Queries对应关系_待定.md。"
+        "doc/sandbox/沙箱_实例_Queries对应关系_待定.md。"
     )

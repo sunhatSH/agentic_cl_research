@@ -167,7 +167,7 @@ flowchart TB
 - `rollout/`、`agents/`、`inference/` 同样与 verl 解耦（`model_reward.py` 除外），依赖 E2B 腾讯沙箱做工具执行。
 - 配置采用三层继承：`base.yaml → cluster.yaml → phaseN/exp.yaml`（或 `run/exp.yaml`），OmegaConf 合并。
 - `skills/` — 可复用方法与工程规范（5 篇，见下表）。
-- **接口怎么用 / observer 报告与声明怎么消费 → 先读 [`doc/接口使用_Sandbox与三Agent.md`](doc/接口使用_Sandbox与三Agent.md)**：每个接口在哪、签名、谁产出谁消费——Sandbox 后端（`SandboxClient` 契约 + `make_sandbox`/`register_backend` 注册表，换/加厂商零改调用方）、三 Agent 的 `ObservationReport`（**报告**）/`actor_claims`（**声明**）/`Questioner`/`score_followup`，以及"claim-driven → 沙箱 API diff-driven"取证设计（§3）。**改这些接口或用这些报告/声明前必读。**
+- **接口怎么用 / observer 报告与声明怎么消费 → 先读 [`doc/sandbox/接口使用_Sandbox与三Agent.md`](doc/sandbox/接口使用_Sandbox与三Agent.md)**：每个接口在哪、签名、谁产出谁消费——Sandbox 后端（`SandboxClient` 契约 + `make_sandbox`/`register_backend` 注册表，换/加厂商零改调用方）、三 Agent 的 `ObservationReport`（**报告**）/`actor_claims`（**声明**）/`Questioner`/`score_followup`，以及"claim-driven → 沙箱 API diff-driven"取证设计（§3）。**改这些接口或用这些报告/声明前必读。**
 
 **奖励 = 外部冻结 LLM judge，不用规则奖励**：单个冻结 judge 对每条轨迹按统一尺度打分（抗 reward hacking、覆盖语义桶）。`custom_reward_function` 指向 `trainer/model_reward.py::compute_score`，judge 模型不写死、由 env 解析（`JUDGE_API_BASE` / `JUDGE_MODEL`，用 `scripts/serve_reward_model.sh` 本地 serve）。`reward_model.enable` 仍为 false——因为 judge 走**外部 serve**，不是 verl 内置 RM worker。规则 reward（旧 `rule_reward.py`）已废弃删除。
 
@@ -257,13 +257,14 @@ agentic_cl_research/
 |------|------|
 | `doc/Migration_64GPU.md` | 跨机器交接 + 冷启动步骤 |
 | `doc/Plan_训练链路补齐.md` | 64 卡前 Gap A–H 施工规格 |
-| `doc/Sandbox_Agent架构.md` | 动作内/推理外 + OpenClaw |
-| `doc/Sandbox_管理调度指南.md` | 16×8 winner-sync 调度 |
-| `doc/SandboxRollout.md` | 平台 Tool/Instance API 参考 |
-| `doc/接口使用_Sandbox与三Agent.md` | **接口怎么用速查**：Sandbox 后端（`SandboxClient`/registry）+ 三 Agent 报告(`ObservationReport`)/声明(`actor_claims`)；含 claim→diff 驱动设计 |
-| `doc/Sandbox_腾讯云操作手册.md` | 腾讯云控制台操作步骤 |
-| `doc/Sandbox_冒烟指南.md` | 沙箱冒烟精简步骤 |
-| `doc/ColdRollout_采集.md` | 冷启动采集运行手册 |
+| `doc/sandbox/Sandbox_Agent架构.md` | 动作内/推理外 + OpenClaw |
+| `doc/sandbox/Sandbox_管理调度指南.md` | 16×8 winner-sync 调度 |
+| `doc/sandbox/SandboxRollout.md` | 平台 Tool/Instance API 参考 |
+| `doc/sandbox/接口使用_Sandbox与三Agent.md` | **接口怎么用速查**：Sandbox 后端（`SandboxClient`/registry）+ 三 Agent 报告(`ObservationReport`)/声明(`actor_claims`)；含 claim→diff 驱动设计 |
+| `doc/sandbox/Sandbox_腾讯云操作手册.md` | 腾讯云控制台操作步骤 |
+| `doc/sandbox/Sandbox_冒烟指南.md` | 沙箱冒烟精简步骤 |
+| `doc/sandbox/Sandbox_概念与术语.md` | **沙箱入口**：镜像/Tool/Instance + TCR/CCR/实例/命名空间概念 |
+| `doc/sandbox/ColdRollout_采集.md` | 冷启动采集运行手册 |
 | `doc/Buffer_冷启动数据需求.md` | replay buffer 冷启动预热数据规格 |
 
 **③ 过程记录（append-only / 一次性，不主动维护）**
@@ -398,7 +399,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
      - `LocalSandbox.run_code` 每次用全新 `tempfile.TemporaryDirectory()` → **文件系统不持久**（agent 自身多步之间也丢状态），所以 `os.walk('.')` 永远在空目录跑。
      - observer 只 `os.walk` 列**文件路径**、**从不读文件内容**；`build_observer_prompt` 的 `tool_outputs` 是**死参数** → "声称值 ≠ 实际值"这类反 reward-hacking 判定**结构上不可能发生**。
    - **已完成（2026-06-19）**：
-     - ✅ observer **diff-driven**：`agents/observer.py` 加只读快照探针（仅用 `run_code`，后端无关）+ `snapshot()`/`diff_snapshots()`，`observe(traj, sandbox, baseline=)` 产出 before/after 内容级 diff；`OBSERVER_SYSTEM` 改为"diff=ground truth，声称仅核对"，`ObservationReport.state_diff` 携带确定性证据。机制 + "能否 diff 到内容"详见 [`doc/接口使用_Sandbox与三Agent.md`](doc/接口使用_Sandbox与三Agent.md) §3。
+     - ✅ observer **diff-driven**：`agents/observer.py` 加只读快照探针（仅用 `run_code`，后端无关）+ `snapshot()`/`diff_snapshots()`，`observe(traj, sandbox, baseline=)` 产出 before/after 内容级 diff；`OBSERVER_SYSTEM` 改为"diff=ground truth，声称仅核对"，`ObservationReport.state_diff` 携带确定性证据。机制 + "能否 diff 到内容"详见 [`doc/sandbox/接口使用_Sandbox与三Agent.md`](doc/sandbox/接口使用_Sandbox与三Agent.md) §3。
      - ✅ `LocalSandbox` 持久 workdir（state 跨 `run_code` 不丢；agent 多步 + observer diff 本机可验证）。
      - ✅ `simulated_session` / `usersim_collect` 已接：turn 前 `observer.snapshot` 取 baseline、传 winner 沙箱。
    - **已完成（2026-06-19 第二批）**：
@@ -411,7 +412,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
      - 8 槽路径 baseline 取 slot0（依赖"turn 开始时各槽位级一致"）——真实 e2b winner-sync 下成立，local mock 不做 FS 级 sync，故 8 槽 local 仅近似；真实后端连通（e2b/aliyun）+ 全栈验证待集群。
      - P1：~~persona `tone` 注入 questioner prompt~~ ✅ 已完成（2026-06-22）；~~questioner 区分"satisfied(`<end_session>`)" vs "API 失败"~~ ✅ 已完成（2026-06-23：`last_query_was_error` 标志区分二者，且截断也走 error 路径而非误判满意）；follow-up 轮 8 槽 reward 闭环（待集群）；启动校验三端点存在且不同。
      - ~~**Thinking 模型截断防护**~~ ✅ 已完成（2026-06-23）：模型回复因 `finish_reason=length*`（或思考预算吃光 token、content 空且无 tool_calls）被截断时，`agents/base.py::_raise_if_truncated` 统一抛 `TruncatedOutputError`，三 Agent + judge 按各自语义分流——questioner→标 `last_query_was_error`（不误判为满意 `<end_session>`）、observer→降级到确定性取证报告（不解析半截 JSON）、judge→`parse_judge_output` 返回 `(verdict, parsed)`，无 verdict JSON 时抛错路由到 `compute_score` 的 `judge_error=1.0`（不再静默全 0 reward）。反 reward-hacking / 反静默退化的工程加固，本机 53 单测验证。
-     - **Questioner 多模型轮换**（2026-06-22 新增）：`RotatingChatClient`（`agents/base.py`）在多个模型端点之间轮换（每 N 次调用切换），通过 `USERSIM_ENDPOINTS`（JSON 数组，每个元素 `{"base_url":"...","model":"...","api_key":"..."}`） / `USERSIM_ROTATE_EVERY` 环境变量配置。不设置时行为与之前完全一致（单模型 `USERSIM_API_BASE/MODEL/KEY`）。详见 `doc/模型选型.md` §2 / `doc/接口使用_Sandbox与三Agent.md` §2.4。
+     - **Questioner 多模型轮换**（2026-06-22 新增）：`RotatingChatClient`（`agents/base.py`）在多个模型端点之间轮换（每 N 次调用切换），通过 `USERSIM_ENDPOINTS`（JSON 数组，每个元素 `{"base_url":"...","model":"...","api_key":"..."}`） / `USERSIM_ROTATE_EVERY` 环境变量配置。不设置时行为与之前完全一致（单模型 `USERSIM_API_BASE/MODEL/KEY`）。详见 `doc/模型选型.md` §2 / `doc/sandbox/接口使用_Sandbox与三Agent.md` §2.4。
    - **第三方取证手段（回公司可直接用）**：
      - 系统/沙箱状态：E2B `sandbox.files.read`/`files.list`/`watch_dir` 或 AgentBay `session.file_system`/`session.command.execute_command`（确定性快照/差分，模型只负责归纳）。
      - Agent 轨迹状态（可选增强）：OpenTelemetry GenAI 语义约定 + Langfuse / Arize Phoenix / OpenLLMetry。
@@ -434,8 +435,8 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 | `scripts/build_sandbox_image.sh` | `CCR_REGISTRY` 和 `SANDBOX_BASE_IMAGE` fallback 默认值 → 企业版 |
 | `scripts/push_sandbox_image.sh` | `CCR_REGISTRY` fallback 默认值 → 企业版 |
 | `configs/sandbox_tool.json` | `RoleArn` 填入 `AgentOS-260506-test`、`Image` → 企业版（原为占位符） |
-| `doc/Sandbox_腾讯云操作手册.md` | 所有个人版引用 → 企业版，增加企业版强制声明 |
-| `doc/Sandbox_冒烟指南.md` | 所有个人版引用 → 企业版 |
+| `doc/sandbox/Sandbox_腾讯云操作手册.md` | 所有个人版引用 → 企业版，增加企业版强制声明 |
+| `doc/sandbox/Sandbox_冒烟指南.md` | 所有个人版引用 → 企业版 |
 
 ### 论文文档清理
 - `paper/drafts/Paper_Method_draft_EN.md`：移除 Dockerfile/COPY/镜像 build 烘焙等实操细节

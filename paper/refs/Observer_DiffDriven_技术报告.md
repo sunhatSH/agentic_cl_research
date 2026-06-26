@@ -1,7 +1,7 @@
 # Observer 取证：claim-driven → diff-driven 技术报告
 
 > **范围**：记录 observer（观察 agent）的取证机制从"actor 声称驱动"改为"沙箱 before/after diff 驱动"的**问题定位、设计、实现与验证**（@孙豪，2026-06-19，本机无 GPU/E2B）。
-> **配套**：接口使用见 [`doc/接口使用_Sandbox与三Agent.md`](../../doc/接口使用_Sandbox与三Agent.md) §3；三 agent 设计见 [`doc/UserSim_三Agent架构与技术设计.md`](../../doc/UserSim_三Agent架构与技术设计.md)；状态/TODO 见 `CLAUDE.md` TODO#5；运行记录见 `doc/RunLog.md`（2026-06-19）；论文表述见 `paper/drafts/Paper_Method_draft_*.md` §4.5 + 附录 A.1。
+> **配套**：接口使用见 [`doc/sandbox/接口使用_Sandbox与三Agent.md`](../../doc/sandbox/接口使用_Sandbox与三Agent.md) §3；三 agent 设计见 [`doc/UserSim_三Agent架构与技术设计.md`](../../doc/UserSim_三Agent架构与技术设计.md)；状态/TODO 见 `CLAUDE.md` TODO#5；运行记录见 `doc/RunLog.md`（2026-06-19）；论文表述见 `paper/drafts/Paper_Method_draft_*.md` §4.5 + 附录 A.1。
 > **代码锚点**：`agents/observer.py`、`agents/prompts.py`、`agents/schema.py`、`rollout/sandbox_client.py`、`rollout/{simulated_session,usersim_collect}.py`、`scripts/agents_harness.py`。
 
 ---

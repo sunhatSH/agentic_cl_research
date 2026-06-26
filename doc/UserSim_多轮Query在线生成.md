@@ -2,7 +2,7 @@
 
 > **定位**：多轮训练数据的构造方案——真实回流数据只保留会话首条 query 作种子，后续 query 由**三个协作 agent**（观察 / 出题 / 奖励）在 rollout 运行时、观察 winner 状态后在线生成与评分。
 > **状态**：设计已定稿；三 agent 代码已落盘 `agents/`（2026-06-12）。**速查**：论文向 [`Paper_ThreeAgent_Summary_CN.md`](../paper/drafts/Paper_ThreeAgent_Summary_CN.md)；技术汇报向 [`UserSim_三Agent架构与技术设计.md`](UserSim_三Agent架构与技术设计.md)。
-> 调度机制见 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)；reward 见 `trainer/model_reward.py` 与本文 §6。
+> 调度机制见 [`Sandbox_管理调度指南.md`](sandbox/Sandbox_管理调度指南.md)；reward 见 `trainer/model_reward.py` 与本文 §6。
 
 **写作日期**：2026-06-11（@孙豪 方案定稿）；2026-06-12 升级为观察/出题/奖励三 agent 架构
 
@@ -162,7 +162,7 @@ LLM 自我对话的已知失效模式是**模式坍缩**——follow-up 趋同�
 
 **为什么是 5 次切换**：不会太频繁（每次换模型破坏上下文连贯感），也不会太稀疏（一个模型连出 5 条已足够形成局部风格、又不至于整 session 被同一模型主导）。
 
-**实现**：`USERSIM_ENDPOINTS` 环境变量（JSON 数组），`USERSIM_ROTATE_EVERY=5`。不设置时回退到单模型（`USERSIM_API_BASE/MODEL/KEY`），完全向后兼容。详见 `doc/模型选型.md` §2 / `doc/接口使用_Sandbox与三Agent.md` §2.4。
+**实现**：`USERSIM_ENDPOINTS` 环境变量（JSON 数组），`USERSIM_ROTATE_EVERY=5`。不设置时回退到单模型（`USERSIM_API_BASE/MODEL/KEY`），完全向后兼容。详见 `doc/模型选型.md` §2 / `doc/sandbox/接口使用_Sandbox与三Agent.md` §2.4。
 
 ### 3.6.5 失败兜底：人设耐心机制（替代固定 ≤3 上限）
 
@@ -428,8 +428,8 @@ ClawEval **Multi-turn split（38 任务）**为主要终点指标（方案直接
 
 | 文档 | 关系 |
 |------|------|
-| `Sandbox_管理调度指南.md` | winner-sync / 正史 / 兜底规则——本方案的插入骨架 |
-| `SandboxRollout.md` §5.5 | per-query 入桶契约——生成 query 沿用 |
+| `sandbox/Sandbox_管理调度指南.md` | winner-sync / 正史 / 兜底规则——本方案的插入骨架 |
+| `sandbox/SandboxRollout.md` §5.5 | per-query 入桶契约——生成 query 沿用 |
 | `Plan_训练链路补齐.md` Gap A | judge reward 决策门——外部 API 同样适用 |
-| `Sandbox_Agent架构.md` | persona / fs-seeds——42 人设库的初始来源 |
+| `sandbox/Sandbox_Agent架构.md` | persona / fs-seeds——42 人设库的初始来源 |
 | `CL_Update_Sunhao.md` | CL Loss / 实验路线——本方案产出的轨迹按原路线入桶训练 |

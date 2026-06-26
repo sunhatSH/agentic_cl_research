@@ -1,4 +1,4 @@
-"""Session-level sandbox orchestration (Gap C; doc/Sandbox_管理调度指南.md).
+"""Session-level sandbox orchestration (Gap C; doc/sandbox/Sandbox_管理调度指南.md).
 
 A SessionSandboxPool runs ONE ``queries`` session:
 
@@ -91,7 +91,7 @@ def select_winner_with_fallback(
 def _default_sync(slots: list[_Slot], winner_state: Any) -> None:
     """Mock D1: copy winner state to every slot (deep copy = independent).
 
-    REAL backend contract (doc/Sandbox_管理调度指南.md §6): the winner instance is
+    REAL backend contract (doc/sandbox/Sandbox_管理调度指南.md §6): the winner instance is
     the session's only live state carrier and MUST stay alive across queries --
     kill ONLY the 7 losers and derive their replacements from the live winner.
     NEVER kill all 8 mid-session (that drops process/in-memory state subsequent

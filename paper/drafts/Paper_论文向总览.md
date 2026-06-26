@@ -1,7 +1,7 @@
 # Continual Learning over Agentic LLMs：论文向总览
 
 > **定位**：把整个 agentic CL research 项目的设计**收敛成一篇论文的骨架**——问题、方法、系统、实验、局限。每节对应论文章节，并指向仓库内的单一信源文档。
-> **本文是综述/索引，不是新信源**：公式与超参以 [`CL_Update_Sunhao.md`](../../doc/CL_Update_Sunhao.md) 为准，调度以 [`Sandbox_管理调度指南.md`](../../doc/Sandbox_管理调度指南.md) 为准，多轮数据以 [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md) 为准。
+> **本文是综述/索引，不是新信源**：公式与超参以 [`CL_Update_Sunhao.md`](../../doc/CL_Update_Sunhao.md) 为准，调度以 [`Sandbox_管理调度指南.md`](../../doc/sandbox/Sandbox_管理调度指南.md) 为准，多轮数据以 [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md) 为准。
 > **写作日期**：2026-06-12
 
 ---
@@ -120,7 +120,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 
 ### 6.1 动作在内、推理在外
 
-推理（27B 前向/采样/logprob）在沙箱外的 GPU 集群（vLLM）；动作（装包、写文件、跑命令）在腾讯云沙箱内（OpenClaw agent harness）。128 个沙箱不可能各带一份 27B，而动作必须落到"那台用户机器"的磁盘上。详见 [`Sandbox_Agent架构.md`](../../doc/Sandbox_Agent架构.md)。
+推理（27B 前向/采样/logprob）在沙箱外的 GPU 集群（vLLM）；动作（装包、写文件、跑命令）在腾讯云沙箱内（OpenClaw agent harness）。128 个沙箱不可能各带一份 27B，而动作必须落到"那台用户机器"的磁盘上。详见 [`Sandbox_Agent架构.md`](../../doc/sandbox/Sandbox_Agent架构.md)。
 
 ### 6.2 16×8 + winner-sync
 
@@ -221,7 +221,7 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 | 方法·CL Loss / 实验路线 / GPU / 精度 / 文献 | [`CL_Update_Sunhao.md`](../../doc/CL_Update_Sunhao.md)（**主文档**） |
 | **模型选型**（actor / observer / questioner / judge） | [`模型选型.md`](../../doc/模型选型.md)（**单一信源**） |
 | 方法·7 桶 Buffer 论证 | [`BucketDesign.md`](../../doc/BucketDesign.md)（+ `_compressed` 速查） |
-| 方法·环境/调度 | [`Sandbox_管理调度指南.md`](../../doc/Sandbox_管理调度指南.md)、[`SandboxRollout.md`](../../doc/SandboxRollout.md)、[`Sandbox_Agent架构.md`](../../doc/Sandbox_Agent架构.md) |
+| 方法·环境/调度 | [`Sandbox_管理调度指南.md`](../../doc/sandbox/Sandbox_管理调度指南.md)、[`SandboxRollout.md`](../../doc/SandboxRollout.md)、[`Sandbox_Agent架构.md`](../../doc/sandbox/Sandbox_Agent架构.md) |
 | 方法·多轮数据 | [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md) |
 | **方法·三 agent 论文摘要** | [`Paper_ThreeAgent_Summary_CN.md`](Paper_ThreeAgent_Summary_CN.md) |
 | **方法·三 agent 技术设计** | [`UserSim_三Agent架构与技术设计.md`](../../doc/UserSim_三Agent架构与技术设计.md) |

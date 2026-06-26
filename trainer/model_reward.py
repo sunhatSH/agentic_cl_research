@@ -30,7 +30,7 @@ api -- are configuration, not a code change:
 
 Launch a local frozen judge with ``scripts/serve_reward_model.sh``. The judge
 should be >= the policy in capability (anti reward-hacking) and FROZEN for the
-whole run (reproducible reward; see doc/Sandbox_Agent架构.md).
+whole run (reproducible reward; see doc/sandbox/Sandbox_Agent架构.md).
 
 wire-up (configs/base.yaml)::
 

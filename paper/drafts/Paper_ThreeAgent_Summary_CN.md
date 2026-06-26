@@ -164,4 +164,4 @@ $$P_k = P_0(p) - d_0(p)\,(2^{k}-1).$$
 | 英文投稿版 | [`Paper_Method_draft_EN.md`](Paper_Method_draft_EN.md) |
 | 技术规格 + 接口契约 | [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md) |
 | 实现模块与 env | [`UserSim_三Agent架构与技术设计.md`](../../doc/UserSim_三Agent架构与技术设计.md) |
-| Winner 同步上下文 | [`Sandbox_管理调度指南.md`](../../doc/Sandbox_管理调度指南.md) §3 |
+| Winner 同步上下文 | [`Sandbox_管理调度指南.md`](../../doc/sandbox/Sandbox_管理调度指南.md) §3 |

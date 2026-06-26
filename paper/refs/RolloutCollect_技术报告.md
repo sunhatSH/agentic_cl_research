@@ -5,7 +5,7 @@
 # Rollout 采集系统技术报告
 
 > **范围**：本报告记录**冷启动多轮 rollout 采集系统**的设计、实现与验证（@孙豪 搭建）。
-> **创建**：2026-06-13。配套设计见 [`UserSim_多轮Query在线生成.md`](/.doc/UserSim_多轮Query在线生成.md)、运行手册见 [`ColdRollout_采集.md`](/.doc/ColdRollout_采集.md)、论文表述见 `paper/drafts/Paper_Method_draft_*.md` §4.5。
+> **创建**：2026-06-13。配套设计见 [`UserSim_多轮Query在线生成.md`](/.doc/UserSim_多轮Query在线生成.md)、运行手册见 [`ColdRollout_采集.md`](../../doc/sandbox/ColdRollout_采集.md)、论文表述见 `paper/drafts/Paper_Method_draft_*.md` §4.5。
 
 ## 0. 贡献边界（务必明确）
 

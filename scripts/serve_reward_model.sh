@@ -15,7 +15,7 @@
 #   export REWARD_MODEL=${JUDGE_SERVED_NAME:-reward-judge}
 #   export REWARD_API_KEY=sk-local
 #
-# Sizing guidance (doc/Sandbox_Agent架构.md): 32B is the default sweet spot for a
+# Sizing guidance (doc/sandbox/Sandbox_Agent架构.md): 32B is the default sweet spot for a
 # 27B policy; validate with ClawEval human-rubric agreement before trusting it.
 
 set -euo pipefail

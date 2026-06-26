@@ -8,7 +8,7 @@ with winner-sync between them). Total concurrent instances = sessions × slots
 This layer owns the 16×8 + winner-sync ORCHESTRATION. Per-step generation is
 delegated to ``agent_fn`` (in real training: a thin wrapper over verl's rollout
 generate / agent_loop so token+logprob come from the framework natively — see
-doc/Sandbox_Agent架构.md §3, NOT an HTTP proxy).
+doc/sandbox/Sandbox_Agent架构.md §3, NOT an HTTP proxy).
 """
 
 from __future__ import annotations

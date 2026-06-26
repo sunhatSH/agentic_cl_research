@@ -2,7 +2,7 @@
 
 > **受众**：数据制造（@吴健）、沙箱 rollout（@郑乃榕）  
 > **目的**：在正式 RL 训练开始前，向 Replay Buffer 预灌一批「已跑完全程」的冷数据，避免 buffer 全空时 `L_replay = 0`、空桶 starvation。  
-> **依据**：`configs/base.yaml`（`q_min=2000`×7 桶、`total_capacity=25000`）、`doc/BucketDesign.md`、`doc/Sandbox_管理调度指南.md`。
+> **依据**：`configs/base.yaml`（`q_min=2000`×7 桶、`total_capacity=25000`）、`doc/BucketDesign.md`、`doc/sandbox/Sandbox_管理调度指南.md`。
 
 ---
 
@@ -227,7 +227,7 @@ Buffer 每桶 **hard floor** `q_min = 2000`。7 桶合计：
 
 ### 4.4 待 PoC 细项（不阻塞冷数据开工）
 
-`doc/Sandbox_管理调度指南.md` §3③ 中「全同分随机 vs 不 sync」在 **B 类全零分** 已定为 **随机 winner + sync**（当前代码）。若 PoC 发现随机 sync 污染严重，可改为「不 sync 但继续」——需改代码并回溯冷数据规则。
+`doc/sandbox/Sandbox_管理调度指南.md` §3③ 中「全同分随机 vs 不 sync」在 **B 类全零分** 已定为 **随机 winner + sync**（当前代码）。若 PoC 发现随机 sync 污染严重，可改为「不 sync 但继续」——需改代码并回溯冷数据规则。
 
 ---
 

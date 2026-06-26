@@ -16,7 +16,7 @@ from rollout.collect import GenStep
 class VerlRolloutGenerateFn:
     """Single-step generate backed by verl's native rollout LLM server.
 
-    The cluster wiring (doc/Sandbox_Agent架构.md §3.2): we own the 16×8 +
+    The cluster wiring (doc/sandbox/Sandbox_Agent架构.md §3.2): we own the 16×8 +
     winner-sync orchestration, but call verl's rollout LLM server for each step
     so token + logprob are produced natively (no proxy). The connection point is
     ``LLMServerClient.generate(request_id, *, prompt_ids, sampling_params)
