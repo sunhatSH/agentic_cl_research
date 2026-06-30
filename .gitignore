@@ -29,6 +29,7 @@ node_modules/
 # Env / secrets
 .env
 .env.*
+!.env.example
 *.local
 
 # Training artefacts
