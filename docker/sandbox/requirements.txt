@@ -17,6 +17,14 @@ requests>=2.31
 python-dateutil>=2.8
 pyyaml>=6.0
 
+# --- OpenAI-compatible clients ---
+# openai: both the OpenClaw config template and the rollout's reward/observer
+# clients talk to an OpenAI-compatible endpoint; also a hard dep of hermes-agent.
+# fastapi: action tasks that spin a local HTTP helper (and verl tool server compat).
+openai>=1.40
+fastapi>=0.110
+uvicorn>=0.30
+
 # --- tabular / spreadsheet (Finance, OfficeQA buckets) ---
 pandas>=2.0
 numpy>=1.26

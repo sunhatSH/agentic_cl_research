@@ -51,3 +51,13 @@ fi
 if [[ $_missing -eq 0 ]]; then
   echo "[load_tencent_env] API credentials present (region=${TENCENTCLOUD_REGION:-unset})"
 fi
+
+# Tencent AGS issues E2B-compatible keys with an `ark_` prefix (not `e2b_`). The
+# e2b SDK's validate_api_key hard-requires the `e2b_` prefix (regex \Ae2b_[0-9a-f]+\Z)
+# and would raise AuthenticationException on every Sandbox.create. The SDK reads
+# E2B_VALIDATE_API_KEY (connection_config.py:81) and skips the prefix check when
+# it is "false" — this is the official switch, NOT a monkeypatch. Verified working
+# 2026-06-30 on the new-cluster VPC sandbox (instance up 7.8s, run_code=372).
+# Trains/rollouts pick this up by sourcing this script before launch.
+export E2B_VALIDATE_API_KEY="${E2B_VALIDATE_API_KEY:-false}"
+echo "[load_tencent_env] E2B_VALIDATE_API_KEY=${E2B_VALIDATE_API_KEY} (ark_ AGS key → skip e2b_ prefix check)"
