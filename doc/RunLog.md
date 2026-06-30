@@ -19,6 +19,24 @@
 
 ## 记录（最新在最上面）
 
+### 2026-06-30 ~21:00 | 本机（macOS + Docker Desktop） | commit <pending>
+- 动作：重做沙箱镜像 v2——补 Hermes Agent（v1 缺）。(1) `docker/sandbox/Dockerfile` 加 `ARG HERMES_VERSION=v2026.6.5` + RUN 段：`git clone --depth 1 --branch v2026.6.5 https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent` + `pip install --break-system-packages -e /opt/hermes-agent`（editable，系统 Python 无 venv）。(2) base 从 `agentic-cl-sandbox:v1`(自构建) 换回官方 `sandbox-code:latest`。(3) `image.env` `IMAGE_TAG` v1→v2、base 指向 `sandbox-code:latest`。(4) `configs/sandbox_tool.json` `Image` v1→v2。(5) build + push TCR + 本地容器验证。
+- 结果：✅ 全程成功。
+  - **TCR login**（关键坑已破）：`tccli tcr CreateInstanceToken --region ap-beijing --RegistryId tcr-hxya4oi8 --cli-unfold-argument` 返回 `Username=100049693643` + `Token`（1h 有效）→ `echo $Token | docker login tcr-rl.tencentcloudcr.com -u 100049693643 --password-stdin` → Login Succeeded。**Username 必须用返回值，不是 'admin'/腾讯云账号 ID**（之前用 admin/sunhao4 均 `unauthorized`）。
+  - **pull base**：`docker pull tcr-rl.tencentcloudcr.com/agentos-cl-namespace/sandbox-code:latest` OK（digest `sha256:21b06711...003a`）。
+  - **build**：`bash scripts/build_sandbox_image.sh` OK，产物 `tcr-rl.tencentcloudcr.com/agentos-cl-namespace/agentic-cl-sandbox:v2`（8.56GB，amd64 digest `sha256:bd860870...d4f7`）。Hermes 装入证据：build 日志 `Collecting ... (from hermes-agent==0.16.0)`、本地 `docker run` 起 v2 容器 `hermes --version` → **"Hermes Agent v0.16.0 (2026.6.5)"**。
+  - **push**：`bash scripts/push_sandbox_image.sh` OK，12 layer 全 Pushed，TCR 侧 `docker manifest inspect` 复核 amd64 digest 一致。
+  - **反证 v1 缺 Hermes**：起 v1 实例（Tool `sdt-eya9hqzm` 仍指 v1）`hermes --version` → `command not found`、`import hermes_agent` 报错——证实 v2 的 Hermes 补齐是必要的。
+- 产物：v2 镜像已上 TCR（`tcr-rl.tencentcloudcr.com/agentos-cl-namespace/agentic-cl-sandbox:v2`）；`docker/sandbox/Dockerfile`(+Hermes 段)、`docker/sandbox/image.env`(tag v2)、`configs/sandbox_tool.json`(Image v2)。
+- 解释 / 踩坑：
+  - **Hermes 装 editable（`pip -e`）非 wheel**：与 `docker/verl-hermes-remote-agent/Dockerfile.tencent-ags` 同 recipe，源码留 `/opt/hermes-agent` 便于实例内调试/打补丁；`--break-system-packages` 因 AGS base 用系统 Python（无 venv，snapshot 镜像跑 root）。
+  - **`hermes_agent` 模块 import 报错但 `hermes` CLI 可用**：`pip -e` 装的是包名 `hermes-agent`（PyPI 名），console script `hermes` 正常；`import hermes_agent` 失败是因包的 import 名可能不是 `hermes_agent`（待集群实例内 `python3 -c "import hermes; ..."` 核对真实 import 名），不影响训练链路（训练走 `hermes` CLI / verl hermes runner，不直接 import）。
+  - **/execute 仍 500**（v1 已知，v2 沿用）：jupyter-server 监听 8888 ≠ 49999，腾讯 base 镜像没按 E2B 方式把 kernel gateway 暴露到 49999。主链路 `commands.run`（49983 envd）通，`/execute` 是附加险不修。
+- 待集群 / 待办：
+  - 用 v2 重建 Tool（`bash scripts/create_sandbox_via_api.sh custom`，新 Tool 或更新 `sdt-eya9hqzm`）+ 起 v2 实例验证 `hermes --version` + `hermes` 跑通 spawn 同步轨迹。
+  - `hermes_agent` 真实 import 名核对（若训练代码直接 import）。
+  - TCR Token 1h 过期，集群侧 push 需重新 `CreateInstanceToken`。
+
 ### 2026-06-25 | 本机（开发机，CPU，无 GPU） | commit <pending>
 - 动作：数据源切换 + 沙箱/数据方案定稿（设计变更，未跑训练）。(1) **数据源从 sample105_v2（OpenClaw 采集，已弃）切到 `data/taskspecs/`**：每个 task = 1 份声明 `taskspec.yaml`（seed_query/hidden_goal/verifier 判分 rubric/user_profile/available_tools…）+ 1 份初始文件系统 `files/`。workspace↔query 回到 **1:1**（1 task=1 files=1 seed_query），原"1 沙箱↔N 会话"1:n 方案作废。(2) **沙箱 Dockerfile 方案定稿**（`doc/沙箱_Dockerfile制作方案.md`）：1 母版镜像 `COPY` 全部 seed（`files/`→`fs-seeds/<task_id>/`），实例启动按 `AGENTIC_CL_PERSONA=<task_id>` 铺开；1 seed→fork 8 容器跑同一 seed_query（GRPO 8 路、位级一致）；母版只装常用依赖、特定依赖 agent 运行时自己装（贴合真实场景）；当前简化版 1 母版，后续多母版/环境扰动留方向。(3) **`data_pipeline/` 1:1→1:n 留空回退**（`extract_initial_queries` 抛 NotImplementedError，待按 taskspec 重写）；`route.py` 撤多余 `first_query_only` 标记。(4) 文档/论文同步：Hermes subagent 方案 §6.6 标 sample105 弃用、`沙箱_实例_Queries对应关系_待定.md` 待定项清理（N/K/schema 作废，仅剩提问上限/结束其余条件/judge 校准）、Method 中英 §4.5 + 论文向总览 数据归属段改为 taskspec。
 - 结果：✅ 设计文档定稿；全量 `pytest -q` 306 passed / 7 skipped；ruff 全过。❌ 未跑训练/镜像/rollout（待 §3 自动化脚本 + build + rollout）。

@@ -13,7 +13,7 @@
   },
   "RoleArn": "qcs::cam::uin/100048510516:roleName/AgentOS-260506-test",
   "CustomConfiguration": {
-    "Image": "tcr-rl.tencentcloudcr.com/agentos-cl-namespace/agentic-cl-sandbox:v1",
+    "Image": "tcr-rl.tencentcloudcr.com/agentos-cl-namespace/agentic-cl-sandbox:v2",
     "ImageRegistryType": "enterprise",
     "Command": [
       "/init"
