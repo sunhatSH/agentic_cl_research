@@ -30,11 +30,15 @@ command -v docker >/dev/null 2>&1 || { echo "ERROR: 本机无 docker"; exit 1; }
 docker info >/dev/null 2>&1 || { echo "ERROR: docker daemon 未运行"; exit 1; }
 
 echo "[build] $LOCAL_REF  (context=$ROOT_DIR)"
-docker build -t "$LOCAL_REF" -f "$SCRIPT_DIR/Dockerfile" "$ROOT_DIR"
+# --provenance=false: 禁用 BuildKit attestation manifest（provenance/SBOM）。
+# 天津 SenseCore registry (v2) 不认 OCI image index 的 attestation 扩展，带它 push 报
+# `manifest invalid`。禁用后产物是单平台 v2 manifest，registry 接受。
+docker build --provenance=false -t "$LOCAL_REF" -f "$SCRIPT_DIR/Dockerfile" "$ROOT_DIR"
 
 if [[ "$PUSH" == "1" ]]; then
-  echo "[login] $REGISTRY as $USERNAME"
-  docker login "$REGISTRY" --username "$USERNAME"
+  echo "[login] $REGISTRY as $USERNAME (skip if already logged in)"
+  docker login "$REGISTRY" --username "$USERNAME" 2>/dev/null || \
+    echo "[login] skipped — using existing credentials in ~/.docker/config.json"
   echo "[tag]  $LOCAL_REF -> $REMOTE_REF"
   docker tag "$LOCAL_REF" "$REMOTE_REF"
   echo "[push] $REMOTE_REF"

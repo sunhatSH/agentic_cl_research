@@ -53,6 +53,8 @@ RUN python -m pip install \
 
 # ---- 构建期自检：关键训练依赖 import + 版本对齐 ----
 # 任一不满足直接 build 失败，避免推出缺依赖的镜像。
+# 注：verl 本体是定制版，在 /mnt/afs 挂载进容器，不在镜像里——自检跳过 verl 本体 import，
+#     只校验它的训练链路依赖（第 4 项）。
 RUN python - <<'PY'
 import importlib.metadata as m
 
@@ -97,9 +99,9 @@ for dep in verl_deps:
 assert not missing, f"verl 训练链路缺依赖: {missing} — 上方 pip install 段没覆盖到，需补装"
 print(f"[selfcheck] verl 训练链路 {len(verl_deps)} 依赖全部可 import OK")
 
-# --- 5. verl 本体可 import（最终确认训练框架就位）---
-import verl
-print("[selfcheck] verl", verl.__version__, "OK")
+# --- 5. verl 本体：定制版在 /mnt/afs 挂载进容器，不进镜像（build 期不查）---
+# 训练时 AFS 盘挂载后 `import verl` 才可用，故镜像自检跳过 verl 本体。
+# 上面第 4 项已确认 verl 的训练链路依赖（tensordict/accelerate/ray/...）齐全。
 
 # --- 6. numpy 兼容性确认（不 pin 版本，只确认 import 不报错 + 版本可查）---
 import numpy as np

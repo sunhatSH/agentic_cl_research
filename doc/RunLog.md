@@ -19,6 +19,22 @@
 
 ## 记录（最新在最上面）
 
+### 2026-07-01 ~21:10 | 本机（macOS + Docker Desktop，amd64 via buildx） | commit <pending>
+- 动作：build + push Qwen3.6-27B 训练镜像 `qwen36-lightllm:1.0` 到天津 SenseCore registry。base = 泽寰 `verl:cu129_lightllm_sandbox_megatron0.14.0_vllm0.13.0R3_torch2.9.0_fa3_te2.5.0_0211`（23GB，含 torch2.9/vllm0.13/megatron0.14/FA3/TE/CUDA12.9）。`docker/qwen36-lightllm/Dockerfile` 在 base 上固化 10 个运行时 pip（tensordict/accelerate1.13/transformers5.8/fla0.4.2/e2b2.24/...）+ verl 训练链路 12 依赖 + 6 项构建期自检。
+- 结果：✅ build 成功（selfcheck ALL PASS），⚠️ 首次 push 失败，二次修复后 push 成功。
+  - **pull base**：21GB base，公网 ~22MB/s，28 分钟拉完（19:55→20:23）。一度 143KB/s 卡死，重测恢复（瞬时抖动/aoss 限流）。
+  - **build**：`NAMESPACE=ccr-devsfttj bash docker/qwen36-lightllm/build_and_push.sh` OK。产物 `qwen36-lightllm:1.0`（76.3GB）。selfcheck 6 项：泽寰栈版本对齐 ✓ / transformers 认 qwen3_5 ✓ / fla import ✓ / verl 训练链路 12 依赖（含 ray 2.49.1）import OK ✓ / numpy 1.26.4 ✓ → **[selfcheck] ALL PASS**。
+  - **push 第 1 次失败**：`error from registry: manifest invalid`。根因——Docker Desktop BuildKit 默认加 attestation manifest（provenance），产物是 OCI image index，天津 SenseCore registry (v2) 不认。build 日志铁证 `#11 exporting attestation manifest sha256:cdf81395...`。层全传上去了（多数 `Mounted from ccr-devsfttj/verl` 共享 + 几个 Pushed），manifest 提交被拒。
+  - **push 第 2 次修复**：`build_and_push.sh` 加 `docker build --provenance=false`（禁 attestation，产物回归单平台 v2 manifest）+ login 改 `2>/dev/null || skip`（已有凭证时不交互）。重 build（有 cache，几十秒）+ push 成功。
+- 产物：`registry.cn-tj-01.sensecore.cn/ccr-devsfttj/qwen36-lightllm:1.0`（天津 registry）。
+- 解释 / 踩坑（证据级）：
+  - **verl 本体不在镜像里**：定制版 verl 在 `/mnt/afs` 挂载进容器（@孙豪 确认），build 期不可见。诊断层实测：`/opt/conda/bin/python`（base env）`import verl` → `ModuleNotFoundError`；ray 在 base env（2.49.1）。Dockerfile 自检**跳过 verl 本体 import**（只校验其训练链路依赖第 4 项），加注释说明。
+  - **attestation manifest 是天津 registry 的坑**：BuildKit 默认开 provenance，产物成 image index；天津 v2 registry 不支持 → `manifest invalid`。`--provenance=false` 根治。同类 SenseCore registry build 都要带这个。
+  - **docker login non-TTY**：原脚本 `docker login --username` 在后台跑报 `cannot perform an interactive login from a non-TTY`。改为失败时 fallback 到 `~/.docker/config.json` 已有凭证（pull base 时就存了）。
+- 待集群 / 待办：
+  - 集群 GPU 机器用此镜像起容器 + 挂载 `/mnt/afs`（含 verl 定制版 + Qwen3.6-27B 权重）跑训练 smoke。
+  - `verl` 定制版版本核对（AFS 盘上的 verl 是否与 base 镜像的 vllm0.13/torch2.9 兼容）。
+
 ### 2026-06-30 ~21:00 | 本机（macOS + Docker Desktop） | commit <pending>
 - 动作：重做沙箱镜像 v2——补 Hermes Agent（v1 缺）。(1) `docker/sandbox/Dockerfile` 加 `ARG HERMES_VERSION=v2026.6.5` + RUN 段：`git clone --depth 1 --branch v2026.6.5 https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent` + `pip install --break-system-packages -e /opt/hermes-agent`（editable，系统 Python 无 venv）。(2) base 从 `agentic-cl-sandbox:v1`(自构建) 换回官方 `sandbox-code:latest`。(3) `image.env` `IMAGE_TAG` v1→v2、base 指向 `sandbox-code:latest`。(4) `configs/sandbox_tool.json` `Image` v1→v2。(5) build + push TCR + 本地容器验证。
 - 结果：✅ 全程成功。
