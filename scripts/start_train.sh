@@ -44,8 +44,8 @@ export HF_DATASETS_CACHE=/tmp/hf_datasets_cache
 export HF_HOME=/tmp/hf_home
 
 # reward = project model judge（trainer/model_reward.py 读 REWARD_API_BASE/MODEL/KEY）。
-# 2026-06-22: Reward model 改走 tokenhub（claude-opus-4-8-thinking），不再本地 vLLM 部署。
-# 值来自 .env；仅当 .env 缺失时才回退 mock。
+# 2026-07-01: Reward model 改走 sufy（anthropic/claude-4.8-opus），不再本地 vLLM 部署。
+# 值来自 configs/agents.yaml（reward 段）；仅当缺省时才回退 mock。
 export REWARD_API_BASE="${REWARD_API_BASE:-http://127.0.0.1:8100/v1}"
 export REWARD_MODEL="${REWARD_MODEL:-mock-judge}"
 # API key: TOKENHUB_API_KEY 在 .env 中设置，所有 agent 共用。

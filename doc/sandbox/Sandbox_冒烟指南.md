@@ -9,7 +9,7 @@
 
 - **镜像**：`tcr-rl.tencentcloudcr.com/agentos-cl-namespace/agentic-cl-sandbox:v2`（v2，装了 OpenClaw + **Hermes Agent** + openai/fastapi/pandas 等）
 - **Tool**：`agentic-cl-sandbox`（ToolId `sdt-jrpn0rfo`，4C/8Gi/20Gi，VPC `subnet-ljfuh7ln`/`sg-irz5h5ed`，envd:49983，`/init`）
-- **VPC**：`agent-rl-vpc`（`vpc-llc6ty0w`）。沙箱有公网出站、能连开发机，但**连不上商汤内网 tokenhub**（`172.30.9.145`）——需网络侧打通或给沙箱可达的 endpoint
+- **VPC**：`agent-rl-vpc`（`vpc-llc6ty0w`）。沙箱有公网出站、能连开发机、能连 sufy（`openai.sufy.com`）——**沙箱内 hermes 经 sufy 调模型**。旧 tokenhub（商汤内网）沙箱连不上，已弃用。
 - **代码执行**：走 `commands.run`（envd 49983），**不走** `/execute`（49999 Jupyter，500）
 
 ## 2. 两套密钥（别混）
@@ -59,7 +59,7 @@ python scripts/sandbox_grpo_collect.py --actor hermes --num-queries 5 --slots 8
 
 模型调用拓扑（**两条独立路径**）：
 - **Actor（沙箱内 hermes）**：hermes 在沙箱里跑，调 `AGENT_MODEL_BASE`（沙箱可达的模型 endpoint）。endpoint+key 经 `runtime.env` 注入沙箱，**不经过开发机**。
-- **Observer/Questioner/Reward（开发机侧）**：从 `configs/agents.yaml` 解析（gpt-4.1-mini / claude-sonnet-4-6 轮换 / claude-opus-4-8-thinking），开发机直连 tokenhub。
+- **Observer/Questioner/Reward（开发机侧）**：从 `configs/agents.yaml` 解析（openai/gpt-5-mini / anthropic/claude-sonnet-5 轮换 / anthropic/claude-4.8-opus），开发机直连 sufy。
 
 详见 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)。
 
@@ -72,9 +72,9 @@ python scripts/sandbox_grpo_collect.py --actor hermes --num-queries 5 --slots 8
 
 沙箱内 hermes 调模型用的三个键：
 ```
-AGENT_MODEL_NAME=gpt-5.1
-AGENT_MODEL_BASE=https://tokenhub.sensetime.com/v1   # 必须沙箱可达
-AGENT_MODEL_KEY=<tokenhub key>                        # 机密，只进 runtime.env
+AGENT_MODEL_NAME=openai/gpt-5
+AGENT_MODEL_BASE=https://openai.sufy.com/v1   # sufy，沙箱已验证可达
+AGENT_MODEL_KEY=<sufy key>                     # 机密，只进 runtime.env
 ```
 起实例时 `E2BSandbox` 合并上述文件，只把非空键放进 `envVars`。
 
@@ -84,7 +84,7 @@ AGENT_MODEL_KEY=<tokenhub key>                        # 机密，只进 runtime.
 |---|---|
 | `AuthenticationException: Invalid API key format` | `E2B_VALIDATE_API_KEY=false`（`load_tencent_env.sh` 已设） |
 | `/execute` 500 | 走 `commands.run`（49983），不走 /execute（49999） |
-| 沙箱连不上 tokenhub | 沙箱 VPC 无商汤内网路由 → 找网络同事打通 VPC peering，或给沙箱可达的 endpoint |
+| 沙箱连不上模型 endpoint | 已切 sufy（沙箱可达）；旧 tokenhub 弃用。若 sufy 不通检查 `AGENT_MODEL_KEY` / 网络 |
 | `tccli: command not found` | 用 `~/.local/bin/tccli`（已 symlink）；或 `source load_tencent_env.sh` |
 | `docker build` 失败 | 本 Pod 无 docker；在有 docker 的机器跑 `build_sandbox_image.sh` |
 

@@ -155,7 +155,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 报告 $R_t$ **一份两用**（喂出题 + 喂奖励），保证给分与出题的事实一致；reward 的 completion 落到真实 diff 上、抗"嘴上说做完了"的 hacking；轨迹仅作 pass-through 给 reward（观察模型不看）。
 
 - **只观察 winner**：与"会话正史 = winner 轨迹拼接"自洽。
-- **防模式坍缩（四维）**：① 42 人设会话级随机（含观察偏好：整体/细节、形式/内容）② 轮数压小（1–3）③ winner 状态逐轮演化 ④ Questioner 4 模型轮换（claude-sonnet-4-6 / deepseek-v4-pro / qwen3.7-max / kimi-k2.6，每 5 次提问切换，从模型层面注入输出风格异质性）。
+- **防模式坍缩（四维）**：① 42 人设会话级随机（含观察偏好：整体/细节、形式/内容）② 轮数压小（1–3）③ winner 状态逐轮演化 ④ Questioner 4 模型轮换（anthropic/claude-sonnet-5 / deepseek/deepseek-v4-pro / qwen/qwen3.7-max / moonshotai/kimi-k2.6，每 5 次提问切换，从模型层面注入输出风格异质性）。
 - **自适应课程**：出题 agent 始终对当前策略的实际输出挑刺 → 策略越强、刺越细，难度自动跟随能力前沿。
 
 > 完整设计（接口契约、决策记录、风险）见 [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md)。

@@ -20,7 +20,7 @@
     python scripts/sample105_pipeline.py extract \\
         --root /path/to/sample105_v2 --output data/first_queries.jsonl
 
-    # 仅分桶（需 tokenhub key / .env；输入是上一步的 jsonl）
+    # 仅分桶（需 sufy key / .env；输入是上一步的 jsonl）
     python scripts/sample105_pipeline.py classify \\
         --input data/first_queries.jsonl --output data/first_queries_classified.jsonl
 
@@ -28,7 +28,7 @@
     python scripts/sample105_pipeline.py route \\
         --input data/first_queries_classified.jsonl --out-dir data/buckets
 
-凭证：classify 走 tokenhub（``.env`` 的 TOKENHUB_API_KEY），端点缺省用
+凭证：classify 走 sufy（``.env`` 的 SUFY_API_KEY），端点缺省用
 ``configs/agents.yaml`` 的 observer 配置；可用 ``BUCKET_CLASSIFIER_API_BASE /
 _BUCKET`` env 覆盖。无网络时 classify 会把每条标 unknown（不崩，可后续重跑）。
 
@@ -86,7 +86,7 @@ def cmd_extract(args) -> int:
 
 
 def cmd_classify(args) -> int:
-    # 先加载 .env 让 TOKENHUB_API_KEY 进环境，再构造 client（resolve 读 env）
+    # 先加载 .env 让 SUFY_API_KEY 进环境，再构造 client（resolve 读 env）
     _maybe_load_env()
     client = make_default_client(args.config)
     records = _load_jsonl(Path(args.input))
@@ -132,7 +132,7 @@ def cmd_route_subagents(args) -> int:
 
 
 def _maybe_load_env() -> None:
-    """加载 .env 让 TOKENHUB_API_KEY 进环境（与 scripts/load_training_env.sh 对齐）。"""
+    """加载 .env 让 SUFY_API_KEY 进环境（与 scripts/load_training_env.sh 对齐）。"""
     import os
 
     env_path = _PROJECT_ROOT / ".env"

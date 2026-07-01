@@ -177,7 +177,7 @@ ruff check . && black --check .
 |------|------|------|
 | 代码 | AFS: `/mnt/afs_toolcall/sunhao4/agentic_cl_research` | ✅ `dev_train` 已 push |
 | 模型权重 | AFS: `/mnt/afs_agents/share_models/Qwen/Qwen3.6-27B` | 脚本自动 cp 到 `/tmp/qwen36` |
-| Judge 端点 | `.env` → tokenhub `gpt-5.1` | ✅ 已配置 |
+| Judge 端点 | `configs/agents.yaml` → sufy `anthropic/claude-4.8-opus` | ✅ 已配置 |
 | 腾讯/E2B 凭证 | `docker/sandbox/tencent.env` | ✅ 已填写 |
 | 镜像 | `qwen36-lightllm` 或基础镜像 + 脚本兜底 pip | 见 §A.3 |
 
@@ -185,12 +185,15 @@ ruff check . && black --check .
 
 两个 `.env` 文件由 `start_train.sh` / `run_phases.sh` 自动 source：
 
-**`.env`（训练密钥 + Judge）：**
+**`.env`（训练密钥 + sufy key）：**
 ```bash
 SWANLAB_API_KEY=GDGemFX7c2ruxYtRWzVh0
-JUDGE_API_BASE=https://tokenhub.sensetime.com/v1
-JUDGE_MODEL=gpt-5.1
-JUDGE_API_KEY=sk-kU1ImyE0MxqWCZuQzy3Ea0tujm7lkRUSA8CCw4rMtp8zRUtL
+SUFY_API_KEY=<sufy key>
+# Judge/Observer/Questioner 模型与端点统一读 configs/agents.yaml（sufy 网关），
+# 不再在 .env 里写 JUDGE_*；下面三行已弃用（保留作旧脚本 fallback）：
+# JUDGE_API_BASE=https://openai.sufy.com/v1
+# JUDGE_MODEL=anthropic/claude-4.8-opus
+# JUDGE_API_KEY=<sufy key>
 ```
 
 **`docker/sandbox/tencent.env`（腾讯沙箱凭证，R4 实验用）：**
@@ -245,7 +248,7 @@ bash /mnt/afs_toolcall/sunhao4/agentic_cl_research/scripts/run_phases.sh configs
 ### A.5 脚本内部流程
 
 ```
-1. source .env           → JUDGE_API_BASE / JUDGE_MODEL / JUDGE_API_KEY / SWANLAB_API_KEY
+1. source .env           → SUFY_API_KEY / SWANLAB_API_KEY（Judge/Observer/Questioner 读 configs/agents.yaml）
 2. source tencent.env    → E2B / 腾讯云凭证（R4 沙箱 rollout 用）
 3. useradd sunhao4       → 集群容器内建用户（AFS 权限）
 4. pip install 兜底       → 镜像已含则秒过
@@ -267,13 +270,13 @@ bash /mnt/afs_toolcall/sunhao4/agentic_cl_research/scripts/run_phases.sh configs
 ### A.7 注意事项
 
 **Judge 端点：**
-- 当前使用 **gpt-5.1**（tokenhub 网关），`max_tokens` 已从 256 提至 2048
-- gpt-5.1 实测 `reasoning_tokens=0`（网关行为），256 理论够用但 2048 更安全
+- 当前使用 **anthropic/claude-4.8-opus**（sufy 网关，`configs/agents.yaml: reward`），`max_tokens` 已从 256 提至 4096
+- claude-4.8-opus 为 thinking 模型，`max_tokens` 须给足（含 reasoning_tokens），256 会吃光导致 `judge_error=1.0`
 - 若 judge 不可达：`parse_judge_output` 返回全 0（completion=0, safety=0, robustness=0），**不报错**，但 reward 全零 → 训练无信号。务必在日志里确认 `judge_error=0`
 
 **Mock Judge 逻辑：**
-- `start_train.sh`：`JUDGE_MODEL == "mock-judge"` 才启动 mock（当前 `gpt-5.1` → 不启动）
-- 如需回退 mock：在 `.env` 里把 `JUDGE_MODEL` 改回 `mock-judge`
+- `start_train.sh`：`JUDGE_MODEL == "mock-judge"` 才启动 mock（当前 `anthropic/claude-4.8-opus` → 不启动）
+- 如需回退 mock：在 `configs/agents.yaml` 把 `reward.model` 改回 `mock-judge`
 
 **B1 与 R4 同走沙箱（方法学一致性）：**
 - `b1.yaml` 与 `r4.yaml` 都继承 `cluster.yaml` 的 agentic rollout（CLSchedulerAgentLoopManager + e2b 沙箱），差异仅在 CL 项（B1 关 replay / 无 KL）。
@@ -287,10 +290,10 @@ bash /mnt/afs_toolcall/sunhao4/agentic_cl_research/scripts/run_phases.sh configs
 
 提交前在本地确认：
 - [ ] `git pull` 拿到最新 `dev_train`
-- [ ] `.env` 含 `JUDGE_API_BASE` / `JUDGE_MODEL` / `JUDGE_API_KEY`
+- [ ] `.env` 含 `SUFY_API_KEY`（Judge/Observer/Questioner 共用，模型读 `configs/agents.yaml`）
 - [ ] `docker/sandbox/tencent.env` 含 E2B 凭证（R4 需要）
 - [ ] 模型权重 `/mnt/afs_agents/share_models/Qwen/Qwen3.6-27B` 存在
-- [ ] `curl -sS https://tokenhub.sensetime.com/v1/models -H "Authorization: Bearer sk-..."` 返回 200
+- [ ] `curl -sS https://openai.sufy.com/v1/models -H "Authorization: Bearer $SUFY_API_KEY"` 返回 200
 
 提交后确认：
 - [ ] rank0 日志出现 `ray status` 输出

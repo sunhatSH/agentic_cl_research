@@ -3,12 +3,12 @@
 #
 # Two actors, data kept SEPARATE:
 #   local  : local vllm serving Qwen3.6-27B            -> $OUT_BASE/local/
-#   remote : remote GPT (tokenhub) gpt-5               -> $OUT_BASE/remote/
+#   remote : remote model via sufy, e.g. openai/gpt-5   -> $OUT_BASE/remote/
 # Agents (REQUIRED, remote, 3 DIFFERENT models):
-#   actor(remote)= gpt-5      observer = gpt-4.1-mini   questioner = claude-sonnet-4-6
+#   actor(remote)= openai/gpt-5   observer = openai/gpt-5-mini   questioner = anthropic/claude-sonnet-5
 #
-# Remote API (key + base) is sourced from apodex_research (the only place a real
-# tokenhub key lives). If the remote endpoint is unreachable -> ABORT (this stage
+# Remote API (key + base) is sourced from the sufy key (SUFY_API_KEY in .env or
+# apodex_research env). If the remote endpoint is unreachable -> ABORT (this stage
 # needs observer+questioner; cannot proceed). E2B creds from docker/sandbox/tencent.env.
 #
 # Usage:
@@ -27,15 +27,15 @@ BACKEND="${BACKEND:-e2b}"
 ACTORS="${ACTORS:-local remote}"
 OUT_BASE="${OUT_BASE:-$ROOT_DIR/data/mock/rollouts}"  # mock = 可行性验证数据，与正式数据隔离
 
-# remote API source (apodex). REMOTE_KEY/REMOTE_BASE override allowed.
+# remote API source (sufy). REMOTE_KEY/REMOTE_BASE override allowed.
 APODEX_ENV="${APODEX_ENV:-/mnt/afs_toolcall/sunhao4/apodex_research/configs/env_deepseek_v4_pro.env}"
-REMOTE_BASE="${REMOTE_BASE:-https://tokenhub.sensetime.com/v1}"
-REMOTE_KEY="${REMOTE_KEY:-$(grep -h OPENAI_API_KEY "$APODEX_ENV" 2>/dev/null | head -1 | cut -d= -f2)}"
+REMOTE_BASE="${REMOTE_BASE:-https://openai.sufy.com/v1}"
+REMOTE_KEY="${REMOTE_KEY:-${SUFY_API_KEY:-$(grep -h OPENAI_API_KEY "$APODEX_ENV" 2>/dev/null | head -1 | cut -d= -f2)}}"
 
-# three DIFFERENT models
-REMOTE_ACTOR_MODEL="${REMOTE_ACTOR_MODEL:-gpt-5}"
-OBSERVER_MODEL_ID="${OBSERVER_MODEL_ID:-gpt-4.1-mini}"
-QUESTIONER_MODEL_ID="${QUESTIONER_MODEL_ID:-claude-sonnet-4-6}"
+# three DIFFERENT models (sufy vendor-prefixed ids)
+REMOTE_ACTOR_MODEL="${REMOTE_ACTOR_MODEL:-openai/gpt-5}"
+OBSERVER_MODEL_ID="${OBSERVER_MODEL_ID:-openai/gpt-5-mini}"
+QUESTIONER_MODEL_ID="${QUESTIONER_MODEL_ID:-anthropic/claude-sonnet-5}"
 
 # Questioner multi-model rotation (anti mode-collapse, 2026-06-22).
 # When set, overrides USERSIM_API_BASE/MODEL/KEY with a rotating pool.

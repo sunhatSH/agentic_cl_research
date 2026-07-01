@@ -181,7 +181,7 @@ verl 的范式是「整批 prompt **一次性生成完** → 再统一打分」�
 
 ## 7b. Reward judge（模型判分）
 
-> **选型权威见 [`模型选型.md`](模型选型.md)**（单一信源，由 @孙豪 拍板：本地冻结 32B 默认）。本节只保留**为什么这么设计**的论证；具体用哪个模型 / endpoint / 校准状态以选型文档为准。一致率校准是**可选验证**，非选型阻塞。
+> **选型权威见 [`模型选型.md`](模型选型.md)**（单一信源，由 @孙豪 拍板：reward 走 sufy 托管的 `anthropic/claude-4.8-opus`，冻结）。本节只保留**为什么这么设计**的论证；具体用哪个模型 / endpoint / 校准状态以选型文档为准。一致率校准是**可选验证**，非选型阻塞。
 
 **倾向（2026-06-10，可改）**：reward 用**单一冻结模型 judge**。
 
@@ -191,16 +191,16 @@ verl 的范式是「整批 prompt **一次性生成完** → 再统一打分」�
 | 覆盖不到 | Communication/Dialogue/无 gold 的 Knowledge 规则判不了 |
 | reward/eval 一致 | ClawEval 本身就是模型 judge（completion/safety/robustness rubric） |
 
-**本地 vs API → 本地冻结**：RL reward 必须是不变的尺子，跑数周/20 实验测遗忘；API 会版本漂移→reward 非平稳→污染遗忘度量。判分对象 = ClawEval 三维 rubric，与评测同构。
+**本地 vs API → sufy 托管冻结**：RL reward 必须是不变的尺子，跑数周/20 实验测遗忘；judge 走 sufy（`anthropic/claude-4.8-opus`），由网关托管保证冻结（不再本地 vLLM 部署，避免版本漂移污染遗忘度量）。判分对象 = ClawEval 三维 rubric，与评测同构。
 
-**模型大小**：anti reward-hacking 要求 judge ≥ 策略（27B）；有 rubric 则核对清单较易。默认 **32B**（从 40 推理卡切 2 张），用 ClawEval 人工 rubric **一致率**校准，不是凭参数量定。
+**模型大小**：anti reward-hacking 要求 judge ≥ 策略（27B）；有 rubric 则核对清单较易。`claude-4.8-opus` 能力远超 27B 策略，用 ClawEval 人工 rubric **一致率**校准，不是凭参数量定。
 
-**代码**：`trainer/model_reward.py`——`JudgeClient` 抽象 + `compute_score` 委托，**模型不写死**，从 `JUDGE_API_BASE`/`JUDGE_MODEL` 解析；judge 故障记 `judge_error` 不崩 batch。部署：`scripts/serve_reward_model.sh`（vLLM，模型路径参数化）。rubric 来源 = `extra_info.checkers`（Gap B 抽取）/ `extra_info.rubric`。
+**代码**：`trainer/model_reward.py`——`JudgeClient` 抽象 + `compute_score` 委托，**模型不写死**，从 `configs/agents.yaml: reward`（`JUDGE_API_BASE`/`JUDGE_MODEL` env 解析）读取；judge 故障记 `judge_error` 不崩 batch。rubric 来源 = `extra_info.checkers`（Gap B 抽取）/ `extra_info.rubric`。
 
 **定 judge = 一致率校准（不是凭参数量）**：
 
 - 工具：`eval/judge_agreement.py`（MAE/pearson/Cohen's kappa/F1 + 按桶分解 + `rank_judges`）+ `scripts/calibrate_judge.py`（跑候选 endpoint→算 judge↔人工一致率→**推荐能过阈值的最小模型**）。
-- 流程：①各候选用 `serve_reward_model.sh` 起在不同端口/卡 → ②`calibrate_judge.py --labeled <人工标注> --judges <候选 json>` → ③按 pass kappa 排名，软桶（Communication/Dialogue）一致率掉得多的才往上加大模型。
+- 流程：①各候选配成不同 sufy 模型 id → ②`calibrate_judge.py --labeled <人工标注> --judges <候选 json>` → ③按 pass kappa 排名，软桶（Communication/Dialogue）一致率掉得多的才往上加大模型。
 - **标注数据契约**（每行一条人工评过的轨迹）：
 
 ```json
@@ -212,7 +212,7 @@ verl 的范式是「整批 prompt **一次性生成完** → 再统一打分」�
 
 ```text
 trajectory(solution_str) + task(queries) + rubric(checkers)
-        → build_judge_prompt → JudgeClient.score（本地冻结 32B vLLM）
+        → build_judge_prompt → JudgeClient.score（sufy claude-4.8-opus，冻结）
         → {completion, safety, robustness} → safety*(0.8c+0.2r) → reward
 ```
 

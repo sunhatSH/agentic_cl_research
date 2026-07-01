@@ -101,7 +101,7 @@ def resolve_observer(config_path: Path | str | None = None) -> ResolvedEndpoint:
     """Resolve the Observer endpoint (config-first, env-override).
 
     Priority:
-      1. OBSERVER_API_BASE / OBSERVER_MODEL / TOKENHUB_API_KEY env vars (override)
+      1. OBSERVER_API_BASE / OBSERVER_MODEL / SUFY_API_KEY env vars (override)
       2. configs/agents.yaml observer section (key_env for the key)
     """
     cfg = _load_yaml(config_path)
@@ -109,8 +109,8 @@ def resolve_observer(config_path: Path | str | None = None) -> ResolvedEndpoint:
 
     base = os.environ.get("OBSERVER_API_BASE", "").strip() or obs_cfg.get("api_base", "")
     model = os.environ.get("OBSERVER_MODEL", "").strip() or obs_cfg.get("model", "")
-    key_env = obs_cfg.get("key_env", "TOKENHUB_API_KEY")
-    api_key = _resolve_key(key_env, prefix_env="TOKENHUB_API_KEY")
+    key_env = obs_cfg.get("key_env", "SUFY_API_KEY")
+    api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
     temperature = float(os.environ.get("OBSERVER_TEMPERATURE", "") or obs_cfg.get("temperature", 0.0))
 
     if not base or not model:
@@ -155,7 +155,7 @@ def resolve_questioner(config_path: Path | str | None = None) -> ResolvedQuestio
     # Env-var single-model override (USERSIM_API_BASE / USERSIM_MODEL)
     env_base = os.environ.get("USERSIM_API_BASE", "").strip()
     env_model = os.environ.get("USERSIM_MODEL", "").strip()
-    env_key = os.environ.get("TOKENHUB_API_KEY", "").strip()
+    env_key = os.environ.get("SUFY_API_KEY", "").strip()
 
     if env_base and env_model:
         # Single-model env override -> no rotation
@@ -173,8 +173,8 @@ def resolve_questioner(config_path: Path | str | None = None) -> ResolvedQuestio
         for entry in rotation_cfg:
             base = entry.get("api_base", "")
             model = entry.get("model", "")
-            key_env = entry.get("key_env", "TOKENHUB_API_KEY")
-            api_key = _resolve_key(key_env, prefix_env="TOKENHUB_API_KEY")
+            key_env = entry.get("key_env", "SUFY_API_KEY")
+            api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
             if base and model:
                 rotation.append(
                     ResolvedEndpoint(
@@ -187,12 +187,12 @@ def resolve_questioner(config_path: Path | str | None = None) -> ResolvedQuestio
         if rotation:
             fallback = None
             if fallback_cfg:
-                fb_key_env = fallback_cfg.get("key_env", "TOKENHUB_API_KEY")
+                fb_key_env = fallback_cfg.get("key_env", "SUFY_API_KEY")
                 fb_base_env = fallback_cfg.get("api_base_env", "")
                 fb_model_env = fallback_cfg.get("model_env", "")
                 fb_base = os.environ.get(fb_base_env, "").strip()
                 fb_model = os.environ.get(fb_model_env, "").strip()
-                fb_key = _resolve_key(fb_key_env, prefix_env="TOKENHUB_API_KEY")
+                fb_key = _resolve_key(fb_key_env, prefix_env="SUFY_API_KEY")
                 if fb_base and fb_model:
                     fallback = ResolvedEndpoint(
                         base_url=fb_base,
@@ -206,10 +206,10 @@ def resolve_questioner(config_path: Path | str | None = None) -> ResolvedQuestio
     if fallback_cfg:
         fb_base_env = fallback_cfg.get("api_base_env", "")
         fb_model_env = fallback_cfg.get("model_env", "")
-        fb_key_env = fallback_cfg.get("key_env", "TOKENHUB_API_KEY")
+        fb_key_env = fallback_cfg.get("key_env", "SUFY_API_KEY")
         fb_base = os.environ.get(fb_base_env, "").strip()
         fb_model = os.environ.get(fb_model_env, "").strip()
-        fb_key = _resolve_key(fb_key_env, prefix_env="TOKENHUB_API_KEY")
+        fb_key = _resolve_key(fb_key_env, prefix_env="SUFY_API_KEY")
         if fb_base and fb_model:
             fallback = ResolvedEndpoint(
                 base_url=fb_base,
@@ -229,7 +229,7 @@ def resolve_judge(config_path: Path | str | None = None) -> ResolvedEndpoint:
     """Resolve the Reward/Judge endpoint (config-first, env-override).
 
     Priority:
-      1. REWARD_API_BASE / REWARD_MODEL / TOKENHUB_API_KEY env vars (override)
+      1. REWARD_API_BASE / REWARD_MODEL / SUFY_API_KEY env vars (override)
       2. configs/agents.yaml reward section (key_env for the key)
     """
     cfg = _load_yaml(config_path)
@@ -237,8 +237,8 @@ def resolve_judge(config_path: Path | str | None = None) -> ResolvedEndpoint:
 
     base = os.environ.get("REWARD_API_BASE", "").strip() or reward_cfg.get("api_base", "")
     model = os.environ.get("REWARD_MODEL", "").strip() or reward_cfg.get("model", "")
-    key_env = reward_cfg.get("key_env", "TOKENHUB_API_KEY")
-    api_key = _resolve_key(key_env, prefix_env="TOKENHUB_API_KEY")
+    key_env = reward_cfg.get("key_env", "SUFY_API_KEY")
+    api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
     temperature = float(os.environ.get("REWARD_TEMPERATURE", "") or reward_cfg.get("temperature", 0.0))
 
     if not base or not model:

@@ -11,7 +11,7 @@
 
 1. **训练 Agent 仅用 Hermes**：轨迹由 Hermes 产（spawn 同步等待、子轨迹分离），不是 OpenClaw。
 2. **冷启动 buffer 轨迹 = π₀ 产出**：`original_logprobs` 须是 π₀ 的（`forgetting_risk` 比的是 π_t vs π₀）、`L_replay` 把 π_new 钉在 π₀ 行为流形。用别的模型（如 Claude）跑的轨迹**不能进 buffer**（破坏抗遗忘），只能用于验证管道。
-3. **验证期 actor 可临时换 Claude API**（tokenhub），跑通后换回 Qwen3.6-27B；**schema 字段不变**，只 actor 来源不同。
+3. **验证期 actor 可临时换 Claude API**（sufy），跑通后换回 Qwen3.6-27B；**schema 字段不变**，只 actor 来源不同。
 
 ---
 
@@ -180,7 +180,7 @@ Hermes 主 agent 调子 agent 时**同步等待**，子轨迹**独立成一条 b
 | 字段 | 怎么从现状补到目标 |
 |------|-------------------|
 | 8 slot/query | 现状单 slot → **自跑 GRPO 8 路**（Hermes `SessionSandboxPool`，8 槽同 seed fork） |
-| `reward` | **model judge 打分**（taskspec.verifier rubric → reward judge，claude-opus-4-8-thinking） |
+| `reward` | **model judge 打分**（taskspec.verifier rubric → reward judge，anthropic/claude-4.8-opus，走 sufy） |
 | `original_logprobs` | **π₀ vLLM 前向产出**（必须 Qwen3.6-27B，不能 Claude） |
 | `bucket` | **LLM 分桶**（对 seed_query 分 7 桶，复用 classify） |
 | `query_index`/`slot_idx` | rollout 时由 Hermes scheduler 填 |
@@ -188,7 +188,7 @@ Hermes 主 agent 调子 agent 时**同步等待**，子轨迹**独立成一条 b
 
 ### 获取决策（已定）
 
-- **验证管道/看结构**：自跑 + Claude API（tokenhub），临时、用完弃，**不进 buffer**。
+- **验证管道/看结构**：自跑 + Claude API（sufy），临时、用完弃，**不进 buffer**。
 - **冷启动 buffer（14–20k 轨迹）**：自跑 + **Qwen3.6-27B（π₀）**，集群 GPU vLLM。唯一正确选项。
 - 上游拿：仅当上游 actor=Qwen27B 且提供 token 级 logprobs 且能转 Hermes——条件太苛，基本不考虑。
 

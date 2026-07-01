@@ -2,11 +2,12 @@
 
 Two actor backends, data kept SEPARATE (2026-06-13 request):
   --actor local   -> local vllm serving Qwen3.6-27B
-  --actor remote  -> remote GPT (tokenhub), e.g. gpt-5
+  --actor remote  -> remote model via sufy, e.g. openai/gpt-5
 
 Each session: 1 sandbox runs 1 query == 1 rollout (no GRPO/winner), multi-turn
-driven by observer (gpt-4.1-mini) + questioner (claude-sonnet-4-6). N sessions
-run in parallel = N sandboxes on N different seed queries.
+driven by observer (openai/gpt-5-mini) + questioner (anthropic/claude-sonnet-5,
+with multi-model rotation). N sessions run in parallel = N sandboxes on N
+different seed queries.
 
 observer / questioner are REQUIRED remote agents -- resolved from env by
 agents.base (OBSERVER_API_BASE/MODEL/KEY, USERSIM_API_BASE/MODEL/KEY). If the
@@ -131,7 +132,7 @@ def main():
         "--queries", required=True, help="queries JSONL path (output of prepare_queries / data-filter)"
     )
     ap.add_argument("--actor", required=True, choices=["local", "remote"])
-    ap.add_argument("--actor-base", required=True, help="actor OpenAI base (local vllm or tokenhub)")
+    ap.add_argument("--actor-base", required=True, help="actor OpenAI base (local vllm or sufy)")
     ap.add_argument("--actor-model", required=True)
     ap.add_argument("--actor-key", default="sk-local")
     ap.add_argument("--limit", type=int, default=10000)

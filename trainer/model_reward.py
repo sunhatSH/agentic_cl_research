@@ -176,7 +176,7 @@ class OpenAIJudgeClient:
         import httpx
 
         messages = build_judge_prompt(task=task, trajectory=trajectory, rubric=rubric)
-        # Thinking judges (e.g. claude-opus-4-8-thinking) can spend the whole
+        # Thinking judges (e.g. anthropic/claude-4.8-opus) can spend the whole
         # budget on hidden reasoning before emitting the JSON verdict. 2048 was
         # too tight and caused finish_reason=length -> judge_error=1.0 on long
         # tasks. 4096 leaves headroom for the thinking + the (small) JSON.

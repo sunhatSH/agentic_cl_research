@@ -23,21 +23,22 @@
 
 | 角色 | 模型 | 后端 | 数据去向 |
 |------|------|------|----------|
-| **本地 actor** | Qwen3.6-27B | 本地 vllm（TP=8） | `data/rollouts/local/` |
-| **远程 actor** | **gpt-5** | tokenhub | `data/rollouts/remote/` |
-| **observer** | **gpt-4.1-mini** | tokenhub | （三 agent 不存数据，只驱动） |
-| **questioner** | **claude-sonnet-4-6** | tokenhub | |
+| **本地 actor**（正式训练） | Qwen3.6-27B | 本地 verl rollout（lightllm） | `data/rollouts/local/` |
+| **沙箱内 actor**（冷启动/hermes） | **openai/gpt-5** | sufy（沙箱内 hermes 调） | `data/rollouts/remote/` |
+| **observer** | **openai/gpt-5-mini** | sufy | （三 agent 不存数据，只驱动） |
+| **questioner** | **anthropic/claude-sonnet-5** + 轮换池 | sufy | |
 
-三个角色（远程 actor / observer / questioner）刻意用**三个不同模型**，抗 self-preference。两套 actor 数据**分目录存**。
+三个角色（沙箱内 actor / observer / questioner）刻意用**三个不同模型**，抗 self-preference。两套 actor 数据**分目录存**。模型选型单一信源见 [`模型选型.md`](../模型选型.md)。
 
 ## 3. 远程 API 来源（关键）
 
-tokenhub（SenseTime 内网，OpenAI 兼容）：
-- base：`https://tokenhub.sensetime.com/v1`
-- key：取自 `/mnt/afs_toolcall/sunhao4/apodex_research/configs/env_deepseek_v4_pro.env` 的 `OPENAI_API_KEY`（项目里唯一有真实 key 的地方；本仓库 `*.env` 只有空模板）。
-- 已验证：3 个模型 chat 均 HTTP 200；tokenhub 有 128 个模型，含大量 gpt-*。
+sufy（OpenAI 兼容，沙箱可达）：
+- base：`https://openai.sufy.com/v1`
+- key：`SUFY_API_KEY`（开发机侧 `.env`）/ `AGENT_MODEL_KEY`（沙箱内 `runtime.env`，同一 sufy key）。
+- 已验证：沙箱 TCP 443 通、`/v1/models` 返回 117 模型、`openai/gpt-5` chat 验证通过。
+- 旧 tokenhub（商汤内网 `172.30.9.145`）沙箱连不上，已弃用。
 
-> **硬约束（孙豪 2026-06-13）**：observer/questioner 必须用远程模型；**若远程 API 不可用则中止并报告**，不得降级跳过继续跑（无 observer = 无报告 = 多轮进行不下去）。`collect_rollout.sh` 启动前预检 3 个模型，任一非 200 即 `exit 5`。
+> **硬约束（孙豪 2026-06-13）**：observer/questioner 必须用远程模型；**若远程 API 不可用则中止并报告**，不得降级跳过继续跑（无 observer = 无报告 = 多轮进行不下去）。
 
 ## 4. 运行环境（踩坑后的最终方案）
 
@@ -88,10 +89,10 @@ python scripts/clean_buffer.py --input logs/cold/buffer.sqlite --output logs/col
 >
 > 正式数据到位后：采集加 `OUT_BASE=<repo>/data/rollouts`，训练不传 `default_local_dir` 覆盖即落正式 `ckpts/`。base.yaml 保持干净未改。
 
-## 7. 中间结果（截至 2026-06-13）
+## 7. 中间结果（截至 2026-07-01）
 
-- ✅ 远程三模型连通（gpt-5 / gpt-4.1-mini / claude-sonnet-4-6 全 HTTP 200）。
-- ✅ 运行环境凑齐（vllm0.13 + torch2.9.1 + qwen3_5）。
+- ✅ sufy 连通（沙箱 TCP 443 + 117 模型 + gpt-5 chat 验证）；旧 tokenhub 已弃用。
+- ✅ 运行环境凑齐（lightllm verl base + qwen3_5）。
 - ✅ **远程 actor 路 small-batch 验证通过**：`--actor remote --backend local --limit 2` → `done=2 failed=0`；产出含多轮、persona（如 "Dr. Lena the researcher"）、questioner 生成的下一轮 query、observer 5 字段报告。链路确认工作。
 - ⏳ 本地 27B actor 路 + e2b 真沙箱全量：待起 vllm 后跑（占 8 卡）。
 - ✅ 8 机并行：`collect_rollout.py` 已支持 `--node-rank/--num-nodes` 分片参数，各机按 rank 取不同种子子集。

@@ -43,7 +43,7 @@
 >
 > 实现：`trainer/model_reward.py`（抽象 `JudgeClient`，`compute_score` 委托，**模型不写死**，从 `JUDGE_API_BASE`/`JUDGE_MODEL` 解析）+ `tests/test_model_reward.py`（6 passed，mock judge）+ `scripts/serve_reward_model.sh`（vLLM 起本地冻结 judge，模型路径参数化）+ `base.yaml reward.*` 指向 model_reward。
 >
-> judge 部署：本地冻结、对标/略强于 27B 策略（anti reward-hacking）；默认 32B，需用 ClawEval 人工 rubric 一致率校准。详见 `doc/sandbox/Sandbox_Agent架构.md` reward judge 节。
+> judge 部署：走 sufy 网关托管的 `anthropic/claude-4.8-opus`（冻结，能力远超 27B 策略以 anti reward-hacking）；需用 ClawEval 人工 rubric 一致率校准。详见 `doc/sandbox/Sandbox_Agent架构.md` reward judge 节。
 >
 > **待办**：选定 judge 模型 + 起 endpoint + 一致率校准。下方规则方案已废弃，仅留作历史背景。
 

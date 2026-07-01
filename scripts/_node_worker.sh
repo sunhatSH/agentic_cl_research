@@ -25,10 +25,10 @@ mkdir -p "$LOGD" "$OUT_BASE/local"
 # --- creds: E2B (real sandbox) + remote observer/questioner ---------------
 [[ -z "${E2B_API_KEY:-}" && -f "$ROOT_DIR/docker/sandbox/tencent.env" ]] && { set -a; source "$ROOT_DIR/docker/sandbox/tencent.env"; set +a; }
 APODEX_ENV="${APODEX_ENV:-/mnt/afs_toolcall/sunhao4/apodex_research/configs/env_deepseek_v4_pro.env}"
-REMOTE_BASE="${REMOTE_BASE:-https://tokenhub.sensetime.com/v1}"
-REMOTE_KEY="${REMOTE_KEY:-$(grep -h OPENAI_API_KEY "$APODEX_ENV" 2>/dev/null | head -1 | cut -d= -f2)}"
-export OBSERVER_API_BASE="$REMOTE_BASE" OBSERVER_MODEL="${OBSERVER_MODEL_ID:-gpt-4.1-mini}"     OBSERVER_API_KEY="$REMOTE_KEY"
-export USERSIM_API_BASE="$REMOTE_BASE"  USERSIM_MODEL="${QUESTIONER_MODEL_ID:-claude-sonnet-4-6}" USERSIM_API_KEY="$REMOTE_KEY"
+REMOTE_BASE="${REMOTE_BASE:-https://openai.sufy.com/v1}"
+REMOTE_KEY="${REMOTE_KEY:-${SUFY_API_KEY:-$(grep -h OPENAI_API_KEY "$APODEX_ENV" 2>/dev/null | head -1 | cut -d= -f2)}}"
+export OBSERVER_API_BASE="$REMOTE_BASE" OBSERVER_MODEL="${OBSERVER_MODEL_ID:-openai/gpt-5-mini}"     OBSERVER_API_KEY="$REMOTE_KEY"
+export USERSIM_API_BASE="$REMOTE_BASE"  USERSIM_MODEL="${QUESTIONER_MODEL_ID:-anthropic/claude-sonnet-5}" USERSIM_API_KEY="$REMOTE_KEY"
 
 # --- python env (ds32_env vllm0.16 is self-contained; only add repo to path) ---
 export PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}"

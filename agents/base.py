@@ -5,9 +5,9 @@ OpenAI-compatible HTTP endpoint, with SEPARATE env config so they can point at
 different models/endpoints -- mitigating the self-preference bias of one model
 observing, asking, AND grading (doc §6 ⚠️ / §7.5):
 
-    OBSERVER_API_BASE / OBSERVER_MODEL / TOKENHUB_API_KEY
-    USERSIM_API_BASE  / USERSIM_MODEL  / TOKENHUB_API_KEY
-    REWARD_API_BASE   / REWARD_MODEL   / TOKENHUB_API_KEY  (reused from model_reward)
+    OBSERVER_API_BASE / OBSERVER_MODEL / SUFY_API_KEY
+    USERSIM_API_BASE  / USERSIM_MODEL  / SUFY_API_KEY
+    REWARD_API_BASE   / REWARD_MODEL   / SUFY_API_KEY  (reused from model_reward)
 
 This mirrors trainer/model_reward.OpenAIJudgeClient so the wire-up and parsing
 are consistent. The client is injectable (``ChatClient`` Protocol) so agents
@@ -152,7 +152,7 @@ def _raise_if_truncated(data: dict, model: str) -> None:
             f"model {model!r} reply truncated (finish_reason={finish!r}); increase "
             "max_tokens or the output is partial. Do NOT consume as a final answer."
         )
-    # Gateway may not report finish_reason (tokenhub gpt-5.1 sometimes omits it).
+    # Gateway may not report finish_reason (sufy gpt-5.1 sometimes omits it).
     # A truly empty reply (no content AND no tool_calls) almost always means the
     # thinking budget ate everything -- flag it rather than silently returning "".
     msg = choice.get("message") or {}
@@ -303,8 +303,8 @@ def _parse_endpoints(raw: str) -> list[dict[str, str]]:
 
     Example::
 
-        [{"base_url":"http://a/v1","model":"gpt-4.1","api_key":"sk-xxx"},
-         {"base_url":"http://b/v1","model":"claude-sonnet-4-6"}]
+        [{"base_url":"http://a/v1","model":"openai/gpt-5","api_key":"sk-xxx"},
+         {"base_url":"http://b/v1","model":"anthropic/claude-sonnet-5"}]
 
     Returns list of ``{base_url, model, api_key}`` dicts.
     Raises ``ValueError`` on malformed or empty input.

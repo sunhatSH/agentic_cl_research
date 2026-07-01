@@ -570,8 +570,8 @@ def test_config_resolve_observer_from_yaml():
     _reload_config(None)  # use default configs/agents.yaml
     try:
         ep = resolve_observer()
-        assert ep.base_url == "https://tokenhub.sensetime.com/v1"
-        assert ep.model == "gpt-4.1-mini"
+        assert ep.base_url == "https://openai.sufy.com/v1"
+        assert ep.model == "openai/gpt-5-mini"
         assert ep.temperature == 0.0
     finally:
         _reload_config(None)
@@ -584,8 +584,8 @@ def test_config_resolve_judge_from_yaml():
     _reload_config(None)
     try:
         ep = resolve_judge()
-        assert ep.base_url == "https://tokenhub.sensetime.com/v1"
-        assert ep.model == "claude-opus-4-8-thinking"
+        assert ep.base_url == "https://openai.sufy.com/v1"
+        assert ep.model == "anthropic/claude-4.8-opus"
         assert ep.temperature == 0.0
     finally:
         _reload_config(None)
@@ -599,10 +599,10 @@ def test_config_resolve_questioner_from_yaml():
     try:
         q_cfg = resolve_questioner()
         assert len(q_cfg.rotation) == 4
-        assert q_cfg.rotation[0].model == "claude-sonnet-4-6"
-        assert q_cfg.rotation[1].model == "deepseek-v4-pro"
-        assert q_cfg.rotation[2].model == "qwen3.7-max"
-        assert q_cfg.rotation[3].model == "kimi-k2.6"
+        assert q_cfg.rotation[0].model == "anthropic/claude-sonnet-5"
+        assert q_cfg.rotation[1].model == "deepseek/deepseek-v4-pro"
+        assert q_cfg.rotation[2].model == "qwen/qwen3.7-max"
+        assert q_cfg.rotation[3].model == "moonshotai/kimi-k2.6"
         assert q_cfg.rotate_every == 5
     finally:
         _reload_config(None)
@@ -652,10 +652,10 @@ def test_config_validate_distinct_from_yaml():
 
 
 def test_config_key_env_resolves_from_env(monkeypatch):
-    """key_env in agents.yaml points to TOKENHUB_API_KEY for the shared API key."""
+    """key_env in agents.yaml points to SUFY_API_KEY for the shared API key."""
     from agents.config import _reload_config, resolve_observer
 
-    monkeypatch.setenv("TOKENHUB_API_KEY", "my-secret-key")
+    monkeypatch.setenv("SUFY_API_KEY", "my-secret-key")
     _reload_config(None)
     try:
         ep = resolve_observer()
