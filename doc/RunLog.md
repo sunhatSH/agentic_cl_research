@@ -19,6 +19,12 @@
 
 ## 记录（最新在最上面）
 
+### 2026-07-02 ~15:30 | 新集群开发机（CPU，无 GPU，cold env py3.10） | commit <pending>
+- 动作：沙箱内 hermes 采集排障 + 首次跑通。① `sandbox_grpo_collect.py --actor hermes` 初测 reward=0/ans 空 → 进沙箱逐层诊断。② 根因定位：`_write_hermes_config` 从开发机侧 `_env("AGENT_MODEL_KEY")` 读 key → 开发机侧未设该 env（key 只在 `docker/sandbox/runtime.env` 里，经 `E2BSandbox.envs=` 注入沙箱内，`load_tencent_env.sh` 未 export）→ 传空 key 给 hermes → hermes 调 sufy 没 key → TimeoutExpired。③ 修复：`_write_hermes_config` 改为沙箱内 Python 直接 `os.environ['AGENT_MODEL_KEY']`（key 在沙箱内，不经开发机进程），删 `--actor-key` 参数。④ 修后第一次真实跑通：`hermes chat -q 'Compute 23*17-19 and write the number to /home/user/result.txt'`（max_turns=6，沙箱内）→ exit 0，创建 `result.txt` 内容 `372`，hermes diff 展示 `+372`。
+- 结果：✅ hermes-in-sandbox 真实跑通（沙箱内 hermes 调 sufy `openai/gpt-5` 决策 + 写文件）。沙箱镜像含 hermes v0.16.0 无误。❌ 修复前脚本采集中 hermes 全超时（两个 slot 都 TimeoutExpired）。清理：`/tmp/grpo_*` 四个测试目录。rollout 输出位置定为 `rollouts/cold_start/`（gitignored）。
+- 产物：`scripts/sandbox_grpo_collect.py`（`_write_hermes_config` 改沙箱内读 key、`_run_hermes_slot` 去 key 参数、`run_session`/`main` 去 `actor_key`）+ `.gitignore`（+`rollouts/`）+ RunLog 本条。
+- 解释：**API 模型（sufy）→ 训练机（本地 27B）迁移答案**：冷启动采集两路 actor 产出**同一 schema 的 trajectory**（messages + token_ids + logprobs + reward + bucket），buffer 不关心谁产的。冷启动用 hermes → sufy（路径 B），预热 buffer 到 ~10K 轨迹；训练机就位后切路径 A（verl + 本地 Qwen3.6-27B），同一份 buffer 继续消费。`doc/训练与推理流程.md` §2 已列两条路径。**训练镜像推错位置**：`qwen36-lightllm:1.0` 推到 `registry.cn-tj-01.sensecore.cn/ccr-devsfttj`（和沙箱镜像同一个 registry），应推商汤私有云其他命名空间——@孙豪 后续给正确位置重建。
+
 ### 2026-07-01 ~21:10 | 本机（macOS + Docker Desktop，amd64 via buildx） | commit <pending>
 - 动作：build + push Qwen3.6-27B 训练镜像 `qwen36-lightllm:1.0` 到天津 SenseCore registry。base = 泽寰 `verl:cu129_lightllm_sandbox_megatron0.14.0_vllm0.13.0R3_torch2.9.0_fa3_te2.5.0_0211`（23GB，含 torch2.9/vllm0.13/megatron0.14/FA3/TE/CUDA12.9）。`docker/qwen36-lightllm/Dockerfile` 在 base 上固化 10 个运行时 pip（tensordict/accelerate1.13/transformers5.8/fla0.4.2/e2b2.24/...）+ verl 训练链路 12 依赖 + 6 项构建期自检。
 - 结果：✅ build 成功（selfcheck ALL PASS），⚠️ 首次 push 失败，二次修复后 push 成功。

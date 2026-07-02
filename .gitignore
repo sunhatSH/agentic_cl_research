@@ -58,6 +58,7 @@ datasets/
 
 # Runtime collected data (mock rollouts + warm-start buffers; regenerated, not source)
 data/
+rollouts/
 
 # Tencent / CCR local credentials (never commit)
 docker/sandbox/tencent.env

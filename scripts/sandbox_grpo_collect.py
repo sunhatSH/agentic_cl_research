@@ -99,34 +99,33 @@ class SlotTrajectory:
 # --------------------------------------------------------------------------- #
 
 
-def _write_hermes_config(sb: Any, model: str, base: str, key: str) -> ExecResult:
-    """Write ~/.hermes/config.yaml + .env inside the sandbox from AGENT_MODEL_*.
+def _write_hermes_config(sb: Any, model: str, base: str) -> ExecResult:
+    """Write ~/.hermes/config.yaml + .env inside the sandbox.
 
-    hermes reads providers from config.yaml; the key lives in .env (never baked
-    into the image). base/key come from the runtime env injected at instance
-    create, so this just renders them into hermes's config files.
+    The model key is already injected into the sandbox as AGENT_MODEL_KEY
+    (from runtime.env via E2BSandbox envs=).  We read it INSIDE the sandbox
+    so the key never travels through the dev-machine process — it stays
+    inside the sandbox where it belongs.
     """
-    # base64 the key so shell-quoting in run_code can never break on it.
-    import base64
-
-    key_b64 = base64.b64encode(key.encode()).decode()
     code = (
-        "import os,base64,yaml\n"
-        f"key=base64.b64decode({key_b64!r}).decode()\n"
-        "home=os.path.expanduser('~')\n"
-        "os.makedirs(home+'/.hermes',exist_ok=True)\n"
-        f"cfg={{'model':{model!r},'providers':{{'agent':{{'base_url':{base!r},'api_key':key,'kind':'openai'}}}}}}\n"
-        "open(home+'/.hermes/config.yaml','w').write(yaml.safe_dump(cfg,sort_keys=False))\n"
-        "open(home+'/.hermes/.env','w').write('OPENAI_API_KEY='+key+chr(10))\n"
-        f"print('hermes configured:',{model!r})\n"
+        "import os, yaml\n"
+        f"model = os.environ.get('AGENT_MODEL_NAME', {model!r})\n"
+        f"base  = os.environ.get('AGENT_MODEL_BASE', {base!r})\n"
+        "key   = os.environ['AGENT_MODEL_KEY']\n"  # MUST be injected, else fail loud
+        "home  = os.path.expanduser('~')\n"
+        "os.makedirs(home + '/.hermes', exist_ok=True)\n"
+        "cfg = {'model': model, 'providers': {'agent': {'base_url': base, 'api_key': key, 'kind': 'openai'}}}\n"
+        "open(home + '/.hermes/config.yaml', 'w').write(yaml.safe_dump(cfg, sort_keys=False))\n"
+        "open(home + '/.hermes/.env', 'w').write('OPENAI_API_KEY=' + key + chr(10))\n"
+        f"print('hermes configured: model=' + repr(model))\n"
     )
     return sb.run_code(code)
 
 
-def _run_hermes_slot(sb: Any, query: str, model: str, base: str, key: str, max_turns: int, timeout: int) -> SlotTrajectory:
+def _run_hermes_slot(sb: Any, query: str, model: str, base: str, max_turns: int, timeout: int) -> SlotTrajectory:
     """Real actor: configure hermes inside the sandbox, run `hermes chat -q`."""
     traj = SlotTrajectory(query_index=-1, slot_idx=-1, sandbox_id=getattr(sb, "_sandbox_id", ""))
-    cfg = _write_hermes_config(sb, model, base, key)
+    cfg = _write_hermes_config(sb, model, base)
     if not cfg.ok:
         traj.error = f"hermes config write failed: {cfg.stderr[:200]}"
         return traj
@@ -235,7 +234,6 @@ def run_session(
     template: str,
     actor_model: str,
     actor_base: str,
-    actor_key: str,
     max_turns: int,
     slot_timeout: int,
     out_dir: Path,
@@ -274,7 +272,7 @@ def run_session(
                 sb = sandbox_specs[slot_idx]
                 try:
                     if actor == "hermes":
-                        t = _run_hermes_slot(sb, _query, actor_model, actor_base, actor_key, max_turns, slot_timeout)
+                        t = _run_hermes_slot(sb, _query, actor_model, actor_base, max_turns, slot_timeout)
                     else:
                         t = _run_run_code_slot(sb, _task, slot_timeout)
                 except Exception as exc:  # noqa: BLE001 -- isolate slot failures
@@ -374,8 +372,7 @@ def main() -> None:
     ap.add_argument("--template", default="agentic-cl-sandbox")
     ap.add_argument("--tasks", help="JSONL of {query[, expected]} per line (default: built-in arithmetic)")
     ap.add_argument("--actor-model", default="gpt-5.1", help="hermes model name (hermes actor)")
-    ap.add_argument("--actor-base", default="", help="override AGENT_MODEL_BASE (else runtime env / tencent env)")
-    ap.add_argument("--actor-key", default="", help="override AGENT_MODEL_KEY")
+    ap.add_argument("--actor-base", default="", help="override AGENT_MODEL_BASE (else runtime env)")
     ap.add_argument("--max-turns", type=int, default=8, help="hermes ReAct turn cap")
     ap.add_argument("--slot-timeout", type=int, default=180, help="per-slot hermes timeout (s)")
     ap.add_argument("--out-dir", default="rollouts/grpo")
@@ -392,11 +389,12 @@ def main() -> None:
                   file=sys.stderr)
         os.environ.setdefault("E2B_VALIDATE_API_KEY", "false")  # AGS ark_ key compat
 
-    # actor_base / actor_key: CLI override > env > (hermes path requires them)
+    # actor_base / actor_model: CLI override > runtime.env injected into sandbox.
+    # The model KEY is read INSIDE the sandbox (AGENT_MODEL_KEY from envVars),
+    # never on the dev machine — so we don't validate it here.
     actor_base = args.actor_base or _env("AGENT_MODEL_BASE")
-    actor_key = args.actor_key or _env("AGENT_MODEL_KEY")
-    if args.actor == "hermes" and not (actor_base and actor_key):
-        print("[grpo] ERROR: hermes actor needs AGENT_MODEL_BASE + AGENT_MODEL_KEY "
+    if args.actor == "hermes" and not actor_base:
+        print("[grpo] ERROR: hermes actor needs AGENT_MODEL_BASE "
               "(set in docker/sandbox/runtime.env, injected into the sandbox at create).",
               file=sys.stderr)
         sys.exit(2)
@@ -416,7 +414,6 @@ def main() -> None:
         template=args.template,
         actor_model=args.actor_model,
         actor_base=actor_base,
-        actor_key=actor_key,
         max_turns=args.max_turns,
         slot_timeout=args.slot_timeout,
         out_dir=Path(args.out_dir),
