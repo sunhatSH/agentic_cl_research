@@ -76,10 +76,10 @@ reward:
     rollout:
       name: vllm
 
-# ---- 数据：默认指向 mock parquet，正式训练请改成真实数据集 -------------------
+# ---- 数据：待 @吴健 提供真实训练数据 parquet，启动训练前填 ??? 并取消注释 ----
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/agentic_cl_research/data/mock/datasets/train.parquet
-  val_files: /mnt/afs_toolcall/sunhao4/agentic_cl_research/data/mock/datasets/val.parquet
+  train_files: ???                # 待填：真实训练数据 parquet 路径
+  val_files: ???                  # 待填：验证集 parquet 路径
   train_batch_size: 64
   gen_batch_size: 64
   max_prompt_length: 4096
