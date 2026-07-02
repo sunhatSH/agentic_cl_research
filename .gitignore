@@ -70,19 +70,20 @@ docker/sandbox/runtime.env
 .DS_Store
 
 # ── master-thesis 编译产物 ──
-master-thesis/thesis/最终稿/*.aux
-master-thesis/thesis/最终稿/*.log
-master-thesis/thesis/最终稿/*.out
-master-thesis/thesis/最终稿/*.toc
-master-thesis/thesis/最终稿/*.lof
-master-thesis/thesis/最终稿/*.lot
-master-thesis/thesis/最终稿/*.fls
-master-thesis/thesis/最终稿/*.fdb_latexmk
-master-thesis/thesis/最终稿/*.bbl
-master-thesis/thesis/最终稿/*.bcf
-master-thesis/thesis/最终稿/*.run.xml
-master-thesis/thesis/最终稿/*.blg
-master-thesis/thesis/最终稿/*.idx
-master-thesis/thesis/最终稿/*.ilg
-master-thesis/thesis/最终稿/*.ind
-master-thesis/thesis/最终稿/*.synctex.gz
+master-thesis/**/*.aux
+master-thesis/**/*.fdb_latexmk
+master-thesis/**/*.fls
+master-thesis/**/*.out
+master-thesis/**/*.toc
+master-thesis/**/*.lof
+master-thesis/**/*.lot
+master-thesis/**/*.bbl
+master-thesis/**/*.bcf
+master-thesis/**/*.blg
+master-thesis/**/*.run.xml
+master-thesis/**/*.idx
+master-thesis/**/*.ilg
+master-thesis/**/*.ind
+master-thesis/**/*.synctex.gz
+master-thesis/**/*.xdv
+master-thesis/*xelatex*

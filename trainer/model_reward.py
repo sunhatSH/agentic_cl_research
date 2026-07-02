@@ -219,7 +219,7 @@ def get_judge() -> JudgeClient:
     Reads configs/agents.yaml first (reward section), then falls back to
     REWARD_API_BASE + REWARD_MODEL env vars. The judge model is NOT hardcoded here --
     it is resolved from configuration so the same code works with a local vLLM serve
-    or a remote tokenhub endpoint.
+    or a remote sufy endpoint.
     """
     global _DEFAULT_JUDGE
     if _DEFAULT_JUDGE is not None:

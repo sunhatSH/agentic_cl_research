@@ -40,11 +40,11 @@ actor（被采集策略）有两套并跑，**数据严格分目录**：
 | Actor | 模型 | 后端 | 数据目录 |
 |-------|------|------|----------|
 | 本地 | Qwen3.6-27B | 本地 vllm（ds32_env vllm0.16，TP=8，单机 8 卡） | `data/mock/rollouts/local/` |
-| 远程 | **gpt-5** | tokenhub（OpenAI 兼容） | `data/mock/rollouts/remote/` |
+| 远程 | **openai/gpt-5** | sufy（OpenAI 兼容） | `data/mock/rollouts/remote/` |
 
 三个 agent 角色用**三个不同模型**（抗 self-preference）：
-- 远程 actor = `gpt-5`；observer = `gpt-4.1-mini`；questioner = `claude-sonnet-4-6`。
-- 远程 API = tokenhub（`https://tokenhub.sensetime.com/v1`，key 取自 `apodex_research`）。
+- 远程 actor = `openai/gpt-5`；observer = `openai/gpt-5-mini`；questioner = `anthropic/claude-sonnet-5`（+ 多模型轮换池）。
+- 远程 API = sufy（`https://openai.sufy.com/v1`，key 取自 `SUFY_API_KEY`）。
 - **硬约束**：observer/questioner 必须用远程模型；远程不可用则**中止并报告**，不降级（无 observer = 无报告 = 多轮无法进行）。
 
 ## 3. 最终 Rollout 数据结构（本工作定义）
@@ -85,7 +85,7 @@ Report(observer) = { intermediate, final, actor_claims, discrepancies, file_tree
 
 | 验证项 | 结果 |
 |--------|------|
-| 远程三模型连通 | ✅ gpt-5 / gpt-4.1-mini / claude-sonnet-4-6 全 HTTP 200 |
+| 远程三模型连通 | ✅ openai/gpt-5 / openai/gpt-5-mini / anthropic/claude-sonnet-5 全 HTTP 200 |
 | e2b 真沙箱 | ✅ 起实例→run_code→回收，连通 |
 | 本地 27B vllm（ds32_env，TP=8） | ✅ 加载成功，`Resolved architecture: Qwen3_5ForConditionalGeneration` |
 | **远程 actor + 真沙箱 + 多轮** | ✅ `limit=3 done=3 failed=0`，observer 探到真实 file_tree，questioner 生成带人设的追问 |
