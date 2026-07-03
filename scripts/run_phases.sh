@@ -88,7 +88,10 @@ if [ "${RANK}" = "0" ]; then
 
     rc=0
     for cfg in "${CONFIGS[@]}"; do
-        exp=$(basename "$cfg" .yaml)
+        # 与 start_train.sh 一致：从 config 读 experiment_name，fallback basename。
+        # 这样日志目录 outputs/<exp_name>/ 与 verl ckpt 目录 checkpoints/RL/<exp_name>/ 同名。
+        exp=$(grep -E "^[[:space:]]*experiment_name:" "$cfg" 2>/dev/null | head -1 | sed -E "s/.*experiment_name:[[:space:]]*//;s/[[:space:]\"']*//g" || true)
+        exp="${exp:-$(basename "$cfg" .yaml)}"
         echo "================ [run_phases] start: $exp ($cfg) ================"
         mkdir -p "$RESULT_DIR/$exp"
         python -m trainer.cl_main --config "$cfg" \

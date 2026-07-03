@@ -23,7 +23,13 @@ VERL_DIR=/mnt/afs_toolcall/sunhao4/Documents/verl
 # 链路 OK 后换 configs/run/r4.yaml 开 7 桶 replay：bash start_train.sh configs/run/r4.yaml
 CONFIG="${1:-$PROJECT_DIR/configs/run/b1.yaml}"
 
-export EXPERIMENT_NAME=qwen36_27b_b1
+# experiment_name 从 config 动态读（与 verl 内部 trainer.experiment_name 一致）：
+#   ckpt  → checkpoints/${project_name}/${experiment_name}/global_step_<N>  (verl 自管)
+#   日志  → outputs/${experiment_name}/train.log                            (本脚本 tee)
+# 两者同名，各实验独立目录，不互相覆盖。config 没直接定义 experiment_name 时
+# fallback 到 basename（与 run_phases.sh 一致）。
+EXPERIMENT_NAME=$(grep -E "^[[:space:]]*experiment_name:" "$CONFIG" 2>/dev/null | head -1 | sed -E "s/.*experiment_name:[[:space:]]*//;s/[[:space:]\"']*//g" || true)
+export EXPERIMENT_NAME="${EXPERIMENT_NAME:-$(basename "$CONFIG" .yaml)}"
 export LIGHTLLM_LOG_LEVEL=WARNING TQ_LOGGING_LEVEL=WARNING
 export MODELING_BACKEND=hf
 # lightllm rollout 需要 LightLLM + verl 在 PYTHONPATH 上，再加本项目根（trainer.*）。

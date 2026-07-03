@@ -212,8 +212,11 @@ AGS_ROLE_NAME=AgentOS-260506-test
 推荐使用项目自建镜像（已固化运行时依赖，免去启动时 pip install）：
 
 ```
-registry.cn-tj-01.sensecore.cn/ccr-devsfttj/verl:cu129_lightllm_sandbox_megatron0.14.0_vllm0.13.0R3_torch2.9.0_fa3_te2.5.0_0211
+registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/qwen36-lightllm:1.0
 ```
+
+> 2026-07-01 build + push 完成（commit `3789654`）；**2026-07-03 从旧租户 `ccr-devsfttj` 迁至新租户 `ccr-zuhu2026`**（登录名 `zuhu2026-sunhao4`，retag+push 未重 build，image ID 不变 `8631ec6c9b9b`）。
+> base 镜像仍是泽寰 `ccr-devsfttj/verl:cu129_..._0211`（Dockerfile `ARG BASE_IMAGE`，23GB）——重 build 时需确认新租户能否拉旧租户 base，或把 base 也 retag 过去。
 
 若用其他基础镜像，脚本会自动执行兜底 `pip install`（约 2 分钟）。
 
