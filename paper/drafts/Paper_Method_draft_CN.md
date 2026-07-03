@@ -120,6 +120,30 @@ $$P_k = P_{k-1} - d_0(p)\,2^{\,k-1} \;=\; P_0(p) - d_0(p)\,(2^{k}-1).$$
 
 ---
 
+### 4.6 数据来源与 Pipeline（Data Provenance）
+
+本节明确数据的归属边界：哪些是本工作的**输入**，哪些是本系统的**产出**。这一区分对复现性与贡献界定都至关重要——我们不从零造数据，但从输入往后的全部流程均为本工作。
+
+**输入：taskspec。** 实验数据由合作团队提供的 *taskspec* 构成。每个 taskspec 描述一个 agentic 任务，包含两份内容：(1) 一份任务声明 `taskspec.yaml`，含真实首条用户 query（`seed_query`，即 $q_1$）、隐藏目标（`hidden_goal`，judge 评 completion 的依据）、判分 rubric（`verifier`，含 state/process/llm 三类 check）、用户人设（`user_profile`，questioner 模拟用户风格用）；(2) 一份初始文件系统快照 `files/`，作为沙箱执行环境的种子状态。taskspec 定义了任务的"起点"——真实用户意图与初始状态——但**不包含**任何执行轨迹、多轮后续 query 或奖励信号。
+
+**只取 $q_1$，丢弃真实 follow-up。** 值得强调的是，虽然原始会话数据含有真实的后续 query $q_2,\dots,q_K$，我们**只保留首条 query $q_1$ 作为种子**。原因如 §4.5 所述：真实 follow-up 是在采集时针对*原始*会话的执行结果写下的，而训练中我们的策略对 $q_1$ 产出的状态与该原始结果不同，直接复用这些 follow-up 会使其前提以随策略变强而漂移的概率失败（前提漂移，§4.5）。真实数据的价值在于 $q_1$ 携带的真实用户意图分布，而非与某次特定执行绑定的后续轮次。这一选择将"多轮数据的前提成立性"从数据采集时转移到了在线生成时（§4.5 的三 agent），由构造保证成立。
+
+**从 taskspec 到训练数据的 pipeline。** 从 taskspec 到可训练数据经过以下流程，其中第 (1)–(2) 步为离线预处理，第 (3)–(5) 步为在线产出：
+
+| 步骤 | 转换 | 脚本 | 产出 |
+|------|------|------|------|
+| (1) | taskspec `files/` → 沙箱 seed 镜像 | `build_fs_seeds.py` | `docker/sandbox/fs-seeds/<task_id>/` + `manifest.json` |
+| (2) | taskspec → 7 桶能力标签 | `label_buckets.py` | `buckets_labeled.csv`（task_id → bucket） |
+| (3) | taskspec `seed_query`+`follow_ups` → queries JSONL | `taskspec_to_queries.py` | `datasets/queries.jsonl` |
+| (4) | queries + fs-seeds → rollout 轨迹（冷启动） | `collect_cold.py` | `logs/cold/buffer.sqlite`（7 桶预热） |
+| (5) | 在线 rollout（正式训练） | verl + lightllm | 轨迹实时入 buffer |
+
+**训练数据的格式。** 正式训练时，verl 读取 parquet（或 JSONL）作为 prompt 源，每行含四列：`prompt`（OpenAI chat 格式，system + 首个 user query，即 rollout 起点）、`data_source`（reward 函数名 `"agentic_cl"`）、`reward_model`（ground_truth，judge 在线打分时为空）、`extra_info`（record_id / bucket / queries / 可选 reward 与 trajectory_id）。**关键：parquet 只装 prompt（对话起点），不装 assistant 回复、token_ids、logprobs 或 reward**——这些由 verl 的 lightllm rollout 引擎在训练时实时产出（§4.4），轨迹实时入 7 桶 buffer。冷启动阶段产出的 trajectory（含 messages/token/logprob/reward）经 `trajectory_to_parquet.py` 转成同格式 parquet，或直接经 `warmup_buffer.py` 入 buffer 预热；两者均只取 trajectory 的 system+首个 user 作为 prompt，其余 messages 丢弃（verl 会重新 rollout）。
+
+> **数据归属边界（实现说明）。** 本工作的输入为 taskspec（`seed_query` / `hidden_goal` / `verifier` / `user_profile` / `files/`）。**多轮后续 query 的在线生成、rollout 轨迹采集、7 桶入桶、以及最终训练消费的 rollout 数据结构，均为本系统（C4/C5）的产出**——"信号产出"这一半从 taskspec 开始、到结构化轨迹结束，都在本工作范围内。1 个 seed → fork 8 容器跑同一 `seed_query`（GRPO 8 路、起点位级一致）。冷启动采集阶段先跑 C5 的 observer + questioner 子集（不含奖励模型、不做 GRPO 组，单 query 单 rollout）；完整训练态再启用奖励与 8 槽。
+
+---
+
 ## 附录 A：完整提示词（Prompts）
 
 > **说明**：本附录给出三个 agent 与奖励模型的完整提示词。三个 prompt **已实现并落盘**于 `agents/prompts.py`（2026-06-12），对应设计文档 [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md) 的 O3/O4/O6；判分准则的 ClawEval 三维与 `trainer/model_reward.py` 对齐。以下为正文使用的英文 system prompt（论文投稿用英文，故此处与代码一致保留英文原文）。
