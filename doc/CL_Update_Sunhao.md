@@ -300,6 +300,8 @@ $$\frac{1^b + 1^{K_i - 1 - b}}{2} = \frac{1 + 1}{2} = 1 \quad \forall\, b$$
 ### 全局实验路线
 
 ```
+Phase 0 (P0-A..E)     冷启动数据来源配比预实验（独立，不进 21；选最佳配比固定为 buffer 预热来源）
+   │
 Phase 1 (B1)          建立纯 RL 遗忘基线
    │
    ├── Phase 2 (K1-K5, K2-R)             KL 单独验证 → top-2 KL 配置
@@ -313,7 +315,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
                            └── Phase 6 (X1-X7)  按需探索
 ```
 
-实验总数：**B 系列 1 + K 系列 6 + R 系列 8 + C 系列 4 + S 系列 2 = 21 个独立训练**。Phase 6 X 系列按需触发。
+实验总数：**B 系列 1 + K 系列 6 + R 系列 8 + C 系列 4 + S 系列 2 = 21 个独立训练**。Phase 6 X 系列按需触发。**Phase 0（P0-A..E）是冷启动前置预实验，不计入 21**（选出最佳 27B:gpt5 配比后固定为所有正式实验的 buffer 预热来源），详见 [`Plan_冷启动数据来源消融.md`](Plan_冷启动数据来源消融.md)。
 （R 系列 8 = R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K；R0 拆两档隔离"容量 vs 桶结构"。）
 
 ---
@@ -338,6 +340,44 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 ---
 
+### Phase 0：冷启动数据来源配比预实验（独立，不进 21）
+
+**验证目标**：冷启动填 7 桶 replay buffer 时，actor 用 Qwen3.6-27B（on-policy，分布同源）还是更强的 gpt-5（off-policy，质量高）还是按比例混合，对下游 CL 训练最好？选出最佳配比后**固定**为所有 21 个正式实验的 buffer 预热来源。完整设计与代码落点见 [`Plan_冷启动数据来源消融.md`](Plan_冷启动数据来源消融.md)。
+
+| 编号 | 27B : gpt-5 | 角色 |
+|---|---|---|
+| P0-A | 100 : 0 | 纯 on-policy（分布同源基线） |
+| P0-B | 0 : 100 | 纯 off-policy（强模型质量上界） |
+| P0-C | 50 : 50 | 平分折中 |
+| P0-D | 70 : 30 | 偏 27B（"27B 为主"假设） |
+| P0-E | 30 : 70 | 偏 gpt-5（"质量为主"假设） |
+
+**唯一变量** = 每桶内 27B/gpt5 轨迹配比（配比落在桶内、跨桶一致）；其余锁死为 R4 配置（$\lambda_3=0.5$ + 抗遗忘 priority + 两级采样，$\lambda_2=0$）。
+
+**验收标准（双轨判定链：冷启动自身指标先筛 → 下游短RL 裁决；任一臂自身指标不达 gate 直接淘汰、不进短RL）**
+
+*轨 1 — 冷启动自身指标（无 GPU，采集后即测，硬 gate）*：
+
+| 指标 | 验收 gate |
+|---|---|
+| 桶配额达标率（各桶 `size ≥ q_min=2000`） | **= 7/7** |
+| tool-call 合法率 | **≥ 90%** |
+| judge 有效分命中率（非 `judge_error`） | **≥ 95%** |
+| 轨迹多样性（`eval.metrics.trajectory_diversity`） | distinct_4 **≥ 0.6** 且 self_bleu_4 **≤ 0.5** |
+| 平均 judge 分 | 报告值（非 gate；gpt-5 臂预期更高，不作淘汰依据） |
+
+*轨 2 — 下游短RL（占 GPU，通过轨 1 的臂才跑；5 臂唯一变量 = buffer 来源，固定新任务种子 + 同随机 seed，7 桶拆旧/新两组）*：
+
+| 指标 | 判定 |
+|---|---|
+| **CL Score**（`new_perf − α·forgetting`，α=1.0） | **主裁决**：最高者胜；差 < 2% 时选 Forgetting 更低且 L_replay 更稳者 |
+| Old Task Forgetting（旧桶） | 越低越好；报告 |
+| New Task Performance（新桶） | 报告（诊断质量-同源权衡） |
+| L_replay / L_rl 稳定性 | 无发散/剧烈震荡为通过 |
+| Output Entropy（前 20 step 降幅） | **下降 > 50% 判该臂不稳定**（Echo Trap 预警，B4） |
+
+---
+
 ### Phase 1：Baseline
 
 **验证目标**：建立纯 RL 遗忘基线，量化灾难性遗忘程度。
@@ -347,6 +387,14 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | B1 | 0 | 0 | 0.001 | $\lambda_1=1.0$，纯 RL + entropy bonus | 遗忘下界 |
 
 > **B1 必须开 $\lambda_4 = 0.001$**：关闭 entropy 会导致 Echo Trap、B1 训练崩盘，得到的 FM 不是真实"无 CL 手段"的遗忘量，而是"崩盘后退化"。所有 Phase 用同样的 $\lambda_4$ 保证可比性。
+
+**验收标准**（B1 是基线，验收 = "基线可信"而非"性能达标"）：
+
+| 指标 | 验收 gate |
+|---|---|
+| 训练不崩（Output Entropy 前 100 step 降幅） | **< 50%**（否则是崩盘后退化，FM 不可信，需调大 $\lambda_4$ 重跑） |
+| `L_replay` 校验 | **恒 = 0**（B1 关 replay，零系数短路，见 skill `cl-loss-zero-coefficient-shortcircuit`） |
+| Forgetting Measure (FM) | 记录为**遗忘下界**（无 gate，供 Phase 2–5 相对比较；所有 Phase 须同等 rollout 下测，见 `Migration_64GPU.md`） |
 
 ---
 
@@ -372,6 +420,15 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | KL × Replay 交互 | K2 → K2-R | $\lambda_3$：0 → 0.5 | KL 在有 replay 时是否冗余 |
 
 **输出**：选出 top-2 KL 配置（K-best1, K-best2）供 Phase 4 组合使用。
+
+**验收标准**（K 系列 6 个实验同一张 gate 表批量判定）：
+
+| 指标 | 判定 |
+|---|---|
+| **CL Score**（`cl_score`，α=1.0） | **top-2 选择依据**：6 臂按 CL Score 排序取前 2 |
+| KL 趋势 $D_{KL}(\pi_{new}\|\pi_{ref})$ | **受控不发散**（曲线单调/平稳，无爆炸），否则该 KL 配置淘汰 |
+| Output Entropy 前 100 step 降幅 | **< 50%**（同 B1，防 Echo Trap） |
+| KL×Replay 冗余判定（K2 → K2-R） | K2-R 的 CL Score 相对 K2 提升 **< 2%** → 判定"KL 在有 replay 时冗余"（与 R4-K 对偶交叉验证） |
 
 ---
 
@@ -416,6 +473,17 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 **输出**：选出 top-2 Replay 配置（R-best1, R-best2）供 Phase 4 组合使用。
 
+**验收标准**（R 系列 8 个实验同一张 gate 表批量判定；核心是逐条对照轴的"增量显著性"）：
+
+| 对照 | 判定 gate |
+|---|---|
+| **top-2 选择** | 8 臂按 **CL Score**（`cl_score`，α=1.0）排序取前 2 = R-best1/R-best2 |
+| 桶结构增量（R0-25k → R3） | R3 相对 R0-25k 的 CL Score 提升 **≥ 2%** → 判定"桶结构在长尾分布下有效" |
+| priority 增量（R3 → R4） | R4 相对 R3 提升 **≥ 2%** → 判定"抗遗忘 priority 有价值" |
+| priority 类型（R4 vs R5） | R4（抗遗忘）CL Score **> R5**（reward-based）→ 支持 BucketDesign 核心主张；否则记为负面结果 |
+| U 形块权重（R4 → R4-w） | R4-w 相对 R4 的 Forgetting **更低**（U 形有效）；若弱则按 §"超参选取注记"扫 γ/δ |
+| 训练稳定性（全 8 臂） | Output Entropy 前 100 step 降幅 **< 50%** + L_replay/L_rl 不发散 |
+
 ---
 
 ### Phase 4：KL × Replay 组合验证
@@ -440,6 +508,15 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | 减弱 Replay | C1 → C3 | Replay 剂量降低 | 高剂量 Replay 是否冗余 |
 | 双减弱 | C1 → C4 | 同时降低 | "中庸更优"假说 |
 
+**验收标准**（C 系列 4 个实验同一张 gate 表批量判定）：
+
+| 指标 | 判定 gate |
+|---|---|
+| **最优 CL 配置选择** | 4 臂（+ 单边对照 R-best1）按 **CL Score**（`cl_score`，α=1.0）排序取最高 |
+| 组合 vs 单边增量（R-best1 → C1） | C1 相对 R-best1 的 CL Score 提升 **≥ 2%** → 判定"KL 在最优 Replay 之上有增量"；否则判定"冗余" |
+| "中庸更优"假说（C4 vs C1） | 若 C4（双减弱）CL Score **≥** C1（双强）→ 接受"中庸更优"；否则拒绝 |
+| 训练稳定性 | Output Entropy 前 100 step 降幅 **< 50%** + KL 受控 + L_replay/L_rl 不发散 |
+
 ---
 
 ### Phase 5：Rollout 规模扩展
@@ -451,6 +528,14 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | S1 | 1024 × 8 | 8192 | Phase 4 最优 | 小规模 rollout |
 | S2 | 4096 × 8 | 32768 | Phase 4 最优 | 大规模 rollout |
 
+**验收标准**（S 系列 2 个实验）：
+
+| 指标 | 判定 gate |
+|---|---|
+| 规模扩展有效性（S1 → S2） | S2 相对 S1 的 CL Score 提升 **≥ 2%** → 判定"扩大 rollout 规模进一步提升"；否则判定"规模饱和" |
+| 吞吐 / 稳定性 | S2 的 `rollouter/idle_ratio` 与 `trainer/idle_ratio` 均 **< 20%**（异步资源均衡，见 Fully Async 监控表） |
+| 训练稳定性 | Output Entropy 前 100 step 降幅 **< 50%**（大 rollout 下 Echo Trap 风险更高，重点监控） |
+
 ---
 
 ### Phase 6：补充探索项（按需触发）
@@ -460,6 +545,16 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | 高优先（有明确触发逻辑） | **X6** Forward KL 替代 reverse KL | Phase 5 entropy 仍不稳定 |
 | 高优先（有明确触发逻辑） | **X7a** Adaptive $\lambda_4$（entropy 阈值反馈） | Phase 4 后某些 query entropy 不稳定 |
 | 低优先（按需探索） | X1-X4 / X7b：Soft reward 加权、Advantage 温度系数、动态 $\lambda_2$/$\lambda_3$ 调度、桶间亲和度加权 replay、Per-bucket 自适应 $\lambda_4$ | 资源充足或遇到对应问题时启动 |
+
+**验收标准**（X 系列各探索项已有"启动条件"，此处补"探索成功"的接受标准）：
+
+| 探索项 | 接受标准（达标才纳入主方案，否则记为负面结果） |
+|---|---|
+| X6 Forward KL 替代 reverse KL | 相对 reverse KL 基线：Output Entropy 更稳（前 100 step 降幅更小）**且** CL Score 不降 |
+| X7a Adaptive $\lambda_4$ | 触发 query 的 entropy 恢复到阈值之上 **且** 全局 CL Score 相对固定 $\lambda_4$ 不降 |
+| X1-X4 / X7b | 各自相对对应固定基线的 CL Score 提升 **≥ 2%**（与主实验同一显著性门槛） |
+
+> 统一原则：所有 Phase 的验收指标一律引用 `eval/metrics.py` 已实现的度量（`cl_score` / `old_task_forgetting` / `new_task_performance` / `output_entropy` / `trajectory_diversity`），不新造指标。CL Score 显著性门槛统一取 **2%**（可在拿到 Phase 1 方差后按实测标准差校准）。
 
 > **为什么 X6/X7 不进 Phase 1-4**：固定 $\lambda_2$/$\lambda_4$ 是 ablation 可比性的前提；引入动态调度会让 K2-R / R4-K / C 系列对照变量失控。
 

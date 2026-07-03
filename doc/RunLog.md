@@ -19,6 +19,12 @@
 
 ## 记录（最新在最上面）
 
+### 2026-07-03 | 新集群开发机（CPU，无 GPU） | commit <pending>
+- 动作：设计并落地 **Phase 0 冷启动数据来源配比消融**（独立预实验，不进 21）。① `scripts/collect_rollout.py` 加 `meta.policy` 来源标记（`pi0_27b`/`gpt5`，`_actor_policy_tag` 按 `--actor` 映射，写进每条 trajectory + session record 顶层）。② `scripts/warmup_buffer.py` 加 `--ratio-27b` 按桶内配比混合两来源（`_mix_by_ratio`：先按 bucket×source 分组、再按比例无重复抽样，固定 `--mix-seed` 可复现）+ 输出 `*.manifest.json` 记录每桶实际 27B/gpt5 条数；来源标记优先读 trajectory `policy`、缺失时从 `{actor}` 目录推断（向后兼容旧数据）。③ 5 臂配置 `configs/phase0/p0-{a..e}.yaml`（100:0 / 0:100 / 50:50 / 70:30 / 30:70，其余锁死 R4）。④ `scripts/phase0/run.sh`（三阶段：建 buffer → 轨1 gate → 短RL）+ `scripts/phase0/gate_coldstart.py`（轨1 冷启动自身指标 gate）。⑤ 新增设计文档 `doc/Plan_冷启动数据来源消融.md`；整改 `CL_Update_Sunhao.md`（加 Phase 0 节 + 路线图 + **给 Phase 1–6 各补验收标准表**）、`Buffer_冷启动数据需求.md` §5、`Progress.md`。
+- 结果：⏳ 待跑单测验证（本条落地后执行 `pytest`）。设计决策（与 @孙豪 对齐）：独立定位不进 21、5 臂全扫、双轨验收（冷启动自身指标 + 下游短RL）、更强模型 = `openai/gpt-5`、短RL 固定新任务+同种子、7 桶拆旧/新两组。
+- 产物：`scripts/collect_rollout.py`、`scripts/warmup_buffer.py`、`configs/phase0/*.yaml`（5）、`scripts/phase0/{run.sh,gate_coldstart.py}`、`doc/Plan_冷启动数据来源消融.md`、`doc/CL_Update_Sunhao.md`、`doc/Buffer_冷启动数据需求.md`、`doc/Progress.md`。
+- 解释：冷启动数据来源（27B on-policy vs gpt-5 off-policy）是一个与现有 21 实验**正交的新变量**——27B 数据"对味但可能弱"、gpt-5 数据"强但可能不对味"（强 off-policy 分布偏移）。它必须在正式训练前定死，故设为 Phase 0 前置预实验。验收难点在于"冷启动数据本身无分数、好坏只在下游显形"，故用双轨判定链：自身指标先筛掉明显差的（无 GPU、采集后即测），短RL 做最终裁决（CL Score 主裁）。**红线**：gpt-5 数据只进 buffer 做 replay，绝不拿去 SFT 蒸馏 27B（违背 B2/C1 立论 + 污染 21 实验可比性）。
+
 ### 2026-07-02 ~15:30 | 新集群开发机（CPU，无 GPU，cold env py3.10） | commit <pending>
 - 动作：沙箱内 hermes 采集排障 + 首次跑通。① `sandbox_grpo_collect.py --actor hermes` 初测 reward=0/ans 空 → 进沙箱逐层诊断。② 根因定位：`_write_hermes_config` 从开发机侧 `_env("AGENT_MODEL_KEY")` 读 key → 开发机侧未设该 env（key 只在 `docker/sandbox/runtime.env` 里，经 `E2BSandbox.envs=` 注入沙箱内，`load_tencent_env.sh` 未 export）→ 传空 key 给 hermes → hermes 调 sufy 没 key → TimeoutExpired。③ 修复：`_write_hermes_config` 改为沙箱内 Python 直接 `os.environ['AGENT_MODEL_KEY']`（key 在沙箱内，不经开发机进程），删 `--actor-key` 参数。④ 修后第一次真实跑通：`hermes chat -q 'Compute 23*17-19 and write the number to /home/user/result.txt'`（max_turns=6，沙箱内）→ exit 0，创建 `result.txt` 内容 `372`，hermes diff 展示 `+372`。
 - 结果：✅ hermes-in-sandbox 真实跑通（沙箱内 hermes 调 sufy `openai/gpt-5` 决策 + 写文件）。沙箱镜像含 hermes v0.16.0 无误。❌ 修复前脚本采集中 hermes 全超时（两个 slot 都 TimeoutExpired）。清理：`/tmp/grpo_*` 四个测试目录。rollout 输出位置定为 `rollouts/cold_start/`（gitignored）。

@@ -67,7 +67,19 @@ def iter_seeds(queries_path, limit):
                 return
 
 
-def _traj_to_dict(t, no_clean=False):
+def _actor_policy_tag(actor: str) -> str:
+    """Map the --actor route to a cold-start data-source tag (Phase 0 ablation).
+
+    This is the ONLY handle for the cold-start data-source ablation
+    (doc/Plan_冷启动数据来源消融.md): warmup_buffer.py mixes the two sources by
+    ratio and per-source forensics/attribution all key off this tag.
+        local  -> pi0_27b   (on-policy: the training policy itself, Qwen3.6-27B)
+        remote -> gpt5      (off-policy: the stronger model, openai/gpt-5)
+    """
+    return "pi0_27b" if actor == "local" else "gpt5"
+
+
+def _traj_to_dict(t, no_clean=False, policy=None):
     messages = t.messages
     if not no_clean:
         result = clean_messages(messages)
@@ -83,6 +95,9 @@ def _traj_to_dict(t, no_clean=False):
         "num_turns": t.meta.get("num_turns"),
         "prompt_tokens": t.meta.get("prompt_tokens", 0),
         "completion_tokens": t.meta.get("completion_tokens", 0),
+        # Cold-start data-source tag (Phase 0). warmup_buffer.py reads this to
+        # mix 27B/gpt-5 trajectories by ratio; kept in buffer meta for attribution.
+        "policy": policy,
     }
 
 
@@ -108,8 +123,9 @@ def run_one_session(args, generate_fn, observer, questioner, record_id, seed, id
         seed=args.seed + idx,
     )
     trajs = []
+    policy = _actor_policy_tag(args.actor)
     for t in res.trajectories:
-        d = _traj_to_dict(t, no_clean=args.no_clean)
+        d = _traj_to_dict(t, no_clean=args.no_clean, policy=policy)
         if d is not None:
             trajs.append(d)
     if not trajs:
@@ -123,6 +139,7 @@ def run_one_session(args, generate_fn, observer, questioner, record_id, seed, id
         "generated_queries": res.generated_queries,
         "trajectories": trajs,
         "reports": [r.__dict__ for r in res.reports],
+        "policy": policy,  # cold-start data-source tag (Phase 0)
     }
 
 
@@ -141,7 +158,18 @@ def main():
     ap.add_argument("--k-max", type=int, default=3, help="follow-up turns upper bound")
     ap.add_argument("--max-turns", type=int, default=6, help="ReAct turn cap per rollout")
     ap.add_argument("--max-new-tokens", type=int, default=1024)
-    ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument(
+        "--temperature",
+        type=float,
+        default=0.4,
+        help="actor sampling temperature. Default 0.4 (NOT 1.0): this is SINGLE-PATH "
+        "cold-start collection (slots=1, no GRPO group) whose goal is high-quality "
+        "anti-forgetting ANCHOR trajectories -- agent tool-use tasks want to be done "
+        "RIGHT, not sampled diversely. High temp (train-rollout's 1.0) only adds failed "
+        "trajectories to the buffer. Applies to both actors (27B on-policy + gpt-5.5 "
+        "off-policy). See doc/模型选型.md '温度策略'. GRPO multi-path collection "
+        "(collect_cold / sandbox_grpo) keeps a higher temp for winner-selection variance.",
+    )
     ap.add_argument("--out-dir", required=True, help="output dir (local/remote MUST differ)")
     ap.add_argument("--log-every", type=int, default=20)
     ap.add_argument("--seed", type=int, default=0)

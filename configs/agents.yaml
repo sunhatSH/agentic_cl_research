@@ -9,16 +9,16 @@
 
 observer:
   api_base: "https://openai.sufy.com/v1"
-  model: "openai/gpt-5-mini"
+  model: "openai/gpt-5.4-mini"       # sufy 最新 mini（轻量取证角色，采集量最大→选省的）
   key_env: "SUFY_API_KEY"            # 共用 sufy key
   temperature: 0.0                  # 客观取证，确定性
 
 questioner:
   # 多模型轮换池（每 rotate_every 次提问切换到下一个，抗模式坍缩）
-  # 4 个跨厂商模型，最大化输出风格异质性
+  # 4 个跨厂商模型，最大化输出风格异质性。id 已对 sufy /v1/models 核对存在。
   rotation:
     - api_base: "https://openai.sufy.com/v1"
-      model: "anthropic/claude-sonnet-5"
+      model: "claude-4.6-sonnet"        # sufy 上 Claude sonnet 线最新（无 sonnet-5；4.6 为最高）
       key_env: "SUFY_API_KEY"
     - api_base: "https://openai.sufy.com/v1"
       model: "deepseek/deepseek-v4-pro"

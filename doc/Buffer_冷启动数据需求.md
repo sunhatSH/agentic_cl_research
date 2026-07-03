@@ -249,6 +249,13 @@ Buffer 每桶 **hard floor** `q_min = 2000`。7 桶合计：
 - [ ] `pytest` 中 buffer 相关用例仍通过
 - [ ] 可选：`replay_warmup_size: 32` 时 step 0 的 `effective_replay_batch_size` 已满
 
+**数据来源配比（Phase 0，见 [`Plan_冷启动数据来源消融.md`](Plan_冷启动数据来源消融.md)）：**
+
+- [ ] 每条 trajectory 带 `meta.policy` 来源标记（`pi0_27b` = 本地 Qwen3.6-27B on-policy；`gpt5` = sufy `openai/gpt-5` off-policy）——`collect_rollout.py` 已按 `--actor` 自动写入
+- [ ] 两来源**分目录**存（`data/rollouts/{local,remote}/`），便于 `warmup_buffer.py --ratio-27b` 按桶内配比混合
+- [ ] `warmup_buffer.py` 输出的 `*.manifest.json` 核对：每桶实际 27B/gpt5 条数与目标配比一致（P0-A 1.0 / P0-B 0.0 / P0-C 0.5 / P0-D 0.7 / P0-E 0.3）
+- [ ] **红线**：gpt-5 采的轨迹只进 buffer 做 replay，**绝不**拿去 SFT 蒸馏 27B（违背 B2/C1 立论 + 污染 21 实验可比性）
+
 ---
 
 ## 6. 联系人
