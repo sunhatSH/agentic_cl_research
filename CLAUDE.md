@@ -448,3 +448,43 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 - `configs/sandbox_tool.json` 实测创建 Tool 必需字段补齐：`CustomConfiguration.Command=["/init"]`、`Probe.HttpGet.Scheme="HTTP"`、`Memory` 2Gi→4Gi、端口收敛为单 `envd:49983`（参考已有 `node-python-openclaw` Tool）。修复后 `create_sandbox_via_api.sh custom` 成功建 Tool `sdt-f4ygdu0a` + 起 RUNNING 实例。
 - 企业版 TCR 实例信息：实例 `tcr-rl`（`tcr-hxya4oi8`，公网 `tcr-rl.tencentcloudcr.com`），命名空间 `agentos-cl-namespace`（base + 产物镜像同命名空间；2026-06-26 从 `agentos-cl-sandbox` 切换而来，旧 Tool `sdt-f4ygdu0a` 仍指向旧地址）。docker login 用 `tccli tcr CreateInstanceToken` 拿临时 Token（默认 1 小时有效）。
 
+
+---
+
+## 防遗忘评测方案（2026-07-04 讨论）
+
+### 1. 评测目标
+不同于传统端到端评测（只看最终效果），我们要做的是持续学习过程中的防遗忘评测 —— 衡量模型在按桶顺序训练后，对各桶旧任务的遗忘程度。
+
+### 2. 训练方式
+按桶顺序训练（先训 A 桶，再训 B 桶...），同一桶内的任务本身是打乱的（或数据本身就是乱序的）。这与线上持续学习场景一致 —— 线上数据更新快，无法集齐分布覆盖足够的数据，所以需要按桶分批训练。
+
+桶即类型，不另造概念。7 桶：Workflow、SysOps、Finance、Knowledge、Communication、OfficeQA、Dialogue。桶数量不固定，按设计来。
+
+### 3. 评测方式
+所有桶任务依次训完后统一评测，训练过程中不做中间评测，避免浪费。
+
+评测数据也按同样的桶分组，每个桶的分数都打出来。评测的组间序与训练的组间序相同，简化对齐。
+
+### 4. 权重策略
+先跑一次评测，记录每个桶的原始分数（模型已训完，推理结果固定不变）。然后在这个固定分数基础上，套不同的权重方案算最终分数：
+
+- 越早训练的桶遗忘越严重，权重应越大
+- 衰减方式是实验出来的：先试线性衰减，如果模型优势不明显就改指数衰减
+- 最终找到一个衰减方式，使得从某个角度能体现我们的模型（加 buffer 桶）比 baseline（不加 buffer 桶）效果更好，用这个去叙事
+
+因为评测只跑一次，之后换权重方案只是数学计算，不需要重新跑模型推理，省算力省时间。
+
+### 5. Baseline 对照
+设置一个没有 CL 算法的 27B 模型 baseline，按同样的桶顺序训完任务后，用同样的评测方式对比遗忘情况。
+
+### 6. 评测集来源
+看看 ClawEval 是否按桶组织任务，如果是则沿用；如果不是，自己构建 —— 最简单的方式是把 ClawEval 的任务按桶分类然后跑评测。
+
+### 7. 待论证
+桶的划分方式是否合理，评测的权威性在哪里。
+
+### 8. 桶在 buffer 里的作用（背景）
+桶是 replay buffer 的组织单元。训新桶时 buffer 从已训练过的桶里采样 replay 行，拼接到训练 batch 里。replay 行的 response_mask=0，不参与 PPO loss，但通过独立的 CL loss（replay_response_mask）让模型回忆旧桶的任务，防止遗忘。优先级控制回放什么，U 形权重控制各桶贡献。
+
+评测按桶分组测分数，本质上就是看每个桶在后续训练中被遗忘了多少，buffer 的回放是否有效保住了旧桶的能力。
