@@ -30,7 +30,7 @@ actor_rollout_ref:
   #   注意区分：model.path = 训练起点（恒 = π₀）；ref.path = KL 锚点 π_ref（K4/K5 才用
   #   π_{t-1}，那只影响 KL 往哪拉，不影响训练起点）。
   model:
-    path: Qwen/Qwen3.6-27B          # π₀ — 所有实验训练起点；各 phase 不覆盖
+    path: /mnt/afs_agents/share_models/Qwen/Qwen3.6-27B   # π₀ 本地权重(非 HF 名);cluster 覆盖为 /tmp/qwen36
 
   # Rollout (generation) config
   rollout:
@@ -50,7 +50,7 @@ actor_rollout_ref:
   # KL 项把 π_new 往 π_ref 拉；π_ref 用 π₀（K1-K3/多数）或 π_{t-1}（K4/K5 对照）。
   # 无 KL 的实验（B1 / R 系列）此项不生效，填 π₀ 路径占位即可。
   ref:
-    path: ???                     # set per experiment（π₀ 路径；K4/K5 用 π_{t-1}）
+    path: /mnt/afs_agents/share_models/Qwen/Qwen3.6-27B   # π₀ 占位;cluster 覆盖为 /tmp/qwen36;无 KL 实验(B1/R)不生效
 
   # Actor (policy optimization) config
   actor:
