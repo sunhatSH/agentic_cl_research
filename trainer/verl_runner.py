@@ -121,7 +121,8 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
                 warmup_size=replay_warmup_size,
             )
             if replay_rows:
-                batch = _append_replay_rows(batch, replay_rows)
+                shuffle_seed = int(getattr(trainer, "global_steps", 0) or 0)
+                batch = _append_replay_rows(batch, replay_rows, shuffle_seed=shuffle_seed)
 
         result = original_update(batch)
 
@@ -162,7 +163,7 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
     trainer._update_actor = patched_update
 
 
-def _append_replay_rows(batch: Any, replay_rows: dict[str, Any]) -> Any:
+def _append_replay_rows(batch: Any, replay_rows: dict[str, Any], shuffle_seed: int = 0) -> Any:
     """Concatenate replay row tensors onto a verl DataProto batch.
 
     Replay rows carry ``is_replay=True``, a real ``replay_response_mask`` (with
@@ -264,7 +265,24 @@ def _append_replay_rows(batch: Any, replay_rows: dict[str, Any]) -> Any:
             trailing = getattr(arr, "shape", (0,))[1:]
             replay_dp.non_tensor_batch[k] = np.full((n_replay, *trailing), None, dtype=object)
 
-    return DataProto.concat([batch, replay_dp])
+    merged = DataProto.concat([batch, replay_dp])
+
+    # Shuffle rows so the replay block (concatenated at the tail) is spread
+    # across ALL mini batches. verl slices mini batches sequentially WITHOUT
+    # shuffle (tensordict_utils.make_iterator -> DataLoader shuffle defaults
+    # False), so without this the replay rows would land only in the final
+    # ceil(n_replay / ppo_mini_batch_size) mini batches -- every earlier mini
+    # batch's optimizer.step() would carry ZERO replay gradient, splitting PPO
+    # learning and CL anti-forgetting apart in time. A per-step permutation
+    # (seeded off the buffer step for reproducibility) distributes replay rows
+    # uniformly so each mini batch's combined loss (rl + lambda_3 * replay)
+    # sees replay. Row-level shuffle does not touch the loss composition, so
+    # lambda_3 semantics are unchanged.
+    n_total = len(merged)
+    gen = torch.Generator()
+    gen.manual_seed(int(shuffle_seed))
+    merged.reorder(torch.randperm(n_total, generator=gen))
+    return merged
 
 
 class CLTaskRunner:

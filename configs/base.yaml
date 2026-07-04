@@ -92,7 +92,9 @@ reward:
 # Continual Learning -- replay buffer config (read by trainer/cl_main.py)
 cl:
   lambda_replay: 0.0              # lambda_3, set per experiment
-  replay_batch_size: 32
+  replay_batch_size: 512         # 拼在 train batch(1024) 级；由 ppo_mini_batch 逐 mini
+                                  # batch 前向消化显存。足量以覆盖 7 桶 + 每 mini batch 都
+                                  # 有 replay 行(CL loss 每步生效)。旧值 32 太稀疏(~2/mini batch)
   replay_warmup_size: 0           # >0: linearly ramp replay batch while buffer
                                   # fills (cold-start); 0 = full batch immediately
   # Paper-evidence cadences (steps; 0 disables). See trainer/replay_metrics.py.

@@ -13,7 +13,7 @@ actor_rollout_ref:
 
 cl:
   lambda_replay: 0.5             # lambda_3 = 0.5
-  replay_batch_size: 32
+  replay_batch_size: 512         # 与主方案同值(对照公平); replay 量非被消融轴
   buffer:
     enabled: true
     num_buckets: 1               # 单 buffer，无桶结构（名/数自动塌缩为 "All"）
