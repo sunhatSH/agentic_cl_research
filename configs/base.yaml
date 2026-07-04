@@ -21,8 +21,16 @@ actor_rollout_ref:
 
   # Base model -- Qwen3.6-27B (https://huggingface.co/Qwen/Qwen3.6-27B).
   # Override `path` to a local cache (e.g. /mnt/afs/models/qwen3.6-27b/).
+  #
+  # ★ 训练起点 = π₀（初始 Qwen3.6-27B），所有 21 实验 + baseline 一致（2026-07-04 定案）。
+  #   禁止把某个 phase 的 model.path 改成"接上个 phase 选中的 ckpt"——那会污染
+  #   ablation 可比性（分不清是本 phase 参数好还是继承的底子好）。上个 phase 只传
+  #   "选中的超参配置"（λ2 / replay 类型），不传权重。"局部最优拼起来不优"由 Phase 4
+  #   组合验证兜底。详见 doc/eval/训练与评测总思路_产物结构.md §2.3。
+  #   注意区分：model.path = 训练起点（恒 = π₀）；ref.path = KL 锚点 π_ref（K4/K5 才用
+  #   π_{t-1}，那只影响 KL 往哪拉，不影响训练起点）。
   model:
-    path: Qwen/Qwen3.6-27B
+    path: Qwen/Qwen3.6-27B          # π₀ — 所有实验训练起点；各 phase 不覆盖
 
   # Rollout (generation) config
   rollout:
@@ -38,9 +46,11 @@ actor_rollout_ref:
     #   sessions_per_step: 16       # 16 sessions in parallel (x n slots = 128)
     #   sandbox_backend: e2b        # 'e2b' (Tencent) on cluster, 'local' for dev; 'aliyun' (AgentBay) = stub/留空
 
-  # Reference policy pi_ref -- pi_0 (initial) or pi_{t-1} (prev stage ckpt).
+  # Reference policy pi_ref -- KL 锚点（≠ 训练起点 model.path）。
+  # KL 项把 π_new 往 π_ref 拉；π_ref 用 π₀（K1-K3/多数）或 π_{t-1}（K4/K5 对照）。
+  # 无 KL 的实验（B1 / R 系列）此项不生效，填 π₀ 路径占位即可。
   ref:
-    path: ???                     # set per experiment
+    path: ???                     # set per experiment（π₀ 路径；K4/K5 用 π_{t-1}）
 
   # Actor (policy optimization) config
   actor:

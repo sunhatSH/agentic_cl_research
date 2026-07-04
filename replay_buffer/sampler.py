@@ -87,21 +87,58 @@ class TwoLevelSampler:
     def sample(self, batch_size: int):
         """Return a list of (trajectory_id, trajectory, metadata) sampled across buckets.
 
-        Marks sampled trajectories with mark_replayed so last_replay_step
-        and replay_count stay accurate.
+        Batch is de-duplicated: the two-level weighted draw (bucket weight ->
+        within-bucket priority) can re-draw the same trajectory, so we skip any
+        tid already picked and re-draw until batch_size DISTINCT trajectories are
+        collected (or the buffer is exhausted). A replay batch回放同一条无意义 (bug
+        A-dedup, 2026-07-04). Marks sampled trajectories with mark_replayed so
+        last_replay_step / replay_count stay accurate.
         """
         if batch_size <= 0:
             return []
 
-        bucket_picks = self._sample_buckets(batch_size)
+        total = len(self.buffer.store)
+        target = min(batch_size, total)  # cannot yield more distinct than exist
         out = []
-        for bucket in bucket_picks:
-            tid = self._sample_one_within_bucket(bucket)
-            if tid is None:
+        chosen: set[str] = set()
+        # bounded re-draw: enough attempts to fill target without spinning forever
+        # on tail buckets; the fallback sweep below guarantees termination.
+        max_tries = target * 20
+        tries = 0
+        while len(out) < target and tries < max_tries:
+            tries += 1
+            bucket = self._sample_buckets(1)
+            if not bucket:
+                break
+            tid = self._sample_one_within_bucket(bucket[0])
+            if tid is None or tid in chosen:
                 continue
-            traj, meta = self.buffer.store.get(tid)
+            got = self.buffer.store.get(tid)
+            if got is None:
+                continue
+            chosen.add(tid)
+            traj, meta = got
             out.append((tid, traj, meta))
-            self._last_bucket_sample_step[bucket] = self.buffer._step
+            self._last_bucket_sample_step[bucket[0]] = self.buffer._step
+
+        # Fallback: if weighted re-draw could not fill target (e.g. weights keep
+        # hitting the same few), sweep remaining trajectories deterministically so
+        # the batch still reaches `target` distinct rows.
+        if len(out) < target:
+            for b in self.buffer.bucket_names:
+                for tid in self.buffer.store.list_by_bucket(b):
+                    if tid in chosen:
+                        continue
+                    got = self.buffer.store.get(tid)
+                    if got is None:
+                        continue
+                    chosen.add(tid)
+                    traj, meta = got
+                    out.append((tid, traj, meta))
+                    if len(out) >= target:
+                        break
+                if len(out) >= target:
+                    break
 
         self.buffer.mark_replayed([tid for tid, _, _ in out])
         return out
