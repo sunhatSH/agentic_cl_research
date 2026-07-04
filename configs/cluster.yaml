@@ -76,10 +76,10 @@ reward:
     rollout:
       name: vllm
 
-# ---- 数据：待 @吴健 提供真实训练数据 parquet，启动训练前填 ??? 并取消注释 ----
+# ---- 数据：能力桶打标产物(scripts/labeled_to_parquet.py)。TRAIN_FILES/VAL_FILES 可覆盖 ----
 data:
-  train_files: ???                # 待填：真实训练数据 parquet 路径
-  val_files: ???                  # 待填：验证集 parquet 路径
+  train_files: ${oc.env:TRAIN_FILES,/mnt/afs_toolcall/sunhao4/agentic_cl_research/datasets/train.parquet}
+  val_files: ${oc.env:VAL_FILES,/mnt/afs_toolcall/sunhao4/agentic_cl_research/datasets/val.parquet}
   train_batch_size: ${oc.env:TRAIN_BATCH_SIZE,1024}   # 每 step 新任务数(replay 512 另拼)
   gen_batch_size: ${oc.env:TRAIN_BATCH_SIZE,1024}
   max_prompt_length: 4096

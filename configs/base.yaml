@@ -65,8 +65,9 @@ actor_rollout_ref:
 
 # Data
 data:
-  train_files: ???                # set per experiment / on cluster
-  val_files: ???
+  # 打标后的训练数据(scripts/labeled_to_parquet.py 产物)。可用 TRAIN_FILES/VAL_FILES 覆盖。
+  train_files: ${oc.env:TRAIN_FILES,/mnt/afs_toolcall/sunhao4/agentic_cl_research/datasets/train.parquet}
+  val_files: ${oc.env:VAL_FILES,/mnt/afs_toolcall/sunhao4/agentic_cl_research/datasets/val.parquet}
   train_batch_size: 1024
   gen_batch_size: 1024
   dataloader_num_workers: 4
