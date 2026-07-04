@@ -357,6 +357,13 @@
 - 产物：`replay_buffer/`、`trainer/`、20 yaml、5 篇 skills、SQLite 持久化、async runner scaffold。
 - 解释：修复 A1/A2/A4/A5/B1/B3/B4/B6/B7/B8/B9/B10/B11/B12/D2 等；详见 `Progress.md`。全栈仍 Blocked on GPU 集群。
 
+### 2026-07-04 | 开发机（无 verl/GPU） | commit abece32
+- 动作：replay_batch_size 32→512（`configs/base.yaml` + `phase3/r0-10k` + `r0-25k`，对照公平）；`trainer/verl_runner.py::_append_replay_rows` 拼接后加行级 shuffle（方案2，seed=global_steps）。
+- 根因（代码证据）：verl 0.8.0 `engine/base.py:125-127` **mini batch = optimizer.step() 边界**（每 mini batch zero_grad→bwd→step，梯度累积只在 micro batch 间）；`tensordict_utils.make_iterator`(:603) 的 DataLoader **默认不 shuffle**。故 replay 拼在 batch 尾部会全落最后 ceil(512/64)=8 个 mini batch，前 16 个 step 零 replay 梯度。
+- 结果：✅ 本机 9 passed / 2 skipped（`test_replay_batch` + `test_async_runner` + buffer_hooks smoke；smoke skip=verl 未装）；ruff 干净。
+- 解释：为何不"分开反传"——mini batch 各自 step，拆成独立 mini batch 会让 replay 走**另一次** optimizer.step，λ₃（相对 rl_loss 的权重语义）失效、Adam 动量被两个尺度污染，**数学上改变优化目标**。故保持 `total = rl_loss + λ₃·replay_loss` 合成一个标量不动，只在行分布上做 shuffle。**真实 `DataProto.reorder` 路径 off-cluster 走 ImportError early-return，待 64 卡验证**每 mini batch replay 行数 ≈21、梯度非零。
+- 待定：cluster.yaml:83 `train_batch_size=64` 若正式启用，64 新+512 replay=576 行、replay 占 89% 会淹没新任务——正式训练 train_batch 用 1024 还是 64 未拍板。
+
 ---
 
 ## 待新 session 在 64 卡机器填写的第一批条目（预留）
