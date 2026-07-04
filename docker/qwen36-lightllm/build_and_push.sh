@@ -5,11 +5,11 @@
 # （Pod 缺 CAP_SYS_ADMIN，BuildKit bind mount / legacy unshare 都会失败）。
 #
 # 用法：
-#   NAMESPACE=ccr-devsfttj bash docker/qwen36-lightllm/build_and_push.sh
+#   NAMESPACE=ccr-zuhu2026 bash docker/qwen36-lightllm/build_and_push.sh
 # 可选 env：
 #   IMAGE   镜像名（默认 qwen36-lightllm）
 #   TAG     版本（默认 1.0）
-#   USERNAME registry 登录名（默认 devsfttj-sunhao4）
+#   USERNAME registry 登录名（默认 zuhu2026-sunhao4）
 #   PUSH=0  只 build 不 push（默认 1=push）
 set -euo pipefail
 
@@ -19,8 +19,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REGISTRY="registry.cn-tj-01.sensecore.cn"
 IMAGE="${IMAGE:-qwen36-lightllm}"
 TAG="${TAG:-1.0}"
-USERNAME="${USERNAME:-devsfttj-sunhao4}"
-NAMESPACE="${NAMESPACE:?必须设置 NAMESPACE=ccr-devsfttj}"
+USERNAME="${USERNAME:-zuhu2026-sunhao4}"
+NAMESPACE="${NAMESPACE:-ccr-zuhu2026}"
 PUSH="${PUSH:-1}"
 
 LOCAL_REF="${IMAGE}:${TAG}"

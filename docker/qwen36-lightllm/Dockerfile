@@ -1,5 +1,5 @@
 
-ARG BASE_IMAGE=registry.cn-tj-01.sensecore.cn/ccr-devsfttj/verl:cu129_lightllm_sandbox_megatron0.14.0_vllm0.13.0R3_torch2.9.0_fa3_te2.5.0_0211
+ARG BASE_IMAGE=registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/verl:cu129_lightllm_sandbox_megatron0.14.0_vllm0.13.0R3_torch2.9.0_fa3_te2.5.0_0211
 FROM ${BASE_IMAGE}
 
 LABEL maintainer="sunhao4" \

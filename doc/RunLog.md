@@ -19,6 +19,12 @@
 
 ## 记录（最新在最上面）
 
+### 2026-07-03（晚，本机 CPU 开发机） | commit <pending>
+- 动作：租户迁移收尾——把**重 build 路径**上残留的旧租户默认值也切到 `ccr-zuhu2026`。前一条（21:07）做的是 retag+push（未重 build），故 `build_and_push.sh` 与 Dockerfile 里仍指向旧租户 `ccr-devsfttj`；本次补齐：① `docker/qwen36-lightllm/build_and_push.sh` 默认 `NAMESPACE ccr-devsfttj→ccr-zuhu2026`、`USERNAME devsfttj-sunhao4→zuhu2026-sunhao4`（原 `NAMESPACE:?` 必填改为默认新租户）。② `docker/qwen36-lightllm/Dockerfile` `ARG BASE_IMAGE` 的 base 由 `ccr-devsfttj/verl:...`→`ccr-zuhu2026/verl:...`（@孙豪 确认 base 已 retag 到新租户）。③ `Migration_64GPU.md:219` 旧的"base 仍在旧租户、重 build 需确认能否跨租户拉"注记 → 改为"base 已迁新租户，重 build 直接拉"。
+- 结果：✅ 全仓活配置（脚本/Dockerfile/yaml）里 `ccr-devsfttj` 已清零；剩余引用全在 doc/ 历史与迁移记录中（RunLog 禁改历史，正确保留）。新地址 `registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/qwen36-lightllm:1.0` 一致落地于 build 脚本 + Dockerfile + 启动指南 + Migration。
+- 产物：`docker/qwen36-lightllm/build_and_push.sh`、`docker/qwen36-lightllm/Dockerfile`、`doc/Migration_64GPU.md`。
+- 解释：区分两条路径——(1) **当前镜像**已在新租户（retag+push 产物，image ID `8631ec6c9b9b` 不变，可直接用）；(2) **未来重 build** 时才会读 build 脚本默认值 + Dockerfile base，本次把这条路径也对齐新租户，避免下次重 build 又落回旧租户或拉不到 base。
+
 ### 2026-07-03 21:07 | 本机 Mac（darwin，无 GPU） | commit <pending>
 - 动作：训练镜像从旧租户 `ccr-devsfttj` 迁至新租户 `ccr-zuhu2026`。① `docker login registry.cn-tj-01.sensecore.cn --username zuhu2026-sunhao4`（凭证存 `~/.docker/config.json`）。② 本地 `qwen36-lightllm:1.0`（image ID `8631ec6c9b9b`，76.3GB）retag → `registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/qwen36-lightllm:1.0`。③ `docker push`（未重 build，复用之前 `--provenance=false` 产物）。④ 镜像内依赖自检（`docker run --platform linux/amd64 --entrypoint python`）：泽寰栈 5 项版本对齐（transformers 5.8.0 / fla 0.4.2 / TransferQueue 0.1.6 / accelerate 1.13.0 / e2b 2.24.0）、transformers 认 qwen3_5、fla 可 import、verl 训练链路 12 依赖全 OK、lightllm 1.1.0 / megatron / flash_attn 2.7.4 / ray 2.49.1 / numpy 1.26.4 / torch 2.9.0+cu129。⑤ 修 `scripts/start_train.sh` + `run_phases.sh`：`EXPERIMENT_NAME` 从 config 动态读（不再硬编码 `qwen36_27b_b1`），日志目录 `outputs/<exp_name>/` 与 verl ckpt 目录 `checkpoints/RL/<exp_name>/` 同名、各实验独立不互相覆盖。⑥ 改 `doc/集群训练启动指南.md` §3 + `doc/Migration_64GPU.md` 附录 A.3 旧镜像地址 → 新租户。
 - 结果：✅ push 成功（exit 0，digest `sha256:8631ec6c9b9b...`，`docker manifest inspect` 远端可查）。✅ 镜像依赖对正式训练链路（lightllm rollout）齐全。⚠️ 两点非缺依赖、设计如此：(1) verl 本体不在镜像——定制版在 `/mnt/afs` 挂载进容器、`PYTHONPATH` 指向 AFS 源码（`start_train.sh:30` 自设，不靠 `dev_env.sh`）；(2) vllm 0.13 不认 qwen3_5 架构——但正式 rollout 走 lightllm 不走 vllm，不影响训练（用户已确认不切 vllm）。
