@@ -364,6 +364,33 @@
 - 解释：为何不"分开反传"——mini batch 各自 step，拆成独立 mini batch 会让 replay 走**另一次** optimizer.step，λ₃（相对 rl_loss 的权重语义）失效、Adam 动量被两个尺度污染，**数学上改变优化目标**。故保持 `total = rl_loss + λ₃·replay_loss` 合成一个标量不动，只在行分布上做 shuffle。**真实 `DataProto.reorder` 路径 off-cluster 走 ImportError early-return，待 64 卡验证**每 mini batch replay 行数 ≈21、梯度非零。
 - 待定：cluster.yaml:83 `train_batch_size=64` 若正式启用，64 新+512 replay=576 行、replay 占 89% 会淹没新任务——正式训练 train_batch 用 1024 还是 64 未拍板。
 
+### 2026-07-04（下午）| 开发机(tokenhub 可达,无 verl/GPU) | commits 2122f75..9ccc012
+- 动作：桶体系重构 + 数据管道打通 + 训练/评测脚本工程化。一条龙从 taskspec 到可提交训练。
+- **桶体系(7→9 单层)**：LLM 自由归纳先出"话题划分"(不合格,不是能力维度)→ 改按 ClawEval
+  官方 category 合并成 9 能力桶(workflow/ops/qa/finance/office/communication/safety/coding/
+  research，去多模态)。单层无子桶(简化系统)。映射见 runs/_analysis/capability_buckets/buckets.json。
+  全仓对齐:configs(base+12 phase config num_buckets 7→9)、replay_buffer/bucket.py、
+  trainer/{cl_main,domain_tagging}、相关测试。主线测试全绿。
+- **训练数据**：吴健 4941 taskspec 复制到 data/seed2traj_taskspecs → label_capability.py
+  并发打标(16 线程,~20min,兜底消 unknown)→ 去重(多进程重复写过,按 record_id 去重回 4941)
+  → labeled_to_parquet.py 转 verl parquet(多 query 句号合并)→ train 4842 + val 99。
+  落桶极不均:ops 36% coding 17% research/workflow 各 15%,finance/safety/qa 各 1%(小桶样本不足,
+  影响防遗忘实验,待议)。数据格式经代码核对与泽寰 base 的标准 verl(main_ppo/RLHFDataset)兼容。
+- **配置就绪**：train_files/val_files ??? → datasets/*.parquet;model.path HF名→本地权重
+  (cluster 覆盖 /tmp/qwen36);权重源 /mnt/afs_agents/share_models/Qwen/Qwen3.6-27B 存在。
+- **评测按桶**：build_eval_manifest.py 生成 eval/claweval_manifest.json(ClawEval 183 纯文本
+  → 9 桶,多轮 12 条按首轮归桶),run_eval 默认读它按 9 桶出分;run_phases 训练完自动串评测。
+- **脚本工程化**：scripts/experiments/{b1,r4,all}.sh 每实验一脚本(训练+评测)+ _run_one 核心;
+  卡数解耦(NNODES 等 env);SenseCore 变量映射 _sensecore_env.sh(run_phases+start_train 共用,
+  裸名优先→SENSECORE_PYTORCH_*→默认);启动前并行度整除自检(rank0,DP=总卡/SP,校验 mini/train
+  batch 整除);sleep 10s→inf 保活。
+- 结果：✅ 全脚本语法 OK;映射/自检本机验证(64卡 DP16、32卡 DP8 均过,配错提前 exit);
+  parquet 列 = verl 标准(prompt/data_source/reward_model/extra_info)可读。
+- 启动命令(SenseCore,卡数由提交界面节点数定):`bash scripts/experiments/b1.sh`(baseline)/
+  `all.sh`(全部)/`r4.sh`(完整方案);32 卡 `NNODES=4 ...`。命令内已含 sleep inf,不用手动加。
+- **待集群**:全栈训练冒烟(1-2 step)、DataProto.reorder 真实路径、评测真跑;小桶样本不足是否补数据;
+  SenseCore 实际变量名与假设(SENSECORE_PYTORCH_*)是否一致需首跑确认。
+
 ---
 
 ## 待新 session 在 64 卡机器填写的第一批条目（预留）
