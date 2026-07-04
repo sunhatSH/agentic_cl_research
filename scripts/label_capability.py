@@ -163,6 +163,7 @@ def main() -> int:
     ap.add_argument("--resume", action="store_true", help="跳过已打标的 record_id")
     ap.add_argument("--model", default=os.environ.get("DISCOVERY_MODEL", "claude-opus-4-8"))
     ap.add_argument("--out", default=str(OUT_DIR / "taskspecs_labeled.jsonl"))
+    ap.add_argument("--workers", type=int, default=16, help="并发线程数(tokenhub 并发打标)")
     args = ap.parse_args()
 
     key = _load_key()
@@ -180,18 +181,23 @@ def main() -> int:
         print(f"[label] resume: 已打标 {len(done)} 条，跳过", flush=True)
 
     tasks = _load_taskspecs(args.limit)
-    print(f"[label] 载入 {len(tasks)} 条 taskspec (源 {TASKSPECS})", flush=True)
+    todo = [ts for ts in tasks if (ts.get("task_id") or "") not in done]
+    print(f"[label] 载入 {len(tasks)} 条 taskspec，待打标 {len(todo)} 条 "
+          f"(源 {TASKSPECS}, 并发 {args.workers})", flush=True)
+
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
 
     from tqdm import tqdm
 
     system = _SYSTEM.format(bucket_defs=defs)
     valid = set(names)
+    lock = threading.Lock()
     fout = out_path.open("a", encoding="utf-8")
-    ok = fail = 0
-    for ts in tqdm(tasks, desc="labeling"):
+    counters = {"ok": 0, "fail": 0}
+
+    def _label_one(ts: dict) -> None:
         rid = ts.get("task_id") or ""
-        if rid in done:
-            continue
         user = _USER.format(
             seed=(ts.get("seed_query", "") or "")[:1200],
             goal=(ts.get("hidden_goal", "") or "")[:1200],
@@ -200,13 +206,13 @@ def main() -> int:
         try:
             out = _chat([{"role": "system", "content": system},
                          {"role": "user", "content": user}], args.model, key)
-            v = _parse_json(out)
-            bucket = v.get("bucket", "")
+            bucket = _parse_json(out).get("bucket", "")
         except Exception as exc:  # noqa: BLE001
             tqdm.write(f"FAIL {rid}: {exc}")
-            fail += 1
-            continue
-        # 空/非法桶 -> 强制重问一次(必须从 9 桶选一个),仍不合法才标 unknown
+            with lock:
+                counters["fail"] += 1
+            return
+        # 空/非法桶 -> 强制重问一次;仍不合法才标 unknown
         if bucket not in valid:
             try:
                 retry_user = user + (
@@ -233,11 +239,17 @@ def main() -> int:
             "safety_constraints": ts.get("safety_constraints", []),
             "difficulty": ts.get("difficulty", ""),
         }
-        fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        fout.flush()
-        ok += 1
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        with lock:
+            fout.write(line)
+            fout.flush()
+            counters["ok"] += 1
+
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        list(tqdm(ex.map(_label_one, todo), total=len(todo), desc="labeling"))
+
     fout.close()
-    print(f"\n[label] done: 成功 {ok} / 失败 {fail} -> {out_path}", flush=True)
+    print(f"\n[label] done: 成功 {counters['ok']} / 失败 {counters['fail']} -> {out_path}", flush=True)
     return 0
 
 

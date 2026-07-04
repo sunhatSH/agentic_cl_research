@@ -30,7 +30,7 @@ actor_rollout_ref:
     ppo_mini_batch_size: 64
     ppo_micro_batch_size_per_gpu: 1
     ppo_max_token_len_per_gpu: 32768
-    ulysses_sequence_parallel_size: 4
+    ulysses_sequence_parallel_size: ${oc.env:ULYSSES_SP_SIZE,4}   # 训练 SP; 换卡数按需覆盖
     fsdp_config:
       param_offload: false        # 不卸载
       optimizer_offload: false     # 不卸载
@@ -38,7 +38,7 @@ actor_rollout_ref:
   rollout:
     name: lightllm                 # 用拷到本项目侧的 verl（含 lightllm_rollout）跑 lightllm
     mode: async                    # 泽寰版 verl 已移除 sync；agent-loop + lightllm 也走 async server
-    tensor_model_parallel_size: 4
+    tensor_model_parallel_size: ${oc.env:ROLLOUT_TP_SIZE,4}   # rollout TP; 换卡数按需覆盖
     gpu_memory_utilization: 0.75
     n: 8
     max_model_len: 131072
@@ -80,8 +80,8 @@ reward:
 data:
   train_files: ???                # 待填：真实训练数据 parquet 路径
   val_files: ???                  # 待填：验证集 parquet 路径
-  train_batch_size: 64
-  gen_batch_size: 64
+  train_batch_size: ${oc.env:TRAIN_BATCH_SIZE,1024}   # 每 step 新任务数(replay 512 另拼)
+  gen_batch_size: ${oc.env:TRAIN_BATCH_SIZE,1024}
   max_prompt_length: 4096
   max_response_length: 8192
   return_raw_chat: true
@@ -90,10 +90,11 @@ data:
   dataloader_num_workers: 0
   cache_dir: /tmp/verl_rlhf_cache
 
-# ---- trainer：64 卡 = 8 节点 x 8 卡 -----------------------------------------
+# ---- trainer：卡数/机器数【不写死】，由环境变量注入(默认 64 卡 = 8x8) ----------
+# 32 卡: NNODES=4 (4x8) 或 N_GPUS_PER_NODE=4 (8x4)。集群调度器按实际节点注入 NNODES。
 trainer:
-  nnodes: 8
-  n_gpus_per_node: 8
+  nnodes: ${oc.env:NNODES,8}
+  n_gpus_per_node: ${oc.env:N_GPUS_PER_NODE,8}
   total_epochs: 1
   save_freq: 50
   test_freq: 50

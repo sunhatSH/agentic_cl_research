@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# 集群一键训练：按顺序跑一个或多个实验（默认 64 卡 = 8 节点 x 8 卡 = 8 个 rank）。
+# 集群一键训练：按顺序跑一个或多个实验。
+#
+# 卡数/机器数【不写死】，由环境变量注入(configs/cluster.yaml 用 ${oc.env:...})：
+#   NNODES(默认8) x N_GPUS_PER_NODE(默认8) = 总卡数(默认 64)。
+#   32 卡: NNODES=4 bash scripts/run_phases.sh ...   (4x8=32)
+#   并行度按需: ROLLOUT_TP_SIZE / ULYSSES_SP_SIZE (默认4)；TRAIN_BATCH_SIZE(默认1024)。
 #
 # 仿照集群参考脚本的 ray 多机 + torch distributed rendezvous 骨架，适配本项目：
 #   - 入口用本项目 trainer.cl_main（保留 CL Loss + Replay Buffer 注入）。
@@ -9,7 +14,7 @@
 # 用法：
 #   bash scripts/run_phases.sh                              # 默认跑 b1 + r4
 #   bash scripts/run_phases.sh configs/run/b1.yaml          # 只跑 b1
-#   bash scripts/run_phases.sh configs/run/b1.yaml configs/run/r4.yaml ...
+#   NNODES=4 bash scripts/run_phases.sh configs/run/b1.yaml # 32 卡
 #
 # 集群按每节点一份调度本脚本，注入 RANK / MASTER_ADDR / MASTER_PORT。
 set -uo pipefail
@@ -80,6 +85,10 @@ cd "$PROJECT_DIR"
 OMP_NUM_THREADS=1 python -c "import os, torch.distributed as d; s,r,w = d.rendezvous(f'tcp://{os.environ[\"MASTER_ADDR\"]}:{os.environ[\"MASTER_PORT\"]}'); d.init_process_group('gloo', store=s, rank=r, world_size=w); d.barrier()"
 
 if [ "${RANK}" = "0" ]; then
+    # 打印本次实际卡数/并行度(来自环境变量，未设走 cluster.yaml 默认)。
+    _NN="${NNODES:-8}"; _NG="${N_GPUS_PER_NODE:-8}"
+    echo "[run_phases] GPU 拓扑: NNODES=${_NN} x N_GPUS_PER_NODE=${_NG} = $((_NN*_NG)) 卡 | " \
+         "TP=${ROLLOUT_TP_SIZE:-4} SP=${ULYSSES_SP_SIZE:-4} TRAIN_BATCH=${TRAIN_BATCH_SIZE:-1024}"
     # 仅当仍在用 mock judge 时才在本地起 mock 服务；用了真实 judge（tokenhub）则跳过。
     if [ "$REWARD_MODEL" = "mock-judge" ]; then
         python "$PROJECT_DIR/scripts/mock_judge.py" --port 8100 > /tmp/mock_judge.log 2>&1 &
