@@ -1,7 +1,7 @@
 """Top-level replay buffer with 7 capability buckets.
 
 Implements the design from ``doc/BucketDesign.md``:
-- 7 buckets by capability (Workflow / SysOps / Dialogue / Finance /
+- 9 buckets (workflow / ops / qa / finance / office /
   Communication / Knowledge / OfficeQA), not by difficulty.
 - Quota allocation: q_min hard floor + sqrt-weighted soft target.
 - In-bucket eviction only -- no cross-bucket displacement.
@@ -90,7 +90,7 @@ class BucketReplayBuffer:
 
     def __init__(
         self,
-        num_buckets: int = 7,
+        num_buckets: int = 9,
         total_capacity: int = 25000,
         q_min: int = 2000,
         bucket_names: Sequence[str] | None = None,
@@ -103,16 +103,18 @@ class BucketReplayBuffer:
     ):
         if bucket_names is None:
             bucket_names = [
-                "Workflow",
-                "SysOps",
-                "Dialogue",
-                "Finance",
-                "Communication",
-                "Knowledge",
-                "OfficeQA",
+                "workflow",
+                "ops",
+                "qa",
+                "finance",
+                "office",
+                "communication",
+                "safety",
+                "coding",
+                "research",
             ]
         if bucket_task_counts is None:
-            bucket_task_counts = [54, 52, 38, 18, 12, 11, 10]
+            bucket_task_counts = [55, 43, 31, 16, 11, 11, 9, 2, 5]
 
         # Single-bucket collapse: tolerate inheriting multi-bucket name/count
         # lists when num_buckets == 1 (R0 CLEAR baseline).

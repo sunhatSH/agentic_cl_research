@@ -85,7 +85,7 @@ def build_buffer(cfg):
         priority = Priority()
 
     buffer = BucketReplayBuffer(
-        num_buckets=int(bcfg.get("num_buckets", 7)),
+        num_buckets=int(bcfg.get("num_buckets", 9)),
         total_capacity=int(bcfg.get("total_capacity", 25000)),
         q_min=int(bcfg.get("q_min", 2000)),
         bucket_names=list(bcfg.get("bucket_names", [])) or None,

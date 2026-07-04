@@ -17,7 +17,7 @@ def _make_warmup_dump(path) -> dict[str, int]:
     """Dump a small buffer; return its per-bucket distribution."""
     buf = BucketReplayBuffer(total_capacity=14000, q_min=500, seed=0)
     buf.set_step(3)
-    plan = {"Workflow": 4, "SysOps": 3, "Dialogue": 2}
+    plan = {"workflow": 4, "ops": 3, "qa": 2}
     for bucket, n in plan.items():
         for i in range(n):
             buf.add_trajectory({"messages": []}, bucket, metadata={"pattern_id": f"{bucket}-{i}"})

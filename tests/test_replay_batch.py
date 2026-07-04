@@ -15,7 +15,7 @@ class FakeBatch:
 def _buffer_with(n: int) -> BucketReplayBuffer:
     buf = BucketReplayBuffer(total_capacity=14000, q_min=500, seed=0)
     for i in range(n):
-        buf.add_trajectory("t", "Workflow", metadata={"pattern_id": f"p{i}"})
+        buf.add_trajectory("t", "workflow", metadata={"pattern_id": f"p{i}"})
     return buf
 
 
@@ -49,6 +49,6 @@ def test_unlabeled_bucket_skipped_by_default():
 
 def test_explicit_default_bucket_catch_all():
     batch = FakeBatch({"messages": [[{"role": "assistant", "content": "a"}]]})
-    out = extract_trajectories_from_batch(batch, default_bucket="Workflow")
+    out = extract_trajectories_from_batch(batch, default_bucket="workflow")
     assert len(out) == 1
-    assert out[0][1] == "Workflow"
+    assert out[0][1] == "workflow"

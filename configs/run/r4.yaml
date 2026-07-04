@@ -17,7 +17,7 @@ cl:
   lambda_replay: 0.5
   buffer:
     enabled: true
-    num_buckets: 7
+    num_buckets: 9
   weighting:
     scheme: W0
 

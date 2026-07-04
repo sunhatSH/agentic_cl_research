@@ -13,7 +13,7 @@ cl:
   lambda_replay: 0.5
   buffer:
     enabled: true
-    num_buckets: 7
+    num_buckets: 9
     warmup_path: data/mock/buffer_dumps/p0-e_mix3070.sqlite   # 30% 27B : 70% gpt5
   weighting:
     scheme: W0

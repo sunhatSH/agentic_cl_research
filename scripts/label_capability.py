@@ -206,8 +206,20 @@ def main() -> int:
             tqdm.write(f"FAIL {rid}: {exc}")
             fail += 1
             continue
+        # 空/非法桶 -> 强制重问一次(必须从 9 桶选一个),仍不合法才标 unknown
         if bucket not in valid:
-            tqdm.write(f"WARN {rid}: bucket={bucket!r} 不在桶名单，标 unknown")
+            try:
+                retry_user = user + (
+                    f"\n\n上次未给出有效桶。必须从 {names} 里选【唯一一个】最匹配的英文桶名，"
+                    "不许为空、不许编造新名。只回 JSON。"
+                )
+                out = _chat([{"role": "system", "content": system},
+                             {"role": "user", "content": retry_user}], args.model, key)
+                bucket = _parse_json(out).get("bucket", "")
+            except Exception:  # noqa: BLE001
+                bucket = ""
+        if bucket not in valid:
+            tqdm.write(f"WARN {rid}: 重问后仍无效 bucket={bucket!r}，标 unknown")
             bucket = "unknown"
         prof = ts.get("user_profile") or {}
         rec = {

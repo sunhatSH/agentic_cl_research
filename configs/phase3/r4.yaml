@@ -14,7 +14,7 @@ cl:
   lambda_replay: 0.5
   buffer:
     enabled: true
-    num_buckets: 7
+    num_buckets: 9
     # total_capacity / q_min 统一由 base.yaml 定 (25000 / 2000)，桶容量不作超参
   weighting:
     scheme: W0                   # 无 U 形（token 级均匀）；priority 仍按轨迹缩放 + 用于采样。
