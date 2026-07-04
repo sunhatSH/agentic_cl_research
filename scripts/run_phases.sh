@@ -120,6 +120,13 @@ if [ "${RANK}" = "0" ]; then
             rc=$status
         else
             echo "[run_phases] done: $exp"
+            # 训练成功后自动评测(按 9 能力桶记录分数)。RUN_EVAL=0 可跳过。
+            if [ "${RUN_EVAL:-1}" = "1" ]; then
+                echo "[run_phases] eval: $exp -> $run_dir/eval (按桶记录)"
+                bash "$PROJECT_DIR/scripts/eval.sh" "$ckpt_dir" --exp-dir "$run_dir" \
+                    2>&1 | tee "$run_dir/logs/eval.log" || \
+                    echo "[run_phases] WARN: eval 失败($exp),训练结果仍保留" >&2
+            fi
         fi
     done
 

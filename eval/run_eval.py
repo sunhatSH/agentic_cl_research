@@ -43,8 +43,9 @@ def parse_args():
     parser.add_argument(
         "--tasks-file",
         type=str,
-        default=None,
-        help="ClawEval task manifest (JSON list; see load_tasks docstring).",
+        default="eval/claweval_manifest.json",
+        help="ClawEval task manifest (JSON list; 默认 eval/claweval_manifest.json, "
+             "由 scripts/build_eval_manifest.py 生成, 183 纯文本任务按 9 能力桶分组).",
     )
     parser.add_argument(
         "--include-multimodal",
