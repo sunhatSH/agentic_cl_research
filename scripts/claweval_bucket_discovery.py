@@ -19,7 +19,8 @@
   阶段二（聚合归纳）：把阶段一所有提议喂给 LLM → 合并近义 → 输出最终
     {n_main, n_sub, taxonomy:[{main, subs:[...], definition, task_count}]}。
 
-走 sufy（复用 label_buckets.py 的调用模式，SUFY_API_KEY）。
+走 tokenhub（本地开发机可达商汤内网；沙箱侧才用 sufy）。key 取 TOKENHUB_API_KEY。
+可用 DISCOVERY_API_BASE / DISCOVERY_API_KEY / DISCOVERY_MODEL 覆盖端点/密钥/模型。
 
 用法：
   source scripts/load_training_env.sh
@@ -55,7 +56,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CLAWEVAL_TASKS = "/mnt/afs_agents/qinshilong/claw-eval/tasks"
 OUT_DIR = ROOT / "runs" / "_analysis" / "bucket_discovery"
 
-SUFY_BASE = "https://openai.sufy.com/v1"
+SUFY_BASE = os.environ.get("DISCOVERY_API_BASE", "https://tokenhub.sensetime.com/v1")
 
 # Multimodal categories (M-series) — excluded by default (project uses text-only 195).
 _MULTIMODAL_CATS = {
@@ -66,30 +67,43 @@ _MULTIMODAL_CATS = {
 
 
 def _load_key() -> str:
-    key = os.environ.get("SUFY_API_KEY", "")
+    # 归纳在开发机本地跑(不经沙箱),用 tokenhub(商汤内网可达);沙箱侧才需 sufy。
+    # 可用 DISCOVERY_API_KEY 覆盖 key 变量名/值。
+    key = os.environ.get("DISCOVERY_API_KEY", "") or os.environ.get("TOKENHUB_API_KEY", "")
     if not key:
         env = ROOT / ".env"
         if env.is_file():
             for line in env.read_text(encoding="utf-8").splitlines():
-                if line.strip().startswith("SUFY_API_KEY="):
-                    key = line.split("=", 1)[1].strip().strip("\"'")
+                s = line.strip()
+                if s.startswith("TOKENHUB_API_KEY=") or s.startswith("DISCOVERY_API_KEY="):
+                    key = s.split("=", 1)[1].strip().strip("\"'")
                     break
     if not key:
-        sys.exit("ERROR: SUFY_API_KEY not set (source scripts/load_training_env.sh)")
+        sys.exit("ERROR: TOKENHUB_API_KEY not set (see .env / source scripts/load_training_env.sh)")
     return key
 
 
-def _chat(messages: list[dict], model: str, key: str, max_tokens: int = 1024) -> str:
+def _chat(messages: list[dict], model: str, key: str, max_tokens: int = 1024, retries: int = 3) -> str:
+    import time
+
     import httpx
 
-    resp = httpx.post(
-        f"{SUFY_BASE}/chat/completions",
-        json={"model": model, "messages": messages, "temperature": 0.0, "max_tokens": max_tokens},
-        headers={"Authorization": f"Bearer {key}"},
-        timeout=180.0,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    last = None
+    for attempt in range(retries):
+        try:
+            resp = httpx.post(
+                f"{SUFY_BASE}/chat/completions",
+                json={"model": model, "messages": messages, "temperature": 0.0, "max_tokens": max_tokens},
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=180.0,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except Exception as exc:  # noqa: BLE001 -- transient gateway timeout / 502
+            last = exc
+            if attempt < retries - 1:
+                time.sleep(2 * (attempt + 1))  # 2s,4s backoff
+    raise last
 
 
 def _parse_json(text: str):
@@ -224,16 +238,31 @@ _STAGE2_SYSTEM = textwrap.dedent("""\
 
 
 def stage2_aggregate(proposals: list[dict], model: str, key: str) -> dict:
-    # 把逐条提议压成紧凑列表喂给 LLM（只给 main/sub，不给 builtin category）
-    pairs = [{"main": p["main_bucket"], "sub": p["sub_bucket"]} for p in proposals]
+    # 压缩 payload：把 193 条逐条提议去重成"唯一(主桶,子桶)对 + 出现次数"，
+    # 避免一次性发几百条重复文本撑爆 sufy 网关(曾致 502 Bad Gateway)。
+    pair_counts = Counter((p["main_bucket"], p["sub_bucket"]) for p in proposals)
+    pairs = [{"main": m, "sub": s, "count": c} for (m, s), c in pair_counts.most_common()]
     payload = json.dumps(pairs, ensure_ascii=False)
-    user = f"共 {len(pairs)} 条 (主桶,子桶) 提议：\n{payload}\n\n请归纳成最终分桶体系，只回 JSON。"
+    user = (
+        f"共 {len(proposals)} 条任务，去重后 {len(pairs)} 个唯一 (主桶,子桶,出现次数) 提议：\n"
+        f"{payload}\n\n请归纳成最终分桶体系(task_count 用 count 求和)，只回 JSON。"
+    )
     out = _chat(
         [{"role": "system", "content": _STAGE2_SYSTEM},
          {"role": "user", "content": user}],
         model, key, max_tokens=4096,
     )
     return _parse_json(out)
+
+
+def _load_proposals(path: Path) -> list[dict]:
+    """Read a previously-saved proposals.jsonl (skip stage1 re-run)."""
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            out.append(json.loads(line))
+    return out
 
 
 def compare_vs_builtin(proposals: list[dict], taxonomy: dict) -> dict:
@@ -255,21 +284,36 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 个任务(0=全量)")
     ap.add_argument("--include-multimodal", action="store_true", help="纳入多模态 M-series(默认排除)")
-    ap.add_argument("--model", default="openai/gpt-5.5", help="归纳模型(sufy id)")
+    ap.add_argument("--model", default=os.environ.get("DISCOVERY_MODEL", "claude-opus-4-8-thinking"),
+                    help="归纳模型(tokenhub id，默认 claude-opus-4-8-thinking)")
     ap.add_argument("--write", action="store_true", help="产物落 runs/_analysis/bucket_discovery/")
+    ap.add_argument("--from-proposals", action="store_true",
+                    help="跳过阶段一，从已存 proposals.jsonl 直接做阶段二归纳(stage2 失败重跑用)")
     args = ap.parse_args()
 
     key = _load_key()
-    tasks = load_tasks(args.include_multimodal)
-    if args.limit > 0:
-        tasks = tasks[: args.limit]
-    print(f"[discovery] 载入 {len(tasks)} 个任务 "
-          f"(multimodal={'纳入' if args.include_multimodal else '排除'}, model={args.model})", flush=True)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    proposals = stage1_propose(tasks, args.model, key)
-    print(f"[discovery] 阶段一: {len(proposals)}/{len(tasks)} 条提议成功", flush=True)
-    if not proposals:
-        sys.exit("ERROR: 阶段一无成功提议")
+    # 阶段一：从已存 proposals 恢复(--from-proposals)或重跑；跑完【立即落盘】，
+    # 这样 stage2 若失败(曾 502)不用重跑 stage1。
+    prop_path = OUT_DIR / "proposals.jsonl"
+    if args.from_proposals:
+        proposals = _load_proposals(prop_path)
+        print(f"[discovery] 从 {prop_path} 恢复 {len(proposals)} 条提议(跳过阶段一)", flush=True)
+    else:
+        tasks = load_tasks(args.include_multimodal)
+        if args.limit > 0:
+            tasks = tasks[: args.limit]
+        print(f"[discovery] 载入 {len(tasks)} 个任务 "
+              f"(multimodal={'纳入' if args.include_multimodal else '排除'}, model={args.model})", flush=True)
+        proposals = stage1_propose(tasks, args.model, key)
+        print(f"[discovery] 阶段一: {len(proposals)}/{len(tasks)} 条提议成功", flush=True)
+        if not proposals:
+            sys.exit("ERROR: 阶段一无成功提议")
+        # 立即落盘 stage1 结果(不等 stage2)
+        prop_path.write_text(
+            "\n".join(json.dumps(p, ensure_ascii=False) for p in proposals) + "\n", encoding="utf-8")
+        print(f"[discovery] 阶段一已落盘 -> {prop_path}", flush=True)
 
     taxonomy = stage2_aggregate(proposals, args.model, key)
     n_main, n_sub = taxonomy.get("n_main"), taxonomy.get("n_sub")
@@ -281,17 +325,12 @@ def main() -> int:
     print(f"\n[discovery] 对照: 数据自带 {compare['builtin_category_count']} category "
           f"vs LLM 归纳 {n_main} 主桶/{n_sub} 子桶", flush=True)
 
-    if args.write:
-        OUT_DIR.mkdir(parents=True, exist_ok=True)
-        (OUT_DIR / "proposals.jsonl").write_text(
-            "\n".join(json.dumps(p, ensure_ascii=False) for p in proposals) + "\n", encoding="utf-8")
-        (OUT_DIR / "taxonomy.json").write_text(
-            json.dumps(taxonomy, ensure_ascii=False, indent=2), encoding="utf-8")
-        (OUT_DIR / "compare_vs_builtin.json").write_text(
-            json.dumps(compare, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[discovery] 产物 -> {OUT_DIR}", flush=True)
-    else:
-        print("[discovery] 未 --write，仅打印(加 --write 落盘)", flush=True)
+    # taxonomy / compare 总是落盘(proposals 已在上面存过)
+    (OUT_DIR / "taxonomy.json").write_text(
+        json.dumps(taxonomy, ensure_ascii=False, indent=2), encoding="utf-8")
+    (OUT_DIR / "compare_vs_builtin.json").write_text(
+        json.dumps(compare, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[discovery] 产物 -> {OUT_DIR}", flush=True)
     return 0
 
 
