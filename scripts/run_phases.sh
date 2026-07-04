@@ -88,14 +88,23 @@ if [ "${RANK}" = "0" ]; then
 
     rc=0
     for cfg in "${CONFIGS[@]}"; do
-        # 与 start_train.sh 一致：从 config 读 experiment_name，fallback basename。
-        # 这样日志目录 outputs/<exp_name>/ 与 verl ckpt 目录 checkpoints/RL/<exp_name>/ 同名。
+        # 与 start_train.sh 一致的 runs/ 布局：每实验自包含目录 runs/<phase>/<exp>/，
+        # 真实权重在 runs 外 ckpts/<exp>/，runs/<phase>/<exp>/checkpoints 软链过去。
         exp=$(grep -E "^[[:space:]]*experiment_name:" "$cfg" 2>/dev/null | head -1 | sed -E "s/.*experiment_name:[[:space:]]*//;s/[[:space:]\"']*//g" || true)
         exp="${exp:-$(basename "$cfg" .yaml)}"
-        echo "================ [run_phases] start: $exp ($cfg) ================"
-        mkdir -p "$RESULT_DIR/$exp"
-        python -m trainer.cl_main --config "$cfg" \
-            2>&1 | tee "$RESULT_DIR/$exp/train.log"
+        case "$cfg" in
+            *"/phase"[0-9]*) phase=$(echo "$cfg" | sed -E 's#.*/(phase[0-9]+)/.*#\1#') ;;
+            *"/run/"*)       phase="run" ;;
+            *)               phase="misc" ;;
+        esac
+        run_dir="$PROJECT_DIR/runs/$phase/$exp"
+        ckpt_dir="$PROJECT_DIR/ckpts/$exp"
+        mkdir -p "$run_dir/logs" "$run_dir/eval" "$run_dir/buffer" "$ckpt_dir"
+        ln -sfn "$ckpt_dir" "$run_dir/checkpoints"
+        cp -f "$cfg" "$run_dir/config.snapshot.yaml" 2>/dev/null || true
+        echo "================ [run_phases] start: $exp ($cfg) -> $run_dir ================"
+        CKPT_DIR="$ckpt_dir" python -m trainer.cl_main --config "$cfg" \
+            2>&1 | tee "$run_dir/logs/train.log"
         status=${PIPESTATUS[0]}
         if [ "$status" != "0" ]; then
             echo "[run_phases] FAILED: $exp (exit $status) — 继续后续实验" >&2

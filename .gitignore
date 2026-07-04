@@ -36,7 +36,12 @@ node_modules/
 ckpts/
 checkpoints/
 outputs/
-runs/
+# runs/: 实验产物根目录 -- 内容忽略，但保留 README + 各目录 .gitkeep 作结构约定（见 runs/README.md）
+runs/*
+!runs/README.md
+!runs/*/
+runs/*/*
+!runs/*/.gitkeep
 logs/
 *.log
 

@@ -23,10 +23,7 @@ VERL_DIR=/mnt/afs_toolcall/sunhao4/Documents/verl
 # 链路 OK 后换 configs/run/r4.yaml 开 7 桶 replay：bash start_train.sh configs/run/r4.yaml
 CONFIG="${1:-$PROJECT_DIR/configs/run/b1.yaml}"
 
-# experiment_name 从 config 动态读（与 verl 内部 trainer.experiment_name 一致）：
-#   ckpt  → checkpoints/${project_name}/${experiment_name}/global_step_<N>  (verl 自管)
-#   日志  → outputs/${experiment_name}/train.log                            (本脚本 tee)
-# 两者同名，各实验独立目录，不互相覆盖。config 没直接定义 experiment_name 时
+# experiment_name 从 config 动态读（与 verl 内部 trainer.experiment_name 一致）。
 # fallback 到 basename（与 run_phases.sh 一致）。
 EXPERIMENT_NAME=$(grep -E "^[[:space:]]*experiment_name:" "$CONFIG" 2>/dev/null | head -1 | sed -E "s/.*experiment_name:[[:space:]]*//;s/[[:space:]\"']*//g" || true)
 export EXPERIMENT_NAME="${EXPERIMENT_NAME:-$(basename "$CONFIG" .yaml)}"
@@ -34,7 +31,27 @@ export LIGHTLLM_LOG_LEVEL=WARNING TQ_LOGGING_LEVEL=WARNING
 export MODELING_BACKEND=hf
 # lightllm rollout 需要 LightLLM + verl 在 PYTHONPATH 上，再加本项目根（trainer.*）。
 export PYTHONPATH=$LIGHTLLM_DIR:$VERL_DIR:$PROJECT_DIR
-export RESULT_DIR=$PROJECT_DIR/outputs
+
+# ---- runs/ 产物布局（自包含实验目录，见 runs/README.md）----
+# 每个实验一个自包含子目录 runs/<phase>/<exp>/：config 快照 + eval + 日志 + buffer，
+# 权重不塞进来（太大）——verl 仍把真实 ckpt 写到 runs 外的 ckpts/<exp>/，
+# runs/<phase>/<exp>/checkpoints 软链过去。
+# phase 从 config 路径推（configs/phaseN/ 或 configs/run/ → 归 runN；显式传 PHASE 覆盖）。
+if [ -z "${PHASE:-}" ]; then
+    case "$CONFIG" in
+        *"/phase"[0-9]*) PHASE=$(echo "$CONFIG" | sed -E 's#.*/(phase[0-9]+)/.*#\1#') ;;
+        *"/run/"*)       PHASE="run" ;;
+        *)               PHASE="misc" ;;
+    esac
+fi
+export RUN_DIR="$PROJECT_DIR/runs/$PHASE/$EXPERIMENT_NAME"
+export CKPT_DIR="$PROJECT_DIR/ckpts/$EXPERIMENT_NAME"   # 真实权重（runs 外）
+export RESULT_DIR="$RUN_DIR"                            # 日志写进实验自包含目录
+mkdir -p "$RUN_DIR/logs" "$RUN_DIR/eval" "$RUN_DIR/buffer" "$CKPT_DIR"
+# checkpoints 软链：runs/<phase>/<exp>/checkpoints -> ../../../ckpts/<exp>
+ln -sfn "$CKPT_DIR" "$RUN_DIR/checkpoints"
+# config 快照（可追溯该实验用的完整参数）
+cp -f "$CONFIG" "$RUN_DIR/config.snapshot.yaml" 2>/dev/null || true
 
 # 训练密钥（gitignore 的 .env）：SWANLAB_API_KEY + REWARD_API_BASE/MODEL/KEY 都从这里来。
 if [ -f "$PROJECT_DIR/.env" ]; then
@@ -85,7 +102,7 @@ python -m pip install e2b==2.24.0 flash-linear-attention==0.4.2 langchain-openai
 # 对象存储配置：原参考脚本借用的是别人的 aoss.conf；存在才软链，缺了不报错。
 # 若你有自己的 aoss.conf，把下面源路径换成你的。
 [ -f /mnt/afs_reason/liangjinwei/aoss.conf ] && ln -sf /mnt/afs_reason/liangjinwei/aoss.conf ~/aoss.conf
-mkdir -p $RESULT_DIR/$EXPERIMENT_NAME
+mkdir -p $RUN_DIR/logs
 
 cd "$PROJECT_DIR"
 
@@ -111,7 +128,7 @@ if any('not configured' in w for w in warnings):
     fi
     ray start --head --disable-usage-stats && ray status
     python -m trainer.cl_main --config "$CONFIG" \
-        2>&1 | tee $RESULT_DIR/$EXPERIMENT_NAME/train.log
+        2>&1 | tee $RUN_DIR/logs/train.log
     ray stop --force
 else
     ray start --address $MASTER_ADDR:6379 --block

@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -46,6 +47,13 @@ def load_config(config_path: str):
                 base_path = (cfg_path.parent / f"{ref}.yaml").resolve()
             merged = OmegaConf.merge(merged, OmegaConf.load(base_path))
         cfg = OmegaConf.merge(merged, cfg)
+
+    # runs/ layout: if CKPT_DIR is set (start_train.sh), write real checkpoints
+    # there (runs-external ckpts/<exp>/, symlinked from runs/<phase>/<exp>/checkpoints).
+    # See runs/README.md + doc/eval/训练与评测总思路_产物结构.md.
+    ckpt_dir = os.environ.get("CKPT_DIR")
+    if ckpt_dir:
+        OmegaConf.update(cfg, "trainer.default_local_dir", ckpt_dir, force_add=True)
     return cfg
 
 
