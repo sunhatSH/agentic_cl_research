@@ -3,7 +3,7 @@
 > **状态**：本文记录 Agent 轨迹的两种 schema——**现状**（mock 采集产物）与**目标**（buffer/训练消费）。  
 > **日期**：2026-06-26  
 > **背景**：训练 Agent **仅用 Hermes**（不用 OpenClaw）。冷启动 buffer 轨迹须由 π₀（Qwen3.6-27B）产出。  
-> **关联**：`doc/Buffer_冷启动数据需求.md §2.2`、`trainer/trajectory_adapter.py`、`rollout/session_pool.py::Trajectory`、`doc/Hermes_Subagent_训练数据方案.md`。
+> **关联**：`doc/source/CL_Design.md §2.2`、`trainer/trajectory_adapter.py`、`rollout/session_pool.py::Trajectory`、`doc/source/Hermes_Subagent_训练数据方案.md`。
 
 ---
 
@@ -76,7 +76,7 @@
 
 ## 2. 目标 Schema（buffer/训练消费）
 
-**权威来源**：`trainer/trajectory_adapter.py::extract_trajectories_from_batch` + `doc/Buffer_冷启动数据需求.md §2.2` + `rollout/session_pool.py::Trajectory`。
+**权威来源**：`trainer/trajectory_adapter.py::extract_trajectories_from_batch` + `doc/source/CL_Design.md §2.2` + `rollout/session_pool.py::Trajectory`。
 
 **一个 buffer trajectory = 一个 slot 的一次 query rollout**（GRPO 组内 8 条之一）：
 

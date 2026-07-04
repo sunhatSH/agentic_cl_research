@@ -1,7 +1,7 @@
 # Rollout 采集系统技术报告
 
 > **范围**：本报告记录**冷启动多轮 rollout 采集系统**的设计、实现与验证（@孙豪 搭建）。
-> **创建**：2026-06-13。配套设计见 [`UserSim_多轮Query在线生成.md`](UserSim_多轮Query在线生成.md)、运行手册见 [`ColdRollout_采集.md`](ColdRollout_采集.md)、论文表述见 `paper/drafts/Paper_Method_draft_*.md` §4.5。
+> **创建**：2026-06-13。配套设计见 [`UserSim_多轮Query在线生成.md`](../source/UserSim_多轮Query在线生成.md)、运行手册见 [`ColdRollout_采集.md`](../ops/sandbox/ColdRollout_采集.md)、论文表述见 `paper/drafts/Paper_Method_draft_*.md` §4.5。
 
 ## 0. 贡献边界（务必明确）
 
@@ -39,7 +39,7 @@ actor（被采集策略）有两套并跑，**数据严格分目录**：
 | 远程/沙箱 | **openai/gpt-5** | sufy（OpenAI 兼容，沙箱内 hermes 调） | `data/mock/rollouts/remote/` |
 
 三个 agent 角色用**三个不同模型**（抗 self-preference）：
-- 沙箱内 actor = `openai/gpt-5`；observer = `openai/gpt-5-mini`；questioner = `anthropic/claude-sonnet-5`（+ 轮换池）。选型单一信源见 [`模型选型.md`](模型选型.md)。
+- 沙箱内 actor = `openai/gpt-5`；observer = `openai/gpt-5-mini`；questioner = `anthropic/claude-sonnet-5`（+ 轮换池）。选型单一信源见 [`模型选型.md`](../source/模型选型.md)。
 - 远程 API = sufy（`https://openai.sufy.com/v1`，key `SUFY_API_KEY`）。旧 tokenhub 已弃用（沙箱连不上商汤内网）。
 - **硬约束**：observer/questioner 必须用远程模型；远程不可用则**中止并报告**，不降级（无 observer = 无报告 = 多轮无法进行）。
 

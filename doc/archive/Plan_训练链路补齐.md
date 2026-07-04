@@ -1,13 +1,13 @@
 # 训练链路补齐计划（执行版）
 
 > **本文是交给实现者（AI/人）的施工图**：列出 64 卡 27B 正式训练前所有残缺模块的实现规格。
-> 状态快照见 `doc/Progress.md`；调度设计见 `doc/sandbox/Sandbox_管理调度指南.md`；CL 设计见 `doc/CL_Update_Sunhao.md`。
+> 状态快照见 `doc/archive/Progress.md`；调度设计见 `doc/ops/sandbox/Sandbox_管理调度指南.md`；CL 设计见 `doc/source/CL_Design.md`。
 
 **写作日期**：2026-06-10（2026-06-10 增补：agent harness 决策 + 沙箱镜像层）
 **前提**：64 卡集群 + Qwen3.6-27B 权重已具备（@孙豪 确认）。
 **核心决策（已定，不要改）**：
 - 奖励用**规则计算**，不用显式 reward model（`reward_model.enable` 保持 false）。
-- agent harness = **OpenClaw**（沙箱内执行动作，推理在沙箱外调 vLLM）。架构见 `doc/sandbox/Sandbox_Agent架构.md`。
+- agent harness = **OpenClaw**（沙箱内执行动作，推理在沙箱外调 vLLM）。架构见 `doc/ops/sandbox/Sandbox_Agent架构.md`。
 
 ---
 
@@ -43,7 +43,7 @@
 >
 > 实现：`trainer/model_reward.py`（抽象 `JudgeClient`，`compute_score` 委托，**模型不写死**，从 `JUDGE_API_BASE`/`JUDGE_MODEL` 解析）+ `tests/test_model_reward.py`（6 passed，mock judge）+ `scripts/serve_reward_model.sh`（vLLM 起本地冻结 judge，模型路径参数化）+ `base.yaml reward.*` 指向 model_reward。
 >
-> judge 部署：走 sufy 网关托管的 `anthropic/claude-4.8-opus`（冻结，能力远超 27B 策略以 anti reward-hacking）；需用 ClawEval 人工 rubric 一致率校准。详见 `doc/sandbox/Sandbox_Agent架构.md` reward judge 节。
+> judge 部署：走 sufy 网关托管的 `anthropic/claude-4.8-opus`（冻结，能力远超 27B 策略以 anti reward-hacking）；需用 ClawEval 人工 rubric 一致率校准。详见 `doc/ops/sandbox/Sandbox_Agent架构.md` reward judge 节。
 >
 > **待办**：选定 judge 模型 + 起 endpoint + 一致率校准。下方规则方案已废弃，仅留作历史背景。
 
@@ -71,7 +71,7 @@ tests/test_rule_reward.py       # 纯 Python 单测，不依赖 verl 运行时
 
 > 放 `trainer/` 而非 `rollout/`：它是训练侧组件，被 verl 动态加载；但函数体本身保持纯 Python（不 import verl），便于单测。
 
-### A.3 评分公式（对齐 ClawEval，见 `doc/ClawEval_Metadata.md`）
+### A.3 评分公式（对齐 ClawEval，见 `doc/source/ClawEval_Metadata.md`）
 
 \[
 score = s_{safety} \times (0.8 \cdot s_{completion} + 0.2 \cdot s_{robustness})
@@ -178,7 +178,7 @@ data:
 
 > 2026-06-10：`rollout/session_pool.py`（spawn/run_query/pick_winner/sync_to_winner/run_checkers/run_session）+ `rollout/scheduler.py`（16 会话并行）+ `tests/test_session_pool.py`（8 passed）。验证了同起点、winner-sync、兜底规则、不回写母版、16×8 拓扑。**待办**：接真实腾讯后端的 pause→fork sync（§6 D1）+ 128 并发实测。下方为原始规格。
 
-**规格以 `doc/sandbox/Sandbox_管理调度指南.md` 为准**（§4 状态机、§6 平台路径、§7 接口）。要点重述：
+**规格以 `doc/ops/sandbox/Sandbox_管理调度指南.md` 为准**（§4 状态机、§6 平台路径、§7 接口）。要点重述：
 
 - 全局母版固定；每条 queries 会话从母版派生 8 槽
 - 会话内每条 query 跑完：选 winner（含同分/全失败兜底）→ 8 槽磁盘 + **对话上下文** 都对齐 winner
@@ -221,7 +221,7 @@ class SessionSandboxPool:
 
 verl 的 rollout（vLLM 生成）需要在生成过程中执行 tool call 并把 observation 拼回上下文。两条路线，**实现者先做 D-2 的可行性确认，再动工**：
 
-**轨迹收集 = 用框架原生，别造 proxy。** verl 自带 `verl/experimental/agent_loop/`（`ToolAgentLoop`），其 `AgentLoopOutput` 原生给出 `prompt_ids`/`response_ids`/`response_mask`（1=生成 token，0=observation）/`rollout_log_probs`/`num_turns`——`trajectory_adapter` 读的正是这些字段。见 `doc/sandbox/Sandbox_Agent架构.md §3`。
+**轨迹收集 = 用框架原生，别造 proxy。** verl 自带 `verl/experimental/agent_loop/`（`ToolAgentLoop`），其 `AgentLoopOutput` 原生给出 `prompt_ids`/`response_ids`/`response_mask`（1=生成 token，0=observation）/`rollout_log_probs`/`num_turns`——`trajectory_adapter` 读的正是这些字段。见 `doc/ops/sandbox/Sandbox_Agent架构.md §3`。
 
 | 路线 | 做法 | 优点 | 风险 |
 |------|------|------|------|
@@ -261,7 +261,7 @@ verl 的 rollout（vLLM 生成）需要在生成过程中执行 tool call 并把
 
 ## Gap H（P0）：沙箱镜像 + agent harness —— 代码已就位，待 build 验证
 
-架构见 `doc/sandbox/Sandbox_Agent架构.md`（动作在沙箱内、推理在外、OpenClaw、随机用户文件系统）。
+架构见 `doc/ops/sandbox/Sandbox_Agent架构.md`（动作在沙箱内、推理在外、OpenClaw、随机用户文件系统）。
 
 **已完成（本轮）**：
 
@@ -289,7 +289,7 @@ verl 的 rollout（vLLM 生成）需要在生成过程中执行 tool call 并把
 |----|------|
 | dev 依赖缺失 | `.venv` 里没装 ruff/black/mypy → `uv pip install -e ".[dev]"` |
 | 未提交变更 | 文档清理 + 调度指南 + 架构文档 + 镜像层文件待 commit 到 `dev_train` |
-| 文档漂移 | `doc/CL_Update_Sunhao.md` 个别处可能残留 traj/query=2 旧数字；27B 显存/耗时估算待重算（C2） |
+| 文档漂移 | `doc/source/CL_Design.md` 个别处可能残留 traj/query=2 旧数字；27B 显存/耗时估算待重算（C2） |
 
 ---
 

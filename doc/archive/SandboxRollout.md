@@ -60,4 +60,4 @@ AGS 把 Docker 的 image/container 二元拆成 **Tool / Instance** 两层：
 - 腾讯云 Agent Runtime 文档：<https://cloud.tencent.com/document/product/1814/129423>
 - AGS Cookbook：<https://github.com/TencentCloudAgentRuntime/ags-cookbook>
 - E2B 协议：<https://e2b.dev/>
-- 项目内：`doc/CL_Update_Sunhao.md`、`doc/BucketDesign.md`、`doc/VerlIntegration.md`
+- 项目内：`doc/source/CL_Design.md`、`doc/source/CL_Design.md`、`doc/source/训练与推理流程.md`

@@ -1,4 +1,4 @@
-# 模型更新与 Continual Learning 设计
+# Continual Learning 系统设计
 
 ---
 
@@ -70,12 +70,14 @@ $$ L_{reg} = ||\theta - \theta_{prev}||^2 \quad \text{（弃用，权重 0）} $
 
 ## Replay Buffer 设计
 
+> 目标：纯文本 continual learning，学新任务时不遗忘旧能力。不纳入 multimodal（仅 4 任务，能力结构不同）。
+
 ### 7 桶结构
 
-按能力/领域分 7 桶，桶内按抗遗忘 priority 存留，禁止跨桶淘汰。
+按**能力/领域**分桶，不按难度分桶（难度随模型能力提升漂移，非稳定依据；灾难性遗忘更常沿能力类型发生）。每桶保底配额，桶内按 priority 存留，桶间不直接竞争。Priority 不依赖 reward 绝对值（reward 整体上升会使旧轨迹系统性被淘汰，buffer 退化为滑动窗口）。
 
 ```text
-ReplayBuffer [195]
+ReplayBuffer
 ├── Workflow [54]
 │   ├── workflow [47]
 │   └── productivity [7]
@@ -87,18 +89,10 @@ ReplayBuffer [195]
 │   ├── security [2]
 │   ├── coding [2]
 │   └── file_ops [1]
-├── Dialogue [38]
-│   ├── what [26]
-│   └── user_agent [12]
 ├── Finance [18]
 │   ├── finance [14]
 │   ├── compliance [2]
 │   └── procurement [2]
-├── Communication [12]
-│   ├── communication [8]
-│   ├── content [2]
-│   ├── rewriting [1]
-│   └── organization [1]
 ├── Knowledge/Analysis [11]
 │   ├── research [3]
 │   ├── knowledge [2]
@@ -106,69 +100,93 @@ ReplayBuffer [195]
 │   ├── comprehension [2]
 │   ├── data_analysis [1]
 │   └── memory [1]
-└── OfficeQA [10]
-    └── office_qa [10]
+├── Communication [12]
+│   ├── communication [8]
+│   ├── content [2]
+│   ├── rewriting [1]
+│   └── organization [1]
+├── OfficeQA [10]
+│   └── office_qa [10]
+└── Dialogue [38]
+    ├── what [26]
+    └── user_agent [12]
 ```
 
-> OfficeQA 单独成桶：办公语境与一般 knowledge 遗忘模式不同，并入 Knowledge/Analysis 会被稀释。不纳入 multimodal(4)：模态不同、数据太少、目标不一致。纯文本总计 195 任务。
+纯文本 buffer 总任务数 = 195（199 纯文本任务剔除 4 个 multimodal）。
 
-### 核心参数与 Quota 分配
+| 桶 | 任务数 | 核心能力 |
+|---|---:|---|
+| **Workflow** | 54 | 多步骤任务组织、流程推进、子任务拆解与执行顺序控制 |
+| **SysOps** | 52 | 工具使用、命令与系统操作、约束遵守、安全边界、程序性执行 |
+| **Finance** | 18 | 结构化业务规则、数值意识、规范判断与合规约束 |
+| **Knowledge/Analysis** | 11 | 检索、阅读理解、归纳总结、信息整合与轻量分析推理 |
+| **Communication** | 12 | 表达、改写、风格控制、信息组织和面向受众的沟通 |
+| **OfficeQA** | 10 | 办公语境中的结构化问答、字段定位、文档细节理解；单独成桶不并入 Knowledge |
+| **Dialogue** | 38 | 多轮交互中的状态跟踪、上下文保持、角色一致性与对话策略 |
 
-**核心参数：**
-- 总容量 $C$：10k–50k 条轨迹
-- 桶数 $B = 7$
-- 各桶配额 $q_i$：保底 + 次线性加权（见下方 Quota 分配）
+### Quota 分配
 
-**Quota 分配：保底 + 平方根加权**
+$$q_i = q_{min} + (C - B \cdot q_{min}) \cdot \frac{n_i^{\alpha}}{\sum_j n_j^{\alpha}}$$
 
-$$q_i = q_{min} + (C - B \cdot q_{min}) \cdot \frac{n_i^{0.5}}{\sum_j n_j^{0.5}}$$
+- $C$：总 buffer 容量（轨迹条数）；$B$：桶数 $= 7$；$q_{min}$：每桶 hard floor；$n_i$：第 $i$ 桶任务数；$\alpha$：次线性指数，推荐 $0.5$（平方根分配）
 
-- $n_i$：第 $i$ 个桶的任务数，$\alpha = 0.5$（平方根，次线性）
-- 大桶得更多但不按比例膨胀，小桶有保底不被挤空
-- 工程上分两层：**hard floor**（$q_{min}$，不可跌破）+ **soft target**（上式计算值，超则加速淘汰，低则加速接纳）
+**含义**：$q_{min}$ 保证每桶最低生存空间；第二项将剩余容量按桶规模次线性分配。大桶容量更多但增长慢于任务数增长，兼顾主流与长尾能力。
 
-**25k 示例**（$q_{min}=2000$）：Workflow≈4319, SysOps≈4272, Dialogue≈3938, Finance≈3337, Communication≈3092, Knowledge≈3047, OfficeQA≈2995
+**工程理解**：hard floor（不可跌破）+ soft target（超则加速淘汰，低则加速接纳）。
+
+**示例**（$C = 25{,}000$, $q_{min} = 2{,}000$, $\alpha = 0.5$）：
+
+| 桶 | 任务数 | quota 近似值 |
+|---|---:|---:|
+| Workflow | 54 | 4,319 |
+| SysOps | 52 | 4,272 |
+| Dialogue | 38 | 3,938 |
+| Finance | 18 | 3,337 |
+| Communication | 12 | 3,092 |
+| Knowledge/Analysis | 11 | 3,047 |
+| OfficeQA | 10 | 2,995 |
 
 ### Priority 定义（抗遗忘）
 
-**抗遗忘价值，不使用 reward 绝对值**
+训练推进时 reward 整体上升，按 reward 绝对值排序会使新轨迹系统性压制旧轨迹。Priority 反映的是**轨迹对防止遗忘的重要性**，而非**当时取得多高 reward**。
 
-$$priority_i = f(forgetting\_risk_i,\; rarity_i,\; diversity_i,\; within\_bucket\_difficulty_i)$$
+| 信号 | 权重 | 定义 |
+|---|---:|---|
+| **Forgetting Risk** | 0.5 | 当前模型在该轨迹上是否出现性能回退 |
+| **Rarity** | 0.25 | 桶内低频模式/模板，防热门模板占满 |
+| **Difficulty** | 0.25 | 桶内相对难度，覆盖边界/复杂场景 |
+| ~~Diversity~~ | v1 禁用 | 每 query 仅 2 条轨迹，后续版本启用 |
 
-| 信号 | 含义 |
-|------|------|
-| **Forgetting Risk** | 当前模型在该轨迹上性能回退程度 |
-| **Rarity** | 桶内低频模式/模板，防热门模板占满 |
-| **Diversity/Redundancy** | 与桶内已有轨迹的重复度（每 query 8 条轨迹，组内与桶内去重都重要） |
-| **Within-bucket Difficulty** | 桶内相对难度，覆盖边界/复杂场景 |
+### 淘汰规则：桶内淘汰
 
-> 高 priority = 代表旧能力 + 已出现退化 + 稀有 + 不重复 + 覆盖边界。**Priority 反映的是"这条轨迹对防止遗忘有多重要"，而非"这条轨迹当时取得了多高 reward"。** 随训练推进 reward 整体上升，若按 reward 绝对值排优先级，旧轨迹会系统性被淘汰，buffer 退化为滑动窗口，失去 CL 意义。
+**禁止跨桶挤出**。新轨迹按能力映射进入所属桶 → 桶未满直接接纳 → 桶已满仅在该桶内部淘汰最低 priority 轨迹 → 不允许跨桶挤出。
 
-### 淘汰规则与采样规则
+### 采样规则：两级采样
 
-**淘汰规则：桶内淘汰，禁止跨桶挤出**
-- 桶未满 → 新轨迹直接接纳
-- 桶已满 → 只在该桶内淘汰最低 priority 轨迹
-- 空桶首次接收 → 直接接纳，给较高初始 priority（开创性样本 boost）
-- 不允许新任务跨桶挤出旧任务
+1. **采桶**：混合策略——部分按 soft target 比例 + 部分按均匀，兼顾大桶覆盖与长尾能力
+2. **桶内采轨迹**：按 priority **加权随机**采样，**非 top-k 贪心**，避免只重复"明星轨迹"
 
-**采样规则：两级采样**
-1. **采桶**：混合策略——部分按 soft target 比例 + 部分按均匀，兼顾大桶覆盖与长尾能力；长期无新任务的桶给予 starvation_boost
-2. **桶内采轨迹**：按 priority 加权随机采样，不贪心选 top-k，避免只重复"明星轨迹"
+### Buffer 组织与检索
 
-### 冷启动处理
+**轨迹级元数据**：`trajectory_id` / `record_id` / `query_index` / `slot_idx` / `bucket` / `priority` / `insert_step` / `last_replay_step` / `replay_count` / `token_length` / `pattern_id`。
 
-**数据流程**：queries JSONL → `scripts/clean_queries.py`（去零宽+乱码过滤）→ `scripts/collect_cold.py`（多轮采样）→ cold buffer SQLite → `scripts/clean_buffer.py`（轨迹级清洗）→ 训练加载。
+**主存储 + 轻量索引**，支持：按 ID / 按 bucket / 按 priority 排序 / 按 pattern 访问。精确查询（调试/诊断）与训练采样（概率抽样）分开。
 
-1. **queries 清洗**（`data/cleaning.clean_query`）：去除零宽字符（U+2060/U+FEFF/U+00AD），乱码率超 20% 的 query 丢弃
-2. **轨迹采样**：`collect_cold.py` 用 observer + questioner 多轮构造，每条轨迹写入 BucketReplayBuffer
-3. **buffer 清洗**（`data/cleaning.clean_messages`）：逐消息去零宽 → 单消息乱码率超 20% 按策略处理（`drop_all` 丢弃整条/`drop_tail` 截断）→ 全轨迹乱码率超 5% 丢弃
-4. **训练加载**：`cl_main.py` 通过 `warmup_path` 加载清洗后的 buffer 快照（SQLite），训练启动时一次性灌入
+### 冷启动数据需求
 
-**运行时行为**：
-- Buffer 全空 → replay_ratio = 0，纯学新任务
-- 轨迹积累未达 warmup 阈值 → replay_ratio 线性爬升至目标值
-- 空桶 quota 暂不分配给其他桶，等轨迹到来时优先接纳
+> **受众**：数据制造（@吴健）、沙箱 rollout（@郑乃榕）。RL 训练开始前向 buffer 预灌冷数据，避免 `L_replay = 0`、空桶 starvation。
+
+**数量**：硬下限每桶 `q_min = 2000`，7 桶合计 **14,000 轨迹**；推荐 **20,000**。每 query 8 轨迹（标准）或 1（经济版，仅救火）。约需会话：下限 ~218、推荐 ~312（假设平均每会话 8 query）。
+
+**交付格式**：会话清单 JSON（`record_id` / `bucket` / `queries` / `meta.cold_seed` / `meta.policy`）+ 轨迹记录（`trajectory_id` / `messages` / `response_token_ids` / `original_logprobs` / `reward` / `bucket` 等必填字段）。
+
+**单/多 query 占比**：多 query ≥ 60%。Dialogue 桶不得交付单 query 会话。各桶建议见 `bucket_buffer.md`（archive）§7.6。
+
+**失败处理**：A（打分器异常）不进 buffer 不 sync 但继续；B（软失败）进 buffer + 随机 winner sync + 继续；C（硬失败）终止 session。
+
+**验收清单**：轨迹总数 ≥ 14k；每桶 ≥ 2k；Dialogue 无单 query；每条含 messages+token+logprob+bucket；`reward=null` 不计入配额；硬失败 session 无脏数据。
+
+**数据来源配比（Phase 0）**：每条带 `meta.policy` 来源标记；两来源分目录存；`warmup_buffer.py --ratio-27b` 按桶内配比混合；**红线**：gpt-5 数据只进 buffer 做 replay，绝不 SFT 蒸馏 27B。
 
 ---
 
@@ -315,7 +333,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
                            └── Phase 6 (X1-X7)  按需探索
 ```
 
-实验总数：**B 系列 1 + K 系列 6 + R 系列 8 + C 系列 4 + S 系列 2 = 21 个独立训练**。Phase 6 X 系列按需触发。**Phase 0（P0-A..E）是冷启动前置预实验，不计入 21**（选出最佳 27B:gpt5 配比后固定为所有正式实验的 buffer 预热来源），详见 [`Plan_冷启动数据来源消融.md`](Plan_冷启动数据来源消融.md)。
+实验总数：**B 系列 1 + K 系列 6 + R 系列 8 + C 系列 4 + S 系列 2 = 21 个独立训练**。Phase 6 X 系列按需触发。**Phase 0（P0-A..E）是冷启动前置预实验，不计入 21**（选出最佳 27B:gpt5 配比后固定为所有正式实验的 buffer 预热来源），详见 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)。
 （R 系列 8 = R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K；R0 拆两档隔离"容量 vs 桶结构"。）
 
 ---
@@ -342,7 +360,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 ### Phase 0：冷启动数据来源配比预实验（独立，不进 21）
 
-**验证目标**：冷启动填 7 桶 replay buffer 时，actor 用 Qwen3.6-27B（on-policy，分布同源）还是更强的 gpt-5（off-policy，质量高）还是按比例混合，对下游 CL 训练最好？选出最佳配比后**固定**为所有 21 个正式实验的 buffer 预热来源。完整设计与代码落点见 [`Plan_冷启动数据来源消融.md`](Plan_冷启动数据来源消融.md)。
+**验证目标**：冷启动填 7 桶 replay buffer 时，actor 用 Qwen3.6-27B（on-policy，分布同源）还是更强的 gpt-5（off-policy，质量高）还是按比例混合，对下游 CL 训练最好？选出最佳配比后**固定**为所有 21 个正式实验的 buffer 预热来源。完整设计与代码落点见 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)。
 
 | 编号 | 27B : gpt-5 | 角色 |
 |---|---|---|
@@ -375,6 +393,20 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | New Task Performance（新桶） | 报告（诊断质量-同源权衡） |
 | L_replay / L_rl 稳定性 | 无发散/剧烈震荡为通过 |
 | Output Entropy（前 20 step 降幅） | **下降 > 50% 判该臂不稳定**（Echo Trap 预警，B4） |
+
+**前置改动（采集侧）**：关键前提 = 采集一次性，五臂共享抽样（不重采）。两侧数据在所有配比实验**前一次性采好**，之后每臂只从固定两个池子按不同比例抽样——不重跑采集、不重调模型：
+
+```
+【全实验前，一次性采集】
+  27B(on-policy, sufy qwen3.6-27b) → data/rollouts/local/*.jsonl   (policy=pi0_27b)
+  gpt-5.5(off-policy, sufy)         → data/rollouts/remote/*.jsonl   (policy=gpt5)
+        │  两池采一次即固定，五臂共用
+        ▼
+【每臂：纯 CPU 抽样，秒级、零模型调用、零 GPU、可复现(--mix-seed)】
+  warmup_buffer.py --ratio-27b {1.0/0.0/0.5/0.7/0.3} → P0-{A..E} buffer
+```
+
+代码落点：`collect_rollout.py` 加 `meta.policy` 来源标记；`warmup_buffer.py` 加 `--ratio-27b` 桶内配比混合 + `*.manifest.json`；`configs/phase0/p0-{a..e}.yaml`；`scripts/phase0/{run.sh,gate_coldstart.py}`。**红线**：gpt-5 数据只进 buffer 做 replay，绝不拿去 SFT 蒸馏 27B。
 
 ---
 
@@ -813,7 +845,7 @@ async_training:
 | $L_{replay}$ | ✅ | replay forward 在训练组做。Fully Async 本身就是 off-policy 框架，buffer 数据的"旧"程度比 staleness=0.3 远大，与异步训练同源 |
 | Echo Trap 防护 | ⚠️ | 异步引入额外多样性扰动，需监控 `clip_ratio_high` 与 entropy 曲线 |
 
-> $L_{replay}$ 是 off-policy 的，与 fully_async 天然契合。但 `verl.experimental.fully_async_policy.fully_async_main` 入口与 `actor.set_loss_fn()` API 的对接方式需在 Phase 1 B1 做集成测试，详见 `doc/VerlIntegration.md`。
+> $L_{replay}$ 是 off-policy 的，与 fully_async 天然契合。但 `verl.experimental.fully_async_policy.fully_async_main` 入口与 `actor.set_loss_fn()` API 的对接方式需在 Phase 1 B1 做集成测试，详见 `doc/source/训练与推理流程.md`。
 
 #### 重新计算 Step 时间
 

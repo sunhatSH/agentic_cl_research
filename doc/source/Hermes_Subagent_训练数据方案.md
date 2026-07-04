@@ -202,7 +202,7 @@ OpenClaw 采集数据与 Hermes 的同步假设**不符**，出入栈方案不�
 
 ### 6.6 数据现状说明
 
-> sample105_v2（OpenClaw 采集）已**弃用**（数据结构不符——每会话一独立 workspace_init，非"1 沙箱↔N 会话"）。本节 subagent 处理方案（主子各自单独训练、格式原样、DAG 仅定位子日志）**设计有效**，待新数据结构（`data/taskspecs/` taskspec）产出含子 agent 的轨迹后再落地。taskspec 当前只含单 task 声明 + 初始 `files/`，不含已采集轨迹——主/子轨迹均由 rollout 现场产（见 `doc/sandbox/沙箱_Dockerfile制作方案.md`）。
+> sample105_v2（OpenClaw 采集）已**弃用**（数据结构不符——每会话一独立 workspace_init，非"1 沙箱↔N 会话"）。本节 subagent 处理方案（主子各自单独训练、格式原样、DAG 仅定位子日志）**设计有效**，待新数据结构（`data/taskspecs/` taskspec）产出含子 agent 的轨迹后再落地。taskspec 当前只含单 task 声明 + 初始 `files/`，不含已采集轨迹——主/子轨迹均由 rollout 现场产（见 `doc/ops/sandbox/沙箱_Dockerfile制作方案.md`）。
 
 ### 6.6.1 `workspace_init/` 与 `workspace_final/` 的用途边界
 

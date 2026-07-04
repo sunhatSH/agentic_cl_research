@@ -83,7 +83,7 @@ workspace_init          沙箱初始文件系统状态（一个目录快照）
 | 3 | **Questioner 提问上限次数** | 运行时 | 会话结束条件②的数值。 |
 | 4 | **会话结束其余条件** | 运行时 | scorer_error（打分异常）、沙箱硬失败等是否纳入及如何处理。现有 `simulated_session.py` 的 patience/k_budget（多轮产物）是否保留/调整。 |
 | 5 | ~~数据单元 schema~~ | ~~数据~~ | **作废**：1:1，taskspec.yaml 即 schema（task_id/seed_query/verifier/user_profile + files/）。 |
-| 6 | **judge 校准** | 模型 | 选型已定（`anthropic/claude-4.8-opus` 走 sufy，见 `doc/模型选型.md`）。真正待定的是一致率校准（`calibrate_judge.py` judge↔人工，需 ClawEval 标注数据 @杨益博）。 |
+| 6 | **judge 校准** | 模型 | 选型已定（`anthropic/claude-4.8-opus` 走 sufy，见 `doc/source/usersim.md`）。真正待定的是一致率校准（`calibrate_judge.py` judge↔人工，需 ClawEval 标注数据 @杨益博）。 |
 
 > 历史待定项已清理：~~workspace_init↔Dockerfile 是否一一对应~~（已定一一对应）、~~与 session_pool 多轮模型如何共存~~（多余，删除）、~~N/K（1:n 作废）~~。**当前仅剩 #3/#4/#6 三项待定。**
 

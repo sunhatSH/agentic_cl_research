@@ -281,7 +281,7 @@ python3 scripts/sandbox_smoke.py --backend local
 ```
 
 - 领域标签：agent 回复末尾 `<task_domain>Finance</task_domain>`（见 `trainer/domain_tagging.py`）
-- 设计细节：`doc/SandboxRollout.md`
+- 设计细节：`doc/ops/sandbox/SandboxRollout.md`
 
 SDK 最小示例：
 
@@ -373,10 +373,10 @@ CL 项目建议 **`agentos-cl-namespace`**（`image.env`）；团队 RL 共用�
 
 | 文件 | 内容 |
 |------|------|
-| `doc/Sandbox_冒烟指南.md` | 已跑通路径、ops 一键命令 |
-| `doc/Sandbox_Agent架构.md` | 动作在沙箱内/推理在外、OpenClaw、随机用户文件系统、镜像依赖 |
-| `doc/Sandbox_管理调度指南.md` | 16×8 调度、会话内 winner 同步、母版策略 |
-| `doc/SandboxRollout.md` | 平台 API、Tool/Instance、PoC |
+| `doc/ops/sandbox/Sandbox_冒烟指南.md` | 已跑通路径、ops 一键命令 |
+| `doc/ops/sandbox/Sandbox_Agent架构.md` | 动作在沙箱内/推理在外、OpenClaw、随机用户文件系统、镜像依赖 |
+| `doc/ops/sandbox/Sandbox_管理调度指南.md` | 16×8 调度、会话内 winner 同步、母版策略 |
+| `doc/ops/sandbox/SandboxRollout.md` | 平台 API、Tool/Instance、PoC |
 | `docker/sandbox/README.md` + `ops/` | 密钥、镜像 build、快捷脚本 |
 
 **账号/镜像/custom 细节以本文 + 冒烟指南为准；调度与 winner 同步见 `Sandbox_管理调度指南.md`。**

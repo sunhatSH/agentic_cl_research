@@ -254,5 +254,5 @@ trainer/
 | [`UserSim_多轮Query在线生成.md`](UserSim_多轮Query在线生成.md) | 完整设计规格、§7 接口契约、Algorithm 1 |
 | [`Paper_ThreeAgent_Summary_CN.md`](../paper/drafts/Paper_ThreeAgent_Summary_CN.md) | 论文向摘要 |
 | [`Paper_Method_draft_CN.md`](../paper/drafts/Paper_Method_draft_CN.md) | Method §4.5 散文 + 附录 A prompts |
-| [`Sandbox_管理调度指南.md`](sandbox/Sandbox_管理调度指南.md) | winner-sync 规则 |
-| [`Sandbox_Agent架构.md`](sandbox/Sandbox_Agent架构.md) | 推理在外、动作在内 |
+| [`Sandbox_管理调度指南.md`](../ops/sandbox/Sandbox_管理调度指南.md) | winner-sync 规则 |
+| [`Sandbox_Agent架构.md`](../ops/sandbox/Sandbox_Agent架构.md) | 推理在外、动作在内 |

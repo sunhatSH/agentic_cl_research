@@ -3,7 +3,7 @@
 > **硬性规则：** 任何可判定结果的动作（smoke / 训练 / 评测 / bug 复现与修复）都追加一条；
 > **成功与失败都保留，禁止删改历史条目**——失败是调试与论文的证据。
 > 量化数据看 wandb / `logs/buffer_stats/*.jsonl` / `eval/results/*`；本文件记「发生了什么、为什么」。
-> 交接背景见 [`Migration_64GPU.md`](Migration_64GPU.md)，交付状态见 [`Progress.md`](Progress.md)。
+> 交接背景见 [`Migration_64GPU.md`](../ops/Migration_64GPU.md)，交付状态见 [`Progress.md`](Progress.md)。
 
 ## 条目模板（复制后填写，最新在最上面）
 
@@ -22,26 +22,26 @@
 ### 2026-07-03（晚，本机 CPU 开发机） | commit <pending>
 - 动作：租户迁移收尾——把**重 build 路径**上残留的旧租户默认值也切到 `ccr-zuhu2026`。前一条（21:07）做的是 retag+push（未重 build），故 `build_and_push.sh` 与 Dockerfile 里仍指向旧租户 `ccr-devsfttj`；本次补齐：① `docker/qwen36-lightllm/build_and_push.sh` 默认 `NAMESPACE ccr-devsfttj→ccr-zuhu2026`、`USERNAME devsfttj-sunhao4→zuhu2026-sunhao4`（原 `NAMESPACE:?` 必填改为默认新租户）。② `docker/qwen36-lightllm/Dockerfile` `ARG BASE_IMAGE` 的 base 由 `ccr-devsfttj/verl:...`→`ccr-zuhu2026/verl:...`（@孙豪 确认 base 已 retag 到新租户）。③ `Migration_64GPU.md:219` 旧的"base 仍在旧租户、重 build 需确认能否跨租户拉"注记 → 改为"base 已迁新租户，重 build 直接拉"。
 - 结果：✅ 全仓活配置（脚本/Dockerfile/yaml）里 `ccr-devsfttj` 已清零；剩余引用全在 doc/ 历史与迁移记录中（RunLog 禁改历史，正确保留）。新地址 `registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/qwen36-lightllm:1.0` 一致落地于 build 脚本 + Dockerfile + 启动指南 + Migration。
-- 产物：`docker/qwen36-lightllm/build_and_push.sh`、`docker/qwen36-lightllm/Dockerfile`、`doc/Migration_64GPU.md`。
+- 产物：`docker/qwen36-lightllm/build_and_push.sh`、`docker/qwen36-lightllm/Dockerfile`、`doc/ops/Migration_64GPU.md`。
 - 解释：区分两条路径——(1) **当前镜像**已在新租户（retag+push 产物，image ID `8631ec6c9b9b` 不变，可直接用）；(2) **未来重 build** 时才会读 build 脚本默认值 + Dockerfile base，本次把这条路径也对齐新租户，避免下次重 build 又落回旧租户或拉不到 base。
 
 ### 2026-07-03 21:07 | 本机 Mac（darwin，无 GPU） | commit <pending>
-- 动作：训练镜像从旧租户 `ccr-devsfttj` 迁至新租户 `ccr-zuhu2026`。① `docker login registry.cn-tj-01.sensecore.cn --username zuhu2026-sunhao4`（凭证存 `~/.docker/config.json`）。② 本地 `qwen36-lightllm:1.0`（image ID `8631ec6c9b9b`，76.3GB）retag → `registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/qwen36-lightllm:1.0`。③ `docker push`（未重 build，复用之前 `--provenance=false` 产物）。④ 镜像内依赖自检（`docker run --platform linux/amd64 --entrypoint python`）：泽寰栈 5 项版本对齐（transformers 5.8.0 / fla 0.4.2 / TransferQueue 0.1.6 / accelerate 1.13.0 / e2b 2.24.0）、transformers 认 qwen3_5、fla 可 import、verl 训练链路 12 依赖全 OK、lightllm 1.1.0 / megatron / flash_attn 2.7.4 / ray 2.49.1 / numpy 1.26.4 / torch 2.9.0+cu129。⑤ 修 `scripts/start_train.sh` + `run_phases.sh`：`EXPERIMENT_NAME` 从 config 动态读（不再硬编码 `qwen36_27b_b1`），日志目录 `outputs/<exp_name>/` 与 verl ckpt 目录 `checkpoints/RL/<exp_name>/` 同名、各实验独立不互相覆盖。⑥ 改 `doc/集群训练启动指南.md` §3 + `doc/Migration_64GPU.md` 附录 A.3 旧镜像地址 → 新租户。
+- 动作：训练镜像从旧租户 `ccr-devsfttj` 迁至新租户 `ccr-zuhu2026`。① `docker login registry.cn-tj-01.sensecore.cn --username zuhu2026-sunhao4`（凭证存 `~/.docker/config.json`）。② 本地 `qwen36-lightllm:1.0`（image ID `8631ec6c9b9b`，76.3GB）retag → `registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/qwen36-lightllm:1.0`。③ `docker push`（未重 build，复用之前 `--provenance=false` 产物）。④ 镜像内依赖自检（`docker run --platform linux/amd64 --entrypoint python`）：泽寰栈 5 项版本对齐（transformers 5.8.0 / fla 0.4.2 / TransferQueue 0.1.6 / accelerate 1.13.0 / e2b 2.24.0）、transformers 认 qwen3_5、fla 可 import、verl 训练链路 12 依赖全 OK、lightllm 1.1.0 / megatron / flash_attn 2.7.4 / ray 2.49.1 / numpy 1.26.4 / torch 2.9.0+cu129。⑤ 修 `scripts/start_train.sh` + `run_phases.sh`：`EXPERIMENT_NAME` 从 config 动态读（不再硬编码 `qwen36_27b_b1`），日志目录 `outputs/<exp_name>/` 与 verl ckpt 目录 `checkpoints/RL/<exp_name>/` 同名、各实验独立不互相覆盖。⑥ 改 `doc/archive/集群训练启动指南.md` §3 + `doc/ops/Migration_64GPU.md` 附录 A.3 旧镜像地址 → 新租户。
 - 结果：✅ push 成功（exit 0，digest `sha256:8631ec6c9b9b...`，`docker manifest inspect` 远端可查）。✅ 镜像依赖对正式训练链路（lightllm rollout）齐全。⚠️ 两点非缺依赖、设计如此：(1) verl 本体不在镜像——定制版在 `/mnt/afs` 挂载进容器、`PYTHONPATH` 指向 AFS 源码（`start_train.sh:30` 自设，不靠 `dev_env.sh`）；(2) vllm 0.13 不认 qwen3_5 架构——但正式 rollout 走 lightllm 不走 vllm，不影响训练（用户已确认不切 vllm）。
-- 产物：远端镜像 `registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/qwen36-lightllm:1.0`；`scripts/start_train.sh`、`scripts/run_phases.sh`（EXPERIMENT_NAME 动态化）；`doc/集群训练启动指南.md`、`doc/Migration_64GPU.md`（镜像地址更新）。
+- 产物：远端镜像 `registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/qwen36-lightllm:1.0`；`scripts/start_train.sh`、`scripts/run_phases.sh`（EXPERIMENT_NAME 动态化）；`doc/archive/集群训练启动指南.md`、`doc/ops/Migration_64GPU.md`（镜像地址更新）。
 - 解释：旧租户 `ccr-devsfttj`（登录名 `devsfttj-sunhao4`）弃用，迁至新租户 `ccr-zuhu2026`（登录名 `zuhu2026-sunhao4`）。retag+push 不重 build：同一 registry 内跨命名空间共享 blob，多数层 `Mounted from ccr-devsfttj/...` 不重传，只 manifest 提交是新写的，未遇 `manifest invalid`（复用 `--provenance=false` 产物）。**AFS 外挂对训练速度无影响**：权重 `cp -rL` 到 `/tmp/qwen36`、HF/Triton/cache 指 `/tmp`、rollout 是 lightllm 在 GPU 上跑，热路径都不碰 AFS；外挂代价只在启动期（import verl/LightLLM + 拷权重，一次性）。verl/LightLLM 不打包进镜像——维持"改源码不用重 build"灵活性（fully_async policy 仍在迭代）。**剩余阻塞**：`configs/cluster.yaml:81` `data.train_files: ???` 未填（等 @吴健 训练数据 parquet）；提交任务时镜像填新地址 `ccr-zuhu2026/qwen36-lightllm:1.0`。
 
 ### 2026-07-03 | 新集群开发机（CPU，无 GPU） | commit <pending>
-- 动作：设计并落地 **Phase 0 冷启动数据来源配比消融**（独立预实验，不进 21）。① `scripts/collect_rollout.py` 加 `meta.policy` 来源标记（`pi0_27b`/`gpt5`，`_actor_policy_tag` 按 `--actor` 映射，写进每条 trajectory + session record 顶层）。② `scripts/warmup_buffer.py` 加 `--ratio-27b` 按桶内配比混合两来源（`_mix_by_ratio`：先按 bucket×source 分组、再按比例无重复抽样，固定 `--mix-seed` 可复现）+ 输出 `*.manifest.json` 记录每桶实际 27B/gpt5 条数；来源标记优先读 trajectory `policy`、缺失时从 `{actor}` 目录推断（向后兼容旧数据）。③ 5 臂配置 `configs/phase0/p0-{a..e}.yaml`（100:0 / 0:100 / 50:50 / 70:30 / 30:70，其余锁死 R4）。④ `scripts/phase0/run.sh`（三阶段：建 buffer → 轨1 gate → 短RL）+ `scripts/phase0/gate_coldstart.py`（轨1 冷启动自身指标 gate）。⑤ 新增设计文档 `doc/Plan_冷启动数据来源消融.md`；整改 `CL_Update_Sunhao.md`（加 Phase 0 节 + 路线图 + **给 Phase 1–6 各补验收标准表**）、`Buffer_冷启动数据需求.md` §5、`Progress.md`。
+- 动作：设计并落地 **Phase 0 冷启动数据来源配比消融**（独立预实验，不进 21）。① `scripts/collect_rollout.py` 加 `meta.policy` 来源标记（`pi0_27b`/`gpt5`，`_actor_policy_tag` 按 `--actor` 映射，写进每条 trajectory + session record 顶层）。② `scripts/warmup_buffer.py` 加 `--ratio-27b` 按桶内配比混合两来源（`_mix_by_ratio`：先按 bucket×source 分组、再按比例无重复抽样，固定 `--mix-seed` 可复现）+ 输出 `*.manifest.json` 记录每桶实际 27B/gpt5 条数；来源标记优先读 trajectory `policy`、缺失时从 `{actor}` 目录推断（向后兼容旧数据）。③ 5 臂配置 `configs/phase0/p0-{a..e}.yaml`（100:0 / 0:100 / 50:50 / 70:30 / 30:70，其余锁死 R4）。④ `scripts/phase0/run.sh`（三阶段：建 buffer → 轨1 gate → 短RL）+ `scripts/phase0/gate_coldstart.py`（轨1 冷启动自身指标 gate）。⑤ 新增设计文档 `doc/source/CL_Design.md`；整改 `CL_Design.md`（加 Phase 0 节 + 路线图 + **给 Phase 1–6 各补验收标准表**）、`Buffer_冷启动数据需求.md` §5、`Progress.md`。
 - 结果：⏳ 待跑单测验证（本条落地后执行 `pytest`）。设计决策（与 @孙豪 对齐）：独立定位不进 21、5 臂全扫、双轨验收（冷启动自身指标 + 下游短RL）、更强模型 = `openai/gpt-5`、短RL 固定新任务+同种子、7 桶拆旧/新两组。
-- 产物：`scripts/collect_rollout.py`、`scripts/warmup_buffer.py`、`configs/phase0/*.yaml`（5）、`scripts/phase0/{run.sh,gate_coldstart.py}`、`doc/Plan_冷启动数据来源消融.md`、`doc/CL_Update_Sunhao.md`、`doc/Buffer_冷启动数据需求.md`、`doc/Progress.md`。
+- 产物：`scripts/collect_rollout.py`、`scripts/warmup_buffer.py`、`configs/phase0/*.yaml`（5）、`scripts/phase0/{run.sh,gate_coldstart.py}`、`doc/source/CL_Design.md`、`doc/source/CL_Design.md`、`doc/source/CL_Design.md`、`doc/archive/Progress.md`。
 - 解释：冷启动数据来源（27B on-policy vs gpt-5 off-policy）是一个与现有 21 实验**正交的新变量**——27B 数据"对味但可能弱"、gpt-5 数据"强但可能不对味"（强 off-policy 分布偏移）。它必须在正式训练前定死，故设为 Phase 0 前置预实验。验收难点在于"冷启动数据本身无分数、好坏只在下游显形"，故用双轨判定链：自身指标先筛掉明显差的（无 GPU、采集后即测），短RL 做最终裁决（CL Score 主裁）。**红线**：gpt-5 数据只进 buffer 做 replay，绝不拿去 SFT 蒸馏 27B（违背 B2/C1 立论 + 污染 21 实验可比性）。
 
 ### 2026-07-02 ~15:30 | 新集群开发机（CPU，无 GPU，cold env py3.10） | commit <pending>
 - 动作：沙箱内 hermes 采集排障 + 首次跑通。① `sandbox_grpo_collect.py --actor hermes` 初测 reward=0/ans 空 → 进沙箱逐层诊断。② 根因定位：`_write_hermes_config` 从开发机侧 `_env("AGENT_MODEL_KEY")` 读 key → 开发机侧未设该 env（key 只在 `docker/sandbox/runtime.env` 里，经 `E2BSandbox.envs=` 注入沙箱内，`load_tencent_env.sh` 未 export）→ 传空 key 给 hermes → hermes 调 sufy 没 key → TimeoutExpired。③ 修复：`_write_hermes_config` 改为沙箱内 Python 直接 `os.environ['AGENT_MODEL_KEY']`（key 在沙箱内，不经开发机进程），删 `--actor-key` 参数。④ 修后第一次真实跑通：`hermes chat -q 'Compute 23*17-19 and write the number to /home/user/result.txt'`（max_turns=6，沙箱内）→ exit 0，创建 `result.txt` 内容 `372`，hermes diff 展示 `+372`。
 - 结果：✅ hermes-in-sandbox 真实跑通（沙箱内 hermes 调 sufy `openai/gpt-5` 决策 + 写文件）。沙箱镜像含 hermes v0.16.0 无误。❌ 修复前脚本采集中 hermes 全超时（两个 slot 都 TimeoutExpired）。清理：`/tmp/grpo_*` 四个测试目录。rollout 输出位置定为 `rollouts/cold_start/`（gitignored）。
 - 产物：`scripts/sandbox_grpo_collect.py`（`_write_hermes_config` 改沙箱内读 key、`_run_hermes_slot` 去 key 参数、`run_session`/`main` 去 `actor_key`）+ `.gitignore`（+`rollouts/`）+ RunLog 本条。
-- 解释：**API 模型（sufy）→ 训练机（本地 27B）迁移答案**：冷启动采集两路 actor 产出**同一 schema 的 trajectory**（messages + token_ids + logprobs + reward + bucket），buffer 不关心谁产的。冷启动用 hermes → sufy（路径 B），预热 buffer 到 ~10K 轨迹；训练机就位后切路径 A（verl + 本地 Qwen3.6-27B），同一份 buffer 继续消费。`doc/训练与推理流程.md` §2 已列两条路径。**训练镜像推错位置**：`qwen36-lightllm:1.0` 推到 `registry.cn-tj-01.sensecore.cn/ccr-devsfttj`（和沙箱镜像同一个 registry），应推商汤私有云其他命名空间——@孙豪 后续给正确位置重建。
+- 解释：**API 模型（sufy）→ 训练机（本地 27B）迁移答案**：冷启动采集两路 actor 产出**同一 schema 的 trajectory**（messages + token_ids + logprobs + reward + bucket），buffer 不关心谁产的。冷启动用 hermes → sufy（路径 B），预热 buffer 到 ~10K 轨迹；训练机就位后切路径 A（verl + 本地 Qwen3.6-27B），同一份 buffer 继续消费。`doc/source/训练与推理流程.md` §2 已列两条路径。**训练镜像推错位置**：`qwen36-lightllm:1.0` 推到 `registry.cn-tj-01.sensecore.cn/ccr-devsfttj`（和沙箱镜像同一个 registry），应推商汤私有云其他命名空间——@孙豪 后续给正确位置重建。
 
 ### 2026-07-01 ~21:10 | 本机（macOS + Docker Desktop，amd64 via buildx） | commit <pending>
 - 动作：build + push Qwen3.6-27B 训练镜像 `qwen36-lightllm:1.0` 到天津 SenseCore registry。base = 泽寰 `verl:cu129_lightllm_sandbox_megatron0.14.0_vllm0.13.0R3_torch2.9.0_fa3_te2.5.0_0211`（23GB，含 torch2.9/vllm0.13/megatron0.14/FA3/TE/CUDA12.9）。`docker/qwen36-lightllm/Dockerfile` 在 base 上固化 10 个运行时 pip（tensordict/accelerate1.13/transformers5.8/fla0.4.2/e2b2.24/...）+ verl 训练链路 12 依赖 + 6 项构建期自检。
@@ -98,9 +98,9 @@
 - 解释：新集群沙箱后端**功能可用 + 鉴权已通**。下一步：① 用 `sandbox_smoke.py --backend e2b -m 2` 跑完整 GRPO 组冒烟；② 8 槽 winner-sync 路径 + observer diff 取证在真实后端验证。
 
 ### 2026-06-25 | 本机（开发机，CPU，无 GPU） | commit <pending>
-- 动作：数据源切换 + 沙箱/数据方案定稿（设计变更，未跑训练）。(1) **数据源从 sample105_v2（OpenClaw 采集，已弃）切到 `data/taskspecs/`**：每个 task = 1 份声明 `taskspec.yaml`（seed_query/hidden_goal/verifier 判分 rubric/user_profile/available_tools…）+ 1 份初始文件系统 `files/`。workspace↔query 回到 **1:1**（1 task=1 files=1 seed_query），原"1 沙箱↔N 会话"1:n 方案作废。(2) **沙箱 Dockerfile 方案定稿**（`doc/沙箱_Dockerfile制作方案.md`）：1 母版镜像 `COPY` 全部 seed（`files/`→`fs-seeds/<task_id>/`），实例启动按 `AGENTIC_CL_PERSONA=<task_id>` 铺开；1 seed→fork 8 容器跑同一 seed_query（GRPO 8 路、位级一致）；母版只装常用依赖、特定依赖 agent 运行时自己装（贴合真实场景）；当前简化版 1 母版，后续多母版/环境扰动留方向。(3) **`data_pipeline/` 1:1→1:n 留空回退**（`extract_initial_queries` 抛 NotImplementedError，待按 taskspec 重写）；`route.py` 撤多余 `first_query_only` 标记。(4) 文档/论文同步：Hermes subagent 方案 §6.6 标 sample105 弃用、`沙箱_实例_Queries对应关系_待定.md` 待定项清理（N/K/schema 作废，仅剩提问上限/结束其余条件/judge 校准）、Method 中英 §4.5 + 论文向总览 数据归属段改为 taskspec。
+- 动作：数据源切换 + 沙箱/数据方案定稿（设计变更，未跑训练）。(1) **数据源从 sample105_v2（OpenClaw 采集，已弃）切到 `data/taskspecs/`**：每个 task = 1 份声明 `taskspec.yaml`（seed_query/hidden_goal/verifier 判分 rubric/user_profile/available_tools…）+ 1 份初始文件系统 `files/`。workspace↔query 回到 **1:1**（1 task=1 files=1 seed_query），原"1 沙箱↔N 会话"1:n 方案作废。(2) **沙箱 Dockerfile 方案定稿**（`doc/ops/sandbox/沙箱_Dockerfile制作方案.md`）：1 母版镜像 `COPY` 全部 seed（`files/`→`fs-seeds/<task_id>/`），实例启动按 `AGENTIC_CL_PERSONA=<task_id>` 铺开；1 seed→fork 8 容器跑同一 seed_query（GRPO 8 路、位级一致）；母版只装常用依赖、特定依赖 agent 运行时自己装（贴合真实场景）；当前简化版 1 母版，后续多母版/环境扰动留方向。(3) **`data_pipeline/` 1:1→1:n 留空回退**（`extract_initial_queries` 抛 NotImplementedError，待按 taskspec 重写）；`route.py` 撤多余 `first_query_only` 标记。(4) 文档/论文同步：Hermes subagent 方案 §6.6 标 sample105 弃用、`沙箱_实例_Queries对应关系_待定.md` 待定项清理（N/K/schema 作废，仅剩提问上限/结束其余条件/judge 校准）、Method 中英 §4.5 + 论文向总览 数据归属段改为 taskspec。
 - 结果：✅ 设计文档定稿；全量 `pytest -q` 306 passed / 7 skipped；ruff 全过。❌ 未跑训练/镜像/rollout（待 §3 自动化脚本 + build + rollout）。
-- 产物：`doc/沙箱_Dockerfile制作方案.md`（新）、`doc/沙箱_实例_Queries对应关系_待定.md`、`doc/Hermes_Subagent_训练数据方案.md`、`data_pipeline/extract.py`（留空）、`paper/drafts/{Paper_Method_draft_CN,EN,Paper_论文向总览}.md`、本条记录。
+- 产物：`doc/ops/sandbox/沙箱_Dockerfile制作方案.md`（新）、`doc/ops/sandbox/沙箱_实例_Queries对应关系_待定.md`、`doc/source/Hermes_Subagent_训练数据方案.md`、`data_pipeline/extract.py`（留空）、`paper/drafts/{Paper_Method_draft_CN,EN,Paper_论文向总览}.md`、本条记录。
 - 解释：数据结构定稿是后续镜像制作 + rollout 采样的前提。taskspec 自带 verifier rubric 可直接当 reward judge 标准、user_profile 驱动 Questioner，比 sample105 干净。下一步：写 taskspec→fs-seeds 自动化脚本 → build 母版镜像 → 跑实例 → rollout 采样 → 据产出轨迹定 rollout 契约。
 
 ### 2026-06-23 | 本机（开发机，CPU，无 GPU） | commit <pending>
@@ -110,9 +110,9 @@
 - 解释：前一条记录里"3 failed 为既有环境问题、与本次无关"的判断成立（确为先前 commit 引入的 test/config 漂移），本次将其修掉——测试花名册应只含正式实验，smoke 探针不该混入。`zip(strict=)` 是 Python 3.10 起的静默截断防护，与本仓"反静默退化"基调一致。`bin/` 排除后 `ruff check .` 重新成为有效门禁。reformat 不改语义、测试不变绿。全栈 GPU / 真实 e2b / Phase4-5 `???` 仍 Blocked on 集群。
 
 ### 2026-06-23 | 本机（开发机，CPU，无 GPU） | commit <pending>
-- 动作：两件待办收尾——(1) **thinking 模型截断防护**：模型回复因 `finish_reason=length*`（或思考预算吃光 token、content 空且无 tool_calls）被截断时，统一在 `agents/base.py::_raise_if_truncated` 抛 `TruncatedOutputError`，三 Agent + judge 分别按各自语义处理：questioner→标 `last_query_was_error=True`（走 patience/telemetry，不误判为满意 `<end_session>`）；observer→降级到确定性取证报告（不解析半截 JSON）；judge(`model_reward.py`)→`parse_judge_output` 返回 `(verdict, parsed)`，未解析出 verdict JSON 时抛错路由到 `compute_score` 的 except→`judge_error=1.0`（不再静默全 0 reward）；questioner `max_tokens` 256→512。(2) **B1/R4 方法学一致性**：`configs/run/b1.yaml` 删除 `rollout.agent: null`，B1 改为与 R4 共用同一套 agentic 多轮 rollout（差异仅 CL 项：B1 关 replay/无 KL），同步改 `doc/Migration_64GPU.md`。
+- 动作：两件待办收尾——(1) **thinking 模型截断防护**：模型回复因 `finish_reason=length*`（或思考预算吃光 token、content 空且无 tool_calls）被截断时，统一在 `agents/base.py::_raise_if_truncated` 抛 `TruncatedOutputError`，三 Agent + judge 分别按各自语义处理：questioner→标 `last_query_was_error=True`（走 patience/telemetry，不误判为满意 `<end_session>`）；observer→降级到确定性取证报告（不解析半截 JSON）；judge(`model_reward.py`)→`parse_judge_output` 返回 `(verdict, parsed)`，未解析出 verdict JSON 时抛错路由到 `compute_score` 的 except→`judge_error=1.0`（不再静默全 0 reward）；questioner `max_tokens` 256→512。(2) **B1/R4 方法学一致性**：`configs/run/b1.yaml` 删除 `rollout.agent: null`，B1 改为与 R4 共用同一套 agentic 多轮 rollout（差异仅 CL 项：B1 关 replay/无 KL），同步改 `doc/ops/Migration_64GPU.md`。
 - 结果：✅ `tests/test_agents.py` + `tests/test_model_reward.py` **53 passed**（含新增 `test_questioner_truncation_is_error_not_end_session` + `parse_judge_output` 双返回值断言）；全量 `pytest -q` **287 passed / 7 skipped / 3 failed**。3 failed 全为**既有环境问题、与本次改动无关**：`test_found_all_experiment_configs` 期望 21 实得 22（committed 的 `configs/phase1/smoke_1step.yaml` 未同步计数，先前 commit 引入）、两个 `smoke_1step` 用例缺 verl `_generated_ppo_trainer.yaml`（本机无 verl）。本机无 ruff/mypy（venv 轻量包），未做仓库级 reformat（避免改动未触碰的历史行）。
-- 产物：`agents/{base,observer,questioner}.py`、`trainer/model_reward.py`、`tests/{test_agents,test_model_reward}.py`、`configs/run/b1.yaml`、`doc/{Migration_64GPU,Progress}.md`、本条记录。
+- 产物：`agents/{base,observer,questioner}.py`、`trainer/model_reward.py`、`tests/{test_agents,test_model_reward}.py`、`configs/run/b1.yaml`、`doc/{ops/Migration_64GPU,log/Progress}.md`、本条记录。
 - 解释：截断防护是**反 reward-hacking / 反静默退化**的工程加固——之前截断的回复（思考模型常见）会被当成"完整答案/满意/全 0 reward"消费，错误不可见；现在统一抛错、各 Agent 显式分流，失败在日志可见。B1/R4 同 rollout 是方法学正确性：拿"多轮执行完成"的 R4 与"单轮"B1 比遗忘不公平，遗忘基线必须同等 rollout 下测。全栈 GPU smoke / 真实 e2b 后端 / Phase 4-5 `???` 参数仍 Blocked on 集群（TODO #4）。
 
 ### 2026-06-23 | 本机（开发机，CPU，无 GPU） | commit <pending>
@@ -124,19 +124,19 @@
 ### 2026-06-19 03:38 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
 - 动作：理清 observer/reward 的 trajectory 边界，落定**双通道 + pass-through**。observer **模型只看 state（diff）**，永不收 trajectory（不浪费 LLM token）；trajectory 由 observer **组件**捎带为 `ObservationReport.actor_trajectory`（pass-through，不进 observer prompt），reward 从这一份 R_t 读 trajectory 判 safety/robustness、读 state_diff 判 completion。schema 把 `actor_claims` 改名为 `actor_trajectory`（语义=原始轨迹、非"声称"）；`observe(sandbox, *, actor_trajectory=, baseline=, post=)`；`score_followup(query, report, judge)` 不再单独传 trajectory；`build_reward_judge_input` 从 `report.actor_trajectory` 取（封顶）；`_report_block`(questioner) 去掉 actor_claims；`build_observer_prompt`/`OBSERVER_SYSTEM` 状态化（不提 trajectory/claims，输出键去掉 actor_claims）。
 - 结果：✅ 端到端验证——observer LLM prompt 不含 trajectory（SECRET_TRAJ_TOKEN 不泄漏）、报告 pass-through 携带、reward 从报告同时拿到 trajectory+state_diff；`test_agents`/`test_simulated_session`/`test_sandbox_client` 可跑用例全过（修了一批残留 `actor_claims` 引用：`_report_block` 生产崩溃点 + 5 处测试构造/断言 + harness mock）；`ReadLints` 无错；harness 两模式跑通。
-- 产物：`agents/{schema,observer,prompts,reward}.py`、`rollout/{simulated_session,usersim_collect}.py`、`scripts/agents_harness.py`、`tests/test_agents.py`、`doc/接口使用_Sandbox与三Agent.md` §0/§2/§4。
-- 解释：演进——先"reward 不给 trajectory"→"observer 也不给"→澄清为"observer **模型**不给（省 token），但 observer **组件**可 pass-through 给 reward"。最终：observer 纯状态取证，trajectory 走一条不经 observer 模型的旁路通道到 reward。**残留待同步（非代码）**：`paper/latex/sections/A_prompts.tex` O6 prompt、`Paper_Method_draft_{EN,CN}.md` §4.5+附录、`doc/UserSim_*` 设计信源仍是旧"observer 读 claims 比对"叙事。
+- 产物：`agents/{schema,observer,prompts,reward}.py`、`rollout/{simulated_session,usersim_collect}.py`、`scripts/agents_harness.py`、`tests/test_agents.py`、`doc/ops/sandbox/接口使用_Sandbox与三Agent.md` §0/§2/§4。
+- 解释：演进——先"reward 不给 trajectory"→"observer 也不给"→澄清为"observer **模型**不给（省 token），但 observer **组件**可 pass-through 给 reward"。最终：observer 纯状态取证，trajectory 走一条不经 observer 模型的旁路通道到 reward。**残留待同步（非代码）**：`paper/latex/sections/A_prompts.tex` O6 prompt、`Paper_Method_draft_{EN,CN}.md` §4.5+附录、`doc/source/UserSim_*` 设计信源仍是旧"observer 读 claims 比对"叙事。
 
 ### 2026-06-19 03:08 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
 - 动作：reward 路径两项收口。(1) **不再给 judge trajectory**——只判当前状态：`build_reward_judge_input` 去掉 trajectory（返回空），judge 以 `state_diff` 为 ground truth；`build_judge_prompt` 空 trajectory 时跳过该段（path A 训练主轨迹不受影响仍带 solution_str）；REWARD_RUBRIC 措辞改为"按当前状态/diff 判，非叙事"；rubric 不再重复结构化报告块（diff 已含内容+SysOps），diff 封顶。(2) **几层拦截**：`ObservationReport.has_effect`（observer 空 diff 时置 False）→ `score_followup` 短路返回 score 0、**不调 judge**（带 gated）；`is_empty()` 改为 diff-aware（has_effect=False 即空，触发失败/耐心路径）。
 - 结果：✅ 本机验证——reward 不传轨迹（judge.last_traj==""）、diff+SysOps+discrepancies 进 rubric；空 diff gate 不调 judge（score 0/gated）；build_judge_prompt 空轨迹跳段、非空保留；is_empty diff-aware；`test_agents` 15 + `test_simulated_session` 4 全过（mock agent 改为真写沙箱使 diff 非空）；path A `compute_score` 不受影响；`ReadLints` 无错。
-- 产物：`agents/{reward.py,prompts.py,schema.py}`、`trainer/model_reward.py`、`rollout/simulated_session.py`、`tests/{test_agents,test_simulated_session}.py`、`doc/接口使用_Sandbox与三Agent.md` §2.5/§3.4。
+- 产物：`agents/{reward.py,prompts.py,schema.py}`、`trainer/model_reward.py`、`rollout/simulated_session.py`、`tests/{test_agents,test_simulated_session}.py`、`doc/ops/sandbox/接口使用_Sandbox与三Agent.md` §2.5/§3.4。
 - 解释：reward 应落在**真实状态**而非 actor 叙事上——给 trajectory 会把 diff-driven 想绕开的"声称"又带回来、且是最大长度膨胀源。拦截层把"没产生效果的轮"在调 judge 前就短路，省掉昂贵 round-trip 并天然给 0 分。
 
 ### 2026-06-19 02:51 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
 - 动作：observer 取证层增强 (a)+(b)+LLM 可选。(a) 二进制内容提取——快照对二进制只标记，diff 后只对**本轮变更的** xlsx/docx/pptx/pdf 跑沙箱内提取（openpyxl/python-docx/python-pptx/pdfplumber）→ 文本进 diff（`kind=binary→text`），缺库/解析失败降级不崩。(b) `snapshot_system`/`diff_system`——本轮装的包/开的端口(LISTEN)/起的进程（不采 env 值，防泄密）。LLM 可选：`Observer(use_llm=False)` 默认确定性建报告零模型调用，确定性取证层始终运行。snapshot 改 `{fs,sys}` bundle，drivers 透传。harness 加 `--use-llm`（默认确定性）。
 - 结果：✅ 本机验证——探针均可编译；默认确定性报告 final 从 diff 填（report.csv 内容入 diff）；二进制变更进 final 且 fallback 不崩；diff_system 正确（pandas/8000/nginx）；空 fs+sys diff→最小报告无 LLM；`use_llm=True` 路径完好；3 个 driver 回归（simulated/patience/usersim）通过；`test_agents` 观察用例已切 use_llm=True + 新增确定性用例；`ReadLints` 无错。harness 默认确定性跑通。
-- 产物：`agents/observer.py`、`scripts/agents_harness.py`、`tests/test_agents.py`、`doc/接口使用_Sandbox与三Agent.md` §3.4、`CLAUDE.md` TODO#5。
+- 产物：`agents/observer.py`、`scripts/agents_harness.py`、`tests/test_agents.py`、`doc/ops/sandbox/接口使用_Sandbox与三Agent.md` §3.4、`CLAUDE.md` TODO#5。
 - 解释：调查确认 agent 不只改 workspace（SysOps 装包/起服务 + 产二进制 office 文件），故 (b) 必要、#7(缩范围) 不做。确定性取证（快照+diff+二进制提取+sysops）做成代码层、observer LLM 可选——把"观察"从昂贵的 reward 模型里剥出来，reward/questioner 只读一份已是文本的 R_t。
 
 ### 2026-06-19 02:36 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
@@ -154,13 +154,13 @@
 ### 2026-06-19 02:00 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
 - 动作：observer 从 **claim-driven 改为 diff-driven**。`agents/observer.py` 加只读快照探针（仅用 `run_code`，后端无关）+ `snapshot()`/`diff_snapshots()`，`observe(traj, sandbox, baseline=)` 出 before/after **内容级** diff；`OBSERVER_SYSTEM`/`build_observer_prompt` 改为 diff=ground truth、actor 声称仅交叉核对；`ObservationReport` 加 `state_diff`。`LocalSandbox` 改**持久 workdir**。`simulated_session`/`usersim_collect` turn 前取 baseline、传 winner 沙箱。harness 打印 state_diff。
 - 结果：✅ 本机验证——diff 读到内容（`+ ADDED ./report.txt … Q3 total = 99999`）、observer 提示同时含实际值 99999 与声称 12345（→ 能判 discrepancy）；`LocalSandbox` 跨 `run_code` 持久（写 a.txt→读回 hello）；`run_simulated_session` 离线回归通过（turns=2 trajs=8）、prompt/parse/observe 无回归；`ReadLints` 无错。
-- 产物：`agents/{observer.py,prompts.py,schema.py}`、`rollout/{sandbox_client.py,simulated_session.py,usersim_collect.py}`、`scripts/agents_harness.py`、`doc/接口使用_Sandbox与三Agent.md` §3、`CLAUDE.md` TODO#5。
+- 产物：`agents/{observer.py,prompts.py,schema.py}`、`rollout/{sandbox_client.py,simulated_session.py,usersim_collect.py}`、`scripts/agents_harness.py`、`doc/ops/sandbox/接口使用_Sandbox与三Agent.md` §3、`CLAUDE.md` TODO#5。
 - 解释：为何改——(1) 模型会**幻觉**，声称可造假；(2) 声称只报结果、**丢中间产物**（设计最看重的中间态易被覆盖）；(3) reward 落在声称上=**可被 reward-hack**；(4) diff 由代码**确定性**算，不在证据里引入第二层模型误差；(5) diff 暴露 actor **没提的改动**（静默/部分失败）；(6) 能**内容级核对**"声称值≠实际值"。剩余：二进制格式解析、`watch_dir` 抓瞬态中间产物、真实 e2b/aliyun 连通待集群。
 
 ### 2026-06-19 01:50 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
-- 动作：新增多 Agent **离线 harness** `scripts/agents_harness.py`（驱动真实 session driver + 真实 observer/questioner/reward，默认 mock endpoint、`--real` 可切，`--mode simulated|collect`、`--backend local|e2b|aliyun`）；新增接口使用指南 `doc/接口使用_Sandbox与三Agent.md`；`Progress.md` 变更日志补今日条目（含协作方改动）。
+- 动作：新增多 Agent **离线 harness** `scripts/agents_harness.py`（驱动真实 session driver + 真实 observer/questioner/reward，默认 mock endpoint、`--real` 可切，`--mode simulated|collect`、`--backend local|e2b|aliyun`）；新增接口使用指南 `doc/ops/sandbox/接口使用_Sandbox与三Agent.md`；`Progress.md` 变更日志补今日条目（含协作方改动）。
 - 结果：✅ harness 两模式本机跑通——simulated（8 槽：observer 报告 + questioner 出题 + reward 0.82，16 traj，ended_by=k_budget）、collect（1 槽：observer+questioner，ended_by=end_session）；`ReadLints` 无错。
-- 产物：`scripts/agents_harness.py`、`doc/接口使用_Sandbox与三Agent.md`、`doc/Progress.md`。
+- 产物：`scripts/agents_harness.py`、`doc/ops/sandbox/接口使用_Sandbox与三Agent.md`、`doc/archive/Progress.md`。
 - 解释：harness 让"三 Agent 协同回路"在无 GPU/无真实模型下**一条命令可见、可调**，且换沙箱后端即验证；真实模型/沙箱连通待集群。
 
 ### 2026-06-19 01:36 | 本机（在家 macOS，无 E2B/GPU） | commit <pending>
@@ -184,7 +184,7 @@
 ### 2026-06-16 10:50 | 4×H800 本机 | commit c36626f
 - 动作：vllm 版本升级 0.13.0 → 0.19.0，解决 Qwen3.6-27B 不兼容问题
 - 结果：✅ vllm 0.19.0 安装成功 + verl import 正常 + 沙箱连通；❌ GPU 被僵尸 CUDA context 占满无法启动 vllm
-- 产物：`/mnt/afs_toolcall/sunhao4/envs/vllm019_venv/`（新 venv），`doc/vllm_upgrade_0.19.md`（技术文档，已归档到 `paper/refs/`）
+- 产物：`/mnt/afs_toolcall/sunhao4/envs/vllm019_venv/`（新 venv），`doc/archive/vllm_upgrade_0.19.md`（技术文档，已归档到 `paper/refs/`）
 - 解释：Qwen3.6-27B 是 hybrid linear/full attention 模型，vllm 0.13 不支持 `Qwen3_5ForConditionalGeneration`。升级到 0.19 后 ModelRegistry 已包含该架构。verl 安装时不能带 `[vllm]` extra（会降级到 0.12）。GPU 僵尸进程 PID 869795/881008/892490/901013 占用 4×75GB 显存，需管理员介入释放。
 
 ### 2026-06-16 10:30 | 4×H800 本机 | commit c36626f
@@ -205,7 +205,7 @@
 - 环境踩坑：`/opt/conda` 的 vllm0.11 与 torch2.9.1 ABI 不匹配（`vllm._C undefined symbol`）→ vllm0.13.0 `--no-deps --target` 装到共享盘 `envs/vllm013` 覆盖 + `PYTHONPATH` 前置 + `LD_LIBRARY_PATH` 补 `/opt/conda` nvidia 库。验证：vllm0.13 + torch2.9.1 + transformers5.2（认 qwen3_5）。
 - 结果：✅ 远程三模型连通；✅ 运行环境凑齐；✅ **远程 actor 路 small-batch 验证通过**（`--actor remote --backend local --limit 2` → done=2 failed=0，产出含多轮 + persona（如 "Dr. Lena the researcher"）+ questioner 生成 query + observer 5 字段报告）。
 - 产物：`data/rollouts/{local,remote}/rollouts_*.jsonl`（正式）；smoke 在 `/tmp/rollout_smoke/`。日志 `logs/cold/{vllm,rollout_*}.log`。
-- 解释：链路确认工作。待办：① 起本地 vllm 跑 local actor + e2b 真沙箱全量；② `collect_rollout.py` 加分片（8 机并行不重复）。详见 `doc/ColdRollout_采集.md`。
+- 解释：链路确认工作。待办：① 起本地 vllm 跑 local actor + e2b 真沙箱全量；② `collect_rollout.py` 加分片（8 机并行不重复）。详见 `doc/ops/sandbox/ColdRollout_采集.md`。
 
 ### 2026-06-12 | 单卡开发机（conda py3.10 + torch；无 verl） | commit <pending>
 - 动作：实现"让 rollout 从我们的调度器走"——把 verl 默认批量 rollout 替换为自管会话调度（16×8 + winner-sync），每步生成调 verl 原生 LLM server。基于对 verl 0.8.0 源码的核实：
@@ -242,7 +242,7 @@
 
 
 ### 2026-06-12 | 单卡开发机（无 verl，conda py3.10 无 pytest） | commit <pending>
-- 动作：实现 UserSim 三 agent（doc/UserSim_多轮Query在线生成.md §7 契约，原"暂不实现/prompt 留空"）。新建 `agents/`（observer/questioner/reward/personas/prompts/schema/base）+ `inference/`（generate 边界封装）；在 `rollout/simulated_session.py` 落地 Algorithm 1（`run_simulated_session`，复用现有 `SessionSandboxPool`，不改其代码）。填三个 prompt：O6 Observer（客观无人设）、O3 Questioner（16 人设、防 AI 腔、`<end_session>`）、O4 Reward（observation-grounded、抗 hacking）。Reward 复用 `trainer/model_reward.JudgeClient`，零改动 judge I/O，只加 rubric。
+- 动作：实现 UserSim 三 agent（doc/source/UserSim_多轮Query在线生成.md §7 契约，原"暂不实现/prompt 留空"）。新建 `agents/`（observer/questioner/reward/personas/prompts/schema/base）+ `inference/`（generate 边界封装）；在 `rollout/simulated_session.py` 落地 Algorithm 1（`run_simulated_session`，复用现有 `SessionSandboxPool`，不改其代码）。填三个 prompt：O6 Observer（客观无人设）、O3 Questioner（16 人设、防 AI 腔、`<end_session>`）、O4 Reward（observation-grounded、抗 hacking）。Reward 复用 `trainer/model_reward.JudgeClient`，零改动 judge I/O，只加 rubric。
 - 结果：✅ mock 冒烟全通过——imports OK（personas=16）；耐心公式 §3.6.5 P1..P4=[0.9,0.7,0.3,-0.5]；observer JSON 解析+兜底；三 prompt 注入校验；reward 复用 ClawEval 聚合（safety*(0.8c+0.2r)=0.48）+ discrepancies 进 rubric + judge 故障兜底；会话编排端到端 2 轮 8 轨迹按 K 预算正常结束。`py_compile` 全部新文件通过。新增 `tests/test_agents.py`(约21)+`tests/test_simulated_session.py`(4)。
 - 产物：`agents/*.py`、`inference/*.py`、`rollout/simulated_session.py`、`tests/test_agents.py`、`tests/test_simulated_session.py`；`pyproject.toml` packages.find 补 `rollout*/agents*/inference*`（此前 rollout 也未被打包，一并修）。
 - 解释：⚠️ **本机无 pytest/verl，未跑全量 pytest**——验证靠 `/opt/conda/bin/python` 直接 import+逻辑断言。**写测试时一度把耐心 P4 期望写成 -0.1，实际公式 `P_0-d_0(2^k-1)=1-0.1*15=-0.5`，代码对、测试错**，已修测试（doc §3.6.5 例"累计扣减 …1.5"印证）。VerlRolloutGenerateFn 故意 NotImplementedError（generate 接线 = Gap D 待集群）。三 agent 后端各自 env（OBSERVER_/USERSIM_/JUDGE_）抗 self-preference。下一步：集群上接 VerlRolloutGenerateFn + 把 run_simulated_session 接进 scheduler；外部 judge API 地址待 @孙豪 提供。
@@ -260,7 +260,7 @@
 
 ### 2026-06-10 ~16:30 | 单卡 H800（开发机） | commit <pending>
 - 动作：按腾讯云文档 [129691](https://cloud.tencent.com/document/product/1814/129691) 本地准备自定义沙盒镜像与 Tool 配置（账号未就绪，先不落盘 build）。
-- 结果：✅ `docker/sandbox/Dockerfile` + `requirements.txt` + `image.env.example`；`scripts/{validate,build,push,create_sandbox_tool}.sh`；`configs/sandbox_tool.json`（49999/49983 端口、探针、2C/2Gi）；`doc/Sandbox_Image_Onboarding.md`。`validate_sandbox_dockerfile.sh` 通过；`test_sandbox_dockerfile.py` 3 passed。
+- 结果：✅ `docker/sandbox/Dockerfile` + `requirements.txt` + `image.env.example`；`scripts/{validate,build,push,create_sandbox_tool}.sh`；`configs/sandbox_tool.json`（49999/49983 端口、探针、2C/2Gi）；`doc/ops/sandbox/Sandbox_Image_Onboarding.md`。`validate_sandbox_dockerfile.sh` 通过；`test_sandbox_dockerfile.py` 3 passed。
 - 解释：Dockerfile 仅 `RUN pip install`，无 USER/WORKDIR/ENV/ENTRYPOINT，满足快照约束。真正 `docker build` 需账号登录 CCR 后 `docker pull sandbox-code:latest`。无账号阶段继续 `--backend local` 跑采样链路。
 
 
@@ -321,14 +321,14 @@
 
 ### 2026-06-10 ~16:00 | 设计决策 | commit <pending>
 - 动作：定领域/入桶粒度——**per-query（非 per-session）**。
-- 结果：✅ 当前代码已是 per-trajectory(=per-query) 解析，**无需改逻辑**。固化契约进 `doc/SandboxRollout.md §5.5` + `domain_tagging` docstring。
+- 结果：✅ 当前代码已是 per-trajectory(=per-query) 解析，**无需改逻辑**。固化契约进 `doc/ops/sandbox/SandboxRollout.md §5.5` + `domain_tagging` docstring。
 - 解释：trajectory 单元本就是 query（GRPO group=同 query 的 M 沙盒）；session 只是上下文来源、跨多桶正常，故"一会话一领域"假设可弃。标签由模型在完整上下文下 emit，追问类 query（"怎么样了"）能被正确归到进行中任务的领域。rollout 硬性要求：每 query 一条 trajectory + 末尾 emit `<task_domain>`，勿合并整段会话。
 
 
 ### 2026-06-10 ~15:52 | 单卡 H800（开发机） | commit <pending>
 - 动作：实现"7 桶领域由 LLM 在任务处理时顺带输出"方案（缺口①）。新建 `trainer/domain_tagging.py`：`build_domain_instruction()`（注入 rollout 系统 prompt 的领域指令）+ `parse_domain()`（解析 `<task_domain>NAME</task_domain>`，含别名/取最后一个/校验）。接入 `trajectory_adapter`：无显式 bucket 时从 assistant 文本回收领域，仍无则跳过（B12）。`verl_runner` 传 `valid_buckets=buffer.bucket_names`。
 - 结果：✅ 新增 `test_domain_tagging.py`；全量 **160 passed / 1 skipped**；lint 干净。
-- 产物：`trainer/domain_tagging.py`、`tests/test_domain_tagging.py`、`trajectory_adapter.py`(回收逻辑)、`verl_runner.py`(传 valid_buckets)、`doc/SandboxRollout.md` §5.3(bucket 来源)。
+- 产物：`trainer/domain_tagging.py`、`tests/test_domain_tagging.py`、`trajectory_adapter.py`(回收逻辑)、`verl_runner.py`(传 valid_buckets)、`doc/ops/sandbox/SandboxRollout.md` §5.3(bucket 来源)。
 - 解释：领域作为 rollout 副产物落到 trajectory→bucket，避免单独分类 pass。显式 bucket 字段优先于解析标签。**待 @郑乃榕 在 rollout 系统 prompt 里注入指令**；本机无模型只能验证解析/接入的确定性逻辑。
 
 
@@ -348,7 +348,7 @@
 ### 2026-06-10 ~15:30 | 单卡 H800（开发机） | commit <pending>
 - 动作：实现论文证据钩子（`trainer/replay_metrics.py`：buffer 动态日志 + `forgetting_risk` 回填 + 周期 `buffer.dump`），跑全量回归。
 - 结果：✅ **144 passed / 1 skipped**（新增 7 项 replay_metrics 单测）；lint 干净。1 skipped = 全栈 GPU smoke（需多卡）。
-- 产物：`trainer/replay_metrics.py`、`tests/test_replay_metrics.py`、`configs/base.yaml`(+2 开关)、`doc/Progress.md`(变更日志)。
+- 产物：`trainer/replay_metrics.py`、`tests/test_replay_metrics.py`、`configs/base.yaml`(+2 开关)、`doc/archive/Progress.md`(变更日志)。
 - 解释：纯「增加观测 + 激活既有功能」，不改 Loss/Buffer 核心语义。`forgetting_risk` 的当前-logprob 前向走 verl `compute_log_prob`，**off-GPU 优雅降级为 no-op，需在 64 卡上确认真回填**。下一步：迁 64 卡跑全栈 smoke。
 
 ### 2026-06-10（更早） | 单卡 H800 | —

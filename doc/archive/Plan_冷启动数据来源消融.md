@@ -122,15 +122,15 @@
 2. **配置**：`configs/phase0/p0-a.yaml … p0-e.yaml`（继承 base，仅 `cl.buffer.warmup_path` 指向对应臂 buffer + 锁死其余变量）。
 3. **脚本**：`scripts/phase0/run.sh`（采集 5 臂 buffer → 轨1 gate → 通过者跑短RL → 汇总裁决）。
 4. **文档整改**（本需求第二部分）：
-   - `doc/CL_Update_Sunhao.md`：新增 **Phase 0** 节（实验路线图加 Phase 0 前置分支）；**并在每个已有验收/判定型实验补「验收标准」**（见 §6）。
-   - `doc/Buffer_冷启动数据需求.md`：§5 验收清单补来源配比 + manifest 核对项。
-   - `doc/Progress.md` / `doc/RunLog.md`：追加 Phase 0 里程碑与运行记录。
+   - `doc/source/CL_Design.md`：新增 **Phase 0** 节（实验路线图加 Phase 0 前置分支）；**并在每个已有验收/判定型实验补「验收标准」**（见 §6）。
+   - `doc/source/CL_Design.md`：§5 验收清单补来源配比 + manifest 核对项。
+   - `doc/archive/Progress.md` / `doc/archive/RunLog.md`：追加 Phase 0 里程碑与运行记录。
 
 ---
 
 ## 6. 文档整改：给所有"可判定型"实验补验收标准
 
-现状：`doc/CL_Update_Sunhao.md` 的实验路线（Phase 1–6）只有**对照轴**，无**验收 gate**——什么样算"通过 / 选中 / 失败"没有量化门槛。本次统一补齐（你的要求："需要给出验收标准的实验下都给出标准，可多试验同时验收"）。
+现状：`doc/source/CL_Design.md` 的实验路线（Phase 1–6）只有**对照轴**，无**验收 gate**——什么样算"通过 / 选中 / 失败"没有量化门槛。本次统一补齐（你的要求："需要给出验收标准的实验下都给出标准，可多试验同时验收"）。
 
 补法（每个 Phase 的实验表后加一张「验收标准」小表，复用 `eval/metrics.py` 指标，可多实验共用同一套 gate）：
 
