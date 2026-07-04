@@ -26,6 +26,9 @@ LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/Documents/LightLLM
 VERL_DIR=/mnt/afs_toolcall/sunhao4/Documents/verl
 SRC_MODEL=/mnt/afs_agents/share_models/Qwen/Qwen3.6-27B
 
+# SenseCore 多机变量映射(RANK/MASTER_ADDR/MASTER_PORT/NNODES 兼容注入)。
+source "$(dirname "$0")/_sensecore_env.sh"
+
 # 要跑的实验配置列表（按顺序执行）。不传参则跑默认两个。
 CONFIGS=("$@")
 if [ ${#CONFIGS[@]} -eq 0 ]; then
@@ -135,4 +138,4 @@ if [ "${RANK}" = "0" ]; then
 else
     ray start --address "$MASTER_ADDR:6379" --block
 fi
-sleep 10s
+sleep inf

@@ -19,6 +19,8 @@ set -uo pipefail
 PROJECT_DIR=/mnt/afs_toolcall/sunhao4/agentic_cl_research
 LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/Documents/LightLLM
 VERL_DIR=/mnt/afs_toolcall/sunhao4/Documents/verl
+# SenseCore 多机变量映射(与 run_phases.sh 共用)。
+source "$(dirname "$0")/_sensecore_env.sh"
 # 默认先跑 b1（无 replay，最简单，仍走你的 CL loss）验证 mock 链路；
 # 链路 OK 后换 configs/run/r4.yaml 开 7 桶 replay：bash start_train.sh configs/run/r4.yaml
 CONFIG="${1:-$PROJECT_DIR/configs/run/b1.yaml}"
@@ -133,4 +135,4 @@ if any('not configured' in w for w in warnings):
 else
     ray start --address $MASTER_ADDR:6379 --block
 fi
-sleep 10s
+sleep inf
