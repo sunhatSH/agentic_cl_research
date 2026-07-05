@@ -45,7 +45,7 @@ def parse_args():
         type=str,
         default="eval/claweval_manifest.json",
         help="ClawEval task manifest (JSON list; 默认 eval/claweval_manifest.json, "
-             "由 scripts/build_eval_manifest.py 生成, 183 纯文本任务按 9 能力桶分组).",
+             "由 scripts/build_eval_manifest.py 生成, 195 纯文本任务按 9 能力桶分组).",
     )
     parser.add_argument(
         "--include-multimodal",
@@ -63,11 +63,11 @@ def parse_args():
 #   task_id   (str, REQUIRED)  unique task identifier, used for Pass^N + forgetting join
 #   split     (str, REQUIRED)  "General" | "Multimodal" | "Multi-turn"
 #   modality  (str, REQUIRED)  "text" | "multimodal"  -- only "text" is evaluated (195 subset)
-#   bucket    (str, optional)  one of the 7 capability buckets; if absent, falls back to `category`
+#   bucket    (str, optional)  one of the 9 capability buckets; if absent, falls back to `category`
 #   category  (str, optional)  ClawEval category label (used to derive bucket downstream)
 #   prompt / messages (optional) task input; consumed by rollout_one_task on the cluster
 #
-# A record is "text-evaluable" iff modality == "text". The 7 buckets are the
+# A record is "text-evaluable" iff modality == "text". The 9 buckets are the
 # project's capability buckets (see CLAUDE.md / doc/BucketDesign.md).
 REQUIRED_MANIFEST_FIELDS = ("task_id", "split", "modality")
 VALID_SPLITS = ("General", "Multimodal", "Multi-turn")

@@ -94,7 +94,7 @@ reward:
 cl:
   lambda_replay: 0.0              # lambda_3, set per experiment
   replay_batch_size: 512         # 拼在 train batch(1024) 级；由 ppo_mini_batch 逐 mini
-                                  # batch 前向消化显存。足量以覆盖 7 桶 + 每 mini batch 都
+                                  # batch 前向消化显存。足量以覆盖 9 桶 + 每 mini batch 都
                                   # 有 replay 行(CL loss 每步生效)。旧值 32 太稀疏(~2/mini batch)
   replay_warmup_size: 0           # >0: linearly ramp replay batch while buffer
                                   # fills (cold-start); 0 = full batch immediately
@@ -114,7 +114,7 @@ cl:
     alpha: 0.5
     # 桶体系(2026-07-04)= ClawEval 官方 category 合并(去多模态)。单层、无子桶。
     # 定义+官方 category 映射见 runs/_analysis/capability_buckets/buckets.json。
-    # task_counts = 评测集分布(183 纯文本非多轮)，作 quota 权重基准。
+    # task_counts = 评测集分布(195 纯文本，含12条user_agent多轮按首轮归桶)，作 quota 权重基准。
     bucket_names:
       - workflow                    # 工作流编排 (workflow+productivity+organization)
       - ops                         # 系统操作 (ops+operations+terminal+file_ops)
@@ -125,7 +125,7 @@ cl:
       - safety                      # 安全合规 (safety+security+compliance)
       - coding                      # 代码 (coding)
       - research                    # 研究综合 (research+synthesis)
-    bucket_task_counts: [55, 43, 31, 16, 11, 11, 9, 2, 5]
+    bucket_task_counts: [56, 44, 36, 20, 11, 11, 9, 2, 6]
   weighting:
     scheme: W0                    # W0 = gamma=delta=1 (flat, priority-only).
                                   # W2 = active U-shape (gamma=delta=0.88).

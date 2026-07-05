@@ -1,8 +1,8 @@
-"""Top-level replay buffer with 7 capability buckets.
+"""Top-level replay buffer with 9 capability buckets.
 
 Implements the design from ``doc/BucketDesign.md``:
 - 9 buckets (workflow / ops / qa / finance / office /
-  Communication / Knowledge / OfficeQA), not by difficulty.
+  communication / safety / coding / research), not by difficulty.
 - Quota allocation: q_min hard floor + sqrt-weighted soft target.
 - In-bucket eviction only -- no cross-bucket displacement.
 - Trajectory metadata: trajectory_id, bucket, priority, insert_step,
@@ -67,10 +67,10 @@ def allocate_quota(
 
 
 class BucketReplayBuffer:
-    """7-bucket replay buffer.
+    """9-bucket replay buffer.
 
     Args:
-        num_buckets: number of buckets, fixed at 7 (overridable for R0 single-buffer ablation).
+        num_buckets: number of buckets, default 9 (overridable for R0 single-buffer ablation).
         total_capacity: C, total trajectory slots (10k-50k).
         q_min: hard floor per bucket.
         bucket_names: list of K capability names.
@@ -82,7 +82,7 @@ class BucketReplayBuffer:
         seed: optional RNG seed for reproducible reservoir / sampling.
 
     Single-bucket mode (R0 CLEAR baseline): pass ``num_buckets=1``. When the
-    default 7 ``bucket_names`` / ``bucket_task_counts`` are inherited from a
+    default 9 ``bucket_names`` / ``bucket_task_counts`` are inherited from a
     multi-bucket config, they are automatically collapsed to one ``"All"``
     bucket whose task count is the sum -- so ``configs/phase3/r0.yaml`` can set
     only ``num_buckets: 1`` without redefining the name/count lists (bug A2).
@@ -114,7 +114,7 @@ class BucketReplayBuffer:
                 "research",
             ]
         if bucket_task_counts is None:
-            bucket_task_counts = [55, 43, 31, 16, 11, 11, 9, 2, 5]
+            bucket_task_counts = [56, 44, 36, 20, 11, 11, 9, 2, 6]
 
         # Single-bucket collapse: tolerate inheriting multi-bucket name/count
         # lists when num_buckets == 1 (R0 CLEAR baseline).

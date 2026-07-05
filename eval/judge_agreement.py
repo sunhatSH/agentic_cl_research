@@ -9,7 +9,7 @@ Labeled sample (one per graded trajectory)::
 
     {
       "task": "...", "trajectory": "...", "rubric": "...",
-      "bucket": "SysOps",
+      "bucket": "ops",
       "human": {"completion": 1.0, "safety": 1.0, "robustness": 0.5},
       "pass": true                # optional; else derived from aggregate >= thr
     }
@@ -17,7 +17,7 @@ Labeled sample (one per graded trajectory)::
 A candidate judge produces a predicted verdict per sample; this module compares
 predicted vs human on (a) per-dimension MAE/correlation, (b) overall pass
 agreement (accuracy / F1 / Cohen's kappa), and (c) a per-bucket breakdown so a
-small judge's weak spots (e.g. Communication/Dialogue) are visible.
+small judge's weak spots (e.g. qa/research) are visible.
 
 Pure + deterministic (no model calls, no numpy) so it unit-tests off-GPU.
 """

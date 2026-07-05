@@ -1,5 +1,5 @@
 # R4 集群 runnable 配置 = verl 引擎默认 + base overlay + cluster 引擎层 + R4 语义。
-# R4：BucketDesign 完整版（7 桶 + 抗遗忘 priority，W0 token 均匀）。
+# R4：BucketDesign 完整版（9 桶 + 抗遗忘 priority，W0 token 均匀）。
 # 启动：bash scripts/run_phases.sh configs/run/r4.yaml
 
 defaults:

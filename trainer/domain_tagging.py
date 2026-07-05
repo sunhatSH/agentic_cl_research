@@ -1,7 +1,7 @@
-"""LLM-emitted task domain (= 7-bucket label) for replay-buffer routing.
+"""LLM-emitted task domain (= 9-bucket label) for replay-buffer routing.
 
 The raw dataset carries no capability/domain label, but the buffer routes every
-trajectory into one of 7 capability buckets. Rather than a separate classifier
+trajectory into one of 9 capability buckets. Rather than a separate classifier
 pass, the agent emits the domain *while handling the task*: a prompt block
 (``build_domain_instruction``) is injected into the rollout system prompt asking
 the model to end its work with ``<task_domain>NAME</task_domain>``;
@@ -115,7 +115,7 @@ def parse_domain(text: str, valid: list[str] | None = None) -> str | None:
 
     - Reads the LAST ``<task_domain>...</task_domain>`` tag (the model may
       restate; the final emission is authoritative).
-    - Normalizes case/aliases and validates against ``valid`` (default the 7
+    - Normalizes case/aliases and validates against ``valid`` (default the 9
       canonical buckets). Returns None when no valid tag is found so callers can
       SKIP the trajectory rather than mislabel it (bug B12 discipline).
     """

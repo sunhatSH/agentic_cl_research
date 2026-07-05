@@ -213,7 +213,7 @@ def ingest_trajectories(
     *,
     valid_buckets: Sequence[str] | None = None,
 ) -> dict[str, int]:
-    """Route collected trajectories into the 7-bucket buffer.
+    """Route collected trajectories into the 9-bucket buffer.
 
     Trajectories whose bucket is unresolved / not valid are SKIPPED (B12), never
     dumped into a default bucket. Returns counts {added, skipped}.
