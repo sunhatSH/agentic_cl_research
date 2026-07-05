@@ -15,7 +15,7 @@ This estimator is unbiased *only* when the $M$ trajectories differ purely becaus
 
 We therefore decompose the problem into two coupled parts. **First, we produce a clean signal** (§4.4–§4.5): a sandboxed rollout scheduler enforces bit-identical starting states across each group and re-aligns the session to the winning trajectory at every turn boundary, while a simulated-user pipeline constructs multi-turn follow-up queries online so that every follow-up's premise is grounded by construction. **Second, we consolidate that signal without forgetting** (§4.1–§4.3): a four-term continual-learning objective injects experience replay and policy regularization into GRPO, a capability-partitioned replay buffer prioritizes trajectories by their *anti-forgetting value* rather than their reward, and a U-shaped block-level reweighting scheme directs replay credit to the tokens that matter most. Figure 1 gives an overview.
 
-> **Figure 1.** *System overview.* Left: the sandbox rollout scheduler (16 sessions × 8 slots) with per-turn winner synchronization and the three-agent (observe / ask / reward) multi-turn construction loop, producing buffer-ready trajectories with a clean GRPO advantage. Right: the continual-learning trainer consuming online rollouts and replayed trajectories under the $L_{cl}$ objective, with the 7-bucket prioritized buffer in between. A dashed arrow labeled "clean advantage" connects the two halves.
+> **Figure 1.** *System overview.* Left: the sandbox rollout scheduler (16 sessions × 8 slots) with per-turn winner synchronization and the three-agent (observe / ask / reward) multi-turn construction loop, producing buffer-ready trajectories with a clean GRPO advantage. Right: the continual-learning trainer consuming online rollouts and replayed trajectories under the $L_{cl}$ objective, with the 9-bucket prioritized buffer in between. A dashed arrow labeled "clean advantage" connects the two halves.
 
 ---
 
@@ -44,7 +44,7 @@ The objective is injected into the verl/GRPO trainer through its single supporte
 
 The replay buffer is the memory that $L_{replay}$ draws from. Two principles distinguish it from a vanilla experience-replay buffer such as CLEAR [A2].
 
-**Partition by capability, not by difficulty.** We organize the buffer into $B=7$ buckets aligned with capability domains (Workflow, SysOps, Dialogue, Finance, Communication, Knowledge/Analysis, OfficeQA). Difficulty is an unstable partition axis—as the policy improves, the difficulty of a task drifts, forcing continual re-classification—whereas capability is stable. Each bucket receives a quota under a square-root, floor-protected allocation,
+**Partition by capability, not by difficulty.** We organize the buffer into $B=9$ buckets aligned with capability domains (Workflow, SysOps, Dialogue, Finance, Communication, Knowledge/Analysis, OfficeQA). Difficulty is an unstable partition axis—as the policy improves, the difficulty of a task drifts, forcing continual re-classification—whereas capability is stable. Each bucket receives a quota under a square-root, floor-protected allocation,
 $$q_i = q_{min} + (C - B\,q_{min})\cdot \frac{n_i^{0.5}}{\sum_j n_j^{0.5}},$$
 where $n_i$ is the number of tasks in bucket $i$ and $C$ is the total capacity. The square-root exponent gives larger buckets more room without letting them grow proportionally, and the hard floor $q_{min}$ prevents small but distinct capabilities (e.g., OfficeQA) from being squeezed out. Crucially, **eviction is bucket-local**: a full bucket only evicts its own lowest-priority trajectory, and new tasks can never evict trajectories from another bucket. This is the mechanism that makes the "partition by capability" claim operational—capabilities cannot cannibalize one another.
 
@@ -52,7 +52,7 @@ where $n_i$ is the number of tasks in bucket $i$ and $C$ is the total capacity. 
 $$\text{priority}_i = f\big(\text{forgetting\_risk}_i,\ \text{rarity}_i,\ \text{diversity}_i,\ \text{difficulty}_i\big),$$
 with forgetting risk (how much the current policy has regressed on the trajectory) weighted most heavily. We deliberately avoid ranking by absolute reward: as training proceeds and rewards rise globally, a reward-ranked buffer would systematically evict older trajectories and degenerate into a sliding window, defeating the purpose of continual replay. Sampling is two-level—first a bucket (a mix of quota-proportional and uniform selection, with a starvation boost for long-idle buckets), then a trajectory within the bucket by priority-weighted sampling rather than top-$k$ selection, so that replay does not repeatedly reinforce a few "star" trajectories. The buffer module is implemented independently of the RL framework and is therefore unit-testable in isolation.
 
-> **Figure 2.** *Seven-bucket structure with per-bucket quotas.* A tree showing the 7 capability buckets and their task counts, annotated with the square-root quota allocation under a 25k total capacity.
+> **Figure 2.** *Nine-bucket structure with per-bucket quotas.* A tree showing the 9 capability buckets and their task counts, annotated with the square-root quota allocation under a 25k total capacity.
 
 ---
 
