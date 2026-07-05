@@ -81,7 +81,7 @@ _REACT_SYSTEM_PROMPT = (
     "The sandbox will run the code and return the output as a user message "
     "prefixed with '[Sandbox Output]'. You can make multiple tool calls "
     "across turns. When done, provide your final answer without <toolcall> tags."
-    # The buffer routes every trajectory into one of 7 capability buckets via a
+    # The buffer routes every trajectory into one of 9 capability buckets via a
     # <task_domain> tag parsed from the trajectory text (trainer.domain_tagging).
     # Without this instruction the model never emits the tag, so parse_domain
     # returns None and ingest_trajectories SKIPS every trajectory (B12). Append

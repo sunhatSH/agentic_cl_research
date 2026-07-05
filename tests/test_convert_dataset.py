@@ -37,7 +37,7 @@ def test_extract_queries_lists_all_user_turns():
 
 def test_bucket_hint_keyword_and_unknown():
     fin = [{"role": "user", "content": "帮我分析这只股票的财务营收"}]
-    assert cd.bucket_hint(fin) == "Finance"
+    assert cd.bucket_hint(fin) == "finance"
     blank = [{"role": "user", "content": "hello there"}]
     assert cd.bucket_hint(blank) is None
 
@@ -76,7 +76,7 @@ def test_record_to_row_full_and_skip_empty():
     row = cd.record_to_row(_rec(msgs, "rec-A", {"source": "s"}))
     assert row["data_source"] == "agentic_cl"
     assert row["extra_info"]["record_id"] == "rec-A"
-    assert row["extra_info"]["bucket"] == "SysOps"
+    assert row["extra_info"]["bucket"] == "ops"
     assert row["extra_info"]["num_user_turns"] == 1
 
     assert cd.record_to_row(_rec([], "rec-empty")) is None

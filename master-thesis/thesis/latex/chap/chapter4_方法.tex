@@ -1,0 +1,191 @@
+\chapter{方法}
+\label{chap:method}
+
+本章是本文的核心方法章。我们研究\textbf{智能体大语言模型的持续强化学习}：线上策略 $\pi_\theta$ 周期性地用新采集的交互数据更新，需要在习得新行为的同时\textbf{不遗忘}已掌握的能力。本章方法围绕一个把两半工作焊在一起的核心观察来组织。
+
+GRPO 通过对同一查询的 $M$ 条 rollout 在组内归一化来估计每条样本的优势（式~\eqref{eq:grpo}）。这个估计\textbf{仅当} $M$ 条轨迹的差异纯粹来自策略采样的随机性时才是无偏的。任何其他方差来源——组内各槽执行环境不一致，或某条多轮查询的前提在实际状态中并不成立——都会把环境噪声注入优势，从源头污染学习信号。
+
+因此本文把问题拆成两个互相咬合的部分。\textbf{其一，把信号做干净}（\S\ref{sec:rollout}--\ref{sec:usersim}）：沙箱 rollout 调度器保证每组的起点位级一致，并在每个轮次边界把会话对齐到优胜轨迹；模拟用户流水线在线构造多轮后续查询，使每条后续查询的前提由构造保证成立。\textbf{其二，把干净信号用好且不遗忘}（\S\ref{sec:obj}--\ref{sec:reweight}）：一个四项持续学习目标把经验回放与策略正则注入 GRPO；一个按能力分桶的回放缓冲区按抗遗忘价值给轨迹排优先级；一个 U 形块级重加权方案把回放的信用分配到最关键的 token 上。图~\ref{fig:overview} 给出系统总览。
+
+\begin{figure}[htbp]
+\centering
+\figplaceholder{图 1：系统总览。左半为干净信号产出（16×8 沙箱 rollout + 每轮 winner 同步 + 三智能体多轮构造循环），右半为持续学习 trainer（$L_{cl}$ 目标 + 9 桶优先级 buffer），中间虚线箭头标注「干净 advantage」连接两半}
+\caption{系统总览}
+\label{fig:overview}
+\end{figure}
+
+本章先讲第二半部——如何巩固信号（\S\ref{sec:obj}--\ref{sec:reweight}），因为它界定了训练对信号的要求；明确了"需要什么样的信号"之后，再回到第一半部——如何在源头把信号做干净（\S\ref{sec:rollout}--\ref{sec:usersim}）。
+
+\section{持续学习目标}
+\label{sec:obj}
+
+本文优化一个在标准强化学习损失上叠加回放与正则的四项目标：
+\begin{equation}
+\label{eq:lcl}
+L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_4 L_{ent}.
+\end{equation}
+
+各项含义与关键决策如下。$L_{rl}$ 是新鲜 rollout 轨迹上的 GRPO 损失，是主优化目标，全程 $\lambda_1=1$。$L_{kl}$ 通过对参考策略的\textbf{逆向} KL 散度约束策略漂移，$L_{kl}=D_{KL}(\pi_{new}\,\|\,\pi_{ref})$；$\pi_{ref}$ 应取初始策略 $\pi_0$ 还是上一阶段 checkpoint $\pi_{t-1}$ 是一个经验问题，由消融实验（第~\ref{chap:exp} 章）回答。$L_{replay}$ 是回放缓冲区采样轨迹上的行为克隆项，
+\begin{equation}
+\label{eq:lreplay}
+L_{replay} = \mathbb{E}_{(s,a)\sim \mathcal{B}}\big[-\log \pi_{new}(a\mid s)\cdot w\big],
+\end{equation}
+其中每 token 权重 $w$ 在 \S\ref{sec:reweight} 定义。$L_{ent}$ 是在线 rollout 状态上的熵奖励项，本文在\textbf{所有配置中默认开启}（$\lambda_4=0.001$）。$L_{reg}$（参数 L2 正则）弃用，权重为 0，槽位让给 $L_{ent}$。
+
+两个设计选择值得明确指出。\textbf{第一，弃用参数空间正则。} 一种常见的抗遗忘项惩罚权重移动 $L_{reg}=\|\theta-\theta_{prev}\|^2$。本文将其权重置零：参数距离是功能距离的劣质代理，而 $L_{kl}$ 直接在输出分布空间约束策略，既更精确又已足够，腾出的系数槽位让给 $L_{ent}$。\textbf{第二，在本设定下熵正则并非可选项。} 多轮智能体强化学习易陷入 Echo Trap\upcite{B4}——策略多样性坍缩，组内 $M$ 条轨迹趋于一致，导致优势趋零、训练停滞。$L_{rl}$ 与 $L_{replay}$ 都是 mode-seeking 的、会加速熵衰减，而 $L_{kl}$ 只让 $\pi_{new}$ 在形状上接近 $\pi_{ref}$，并不阻止熵坍缩。因此本文一律开启 $L_{ent}$，包括无持续学习手段的基线；在基线中关掉它会导致基线崩溃，从而把"纯强化学习下的遗忘"与"崩溃后的退化"混为一谈，破坏各配置间的可比性。
+
+该目标通过 verl/GRPO trainer 唯一支持的钩子（\texttt{actor.set\_loss\_fn}）注入，\textbf{不 fork 框架}：回放行以专用 mask 拼接进训练 batch，只贡献 $L_{replay}$，绝不进入 PPO 分母。
+
+\section{按能力分桶的优先级回放缓冲区}
+\label{sec:buffer}
+
+回放缓冲区是 $L_{replay}$ 取数的记忆体。两条原则使它区别于 CLEAR\upcite{A2} 这类朴素经验回放缓冲区。
+
+\textbf{按能力分桶，不按难度。} 本文把缓冲区组织为 $B=9$ 个对齐能力域的桶：Workflow（工作流编排，55 任务）、SysOps（系统操作，43）、QA（问答检索，31）、Finance（财务金融，16）、OfficeQA（办公文档，11）、Communication（沟通表达，11）、Safety（安全合规，9）、Coding（代码，2）、Research（研究综合，5）。桶体系由 ClawEval 官方任务 category 合并而来（去多模态、单层无子桶），任务数为纯文本非多轮评测集的分布（合计 183）。难度是不稳定的划分轴——随策略变强，任务难度会漂移、迫使不断重新分类——而能力是稳定的；能力域直接采用评测基准自带的官方 category，避免自造分类的权威性争议。不纳入多模态任务，因模态不同、数据太少、目标不一致。每个桶按一个平方根、带保底的配额分配获得额度，
+\begin{equation}
+\label{eq:quota}
+q_i = q_{min} + (C - B\,q_{min})\cdot \frac{n_i^{0.5}}{\sum_j n_j^{0.5}},
+\end{equation}
+其中 $n_i$ 是桶 $i$ 的任务数，$C$ 是总容量（25k）。平方根指数让大桶获得更多空间但不按比例膨胀，硬保底 $q_{min}$ 防止小而独特的能力（如样本极少的 Coding、Research）被挤空。关键在于，\textbf{淘汰是桶内的}：已满的桶只淘汰自己桶内优先级最低的轨迹，新任务永远无法淘汰其他桶的轨迹。这正是让"按能力分桶"主张可落地的机制——不同能力无法互相侵占。表~\ref{tab:quota} 给出 25k 容量下的配额示例；因桶数增至 9、硬保底占去 $9\times2000$，可分配池仅剩 7k，各桶配额比 7 桶设定更趋扁平。
+
+\begin{table}[htbp]
+\centering
+\caption{25k 总容量下各桶平方根配额分配示例（$B=9$，$q_{min}=2000$）}
+\label{tab:quota}
+\begin{tabular}{lccc}
+\toprule[1.5pt]
+桶 & 任务数 $n_i$ & 平方根占比 & 配额 $q_i$ \\
+\midrule[1pt]
+Workflow & 55 & 0.201 & $\approx$3410 \\
+SysOps & 43 & 0.178 & $\approx$3246 \\
+QA & 31 & 0.151 & $\approx$3058 \\
+Finance & 16 & 0.109 & $\approx$2760 \\
+OfficeQA & 11 & 0.090 & $\approx$2630 \\
+Communication & 11 & 0.090 & $\approx$2630 \\
+Safety & 9 & 0.081 & $\approx$2570 \\
+Research & 5 & 0.061 & $\approx$2425 \\
+Coding & 2 & 0.038 & $\approx$2269 \\
+\midrule
+合计 & 183 & 1.000 & 25000 \\
+\bottomrule[1.5pt]
+\end{tabular}
+\end{table}
+
+\textbf{按抗遗忘价值排序，不按奖励。} 桶内轨迹按一个融合四个抗遗忘信号的优先级保留，
+\begin{equation}
+\label{eq:priority}
+\text{priority}_i = f\big(\text{forgetting\_risk}_i,\ \text{rarity}_i,\ \text{diversity}_i,\ \text{difficulty}_i\big),
+\end{equation}
+其中遗忘风险（当前策略在该轨迹上回退了多少）权重最高。本文刻意避免按奖励绝对值排序：随训练推进奖励整体上升，按奖励排序的缓冲区会系统性淘汰较旧轨迹、退化为滑动窗口，从而违背持续回放的初衷。采样为两级——先采桶（配额比例与均匀混合，对长期空闲的桶给饥饿提升），再在桶内按优先级加权随机采样（而非 top-$k$），使回放不会反复强化少数"明星"轨迹。
+
+\textbf{回放批的抽取口径。} 每个训练 step 在 \texttt{train\_batch\_size}$=1024$ 条新鲜任务之外，从缓冲区\textbf{额外}抽取固定 \texttt{replay\_batch\_size}$=512$ 条旧任务回放（口径为\textit{固定条数}而非固定比例，旧任务约占 $1/3$）。选取这一规模的核心考量是\textbf{让 CL loss 每个 mini-batch 都生效}：回放批会被切分到各 \texttt{ppo\_mini\_batch}（本文 $=64$）中逐一前向消化显存，若回放条数过少（早期版本曾取 32），平均每个 mini-batch 只摊到约 2 条回放行，$L_{replay}$ 在多数 mini-batch 上为空、防遗忘信号稀疏且不稳定；取 512 后拼接进 batch 再整体 shuffle，保证每个 mini-batch 都含足量回放行、覆盖全部 9 个桶。防遗忘的\textbf{强度}主要由 $\lambda_3$ 调节（消融中 R4 的 $0.5$ 至 R6 的 $0.8$），条数本身的进一步消融留待后续探索。这 512 条经上述两级加权采样抽出后，本文在\textbf{单个 batch 内去重}：两级加权可能重复抽到同一条轨迹，采样器会对重复者重抽直到凑齐互异样本（库存不足时优雅停在实际库存数）。
+
+\section{回放的 U 形块重加权}
+\label{sec:reweight}
+
+\S\ref{sec:buffer} 的优先级决定了\textit{哪条}轨迹值得回放，但一条多轮轨迹内部的 token 并非同等重要——早期的分支决策与最终的结论段，比中间的执行细节更值得巩固。本文因此把信用进一步细分到 token 级：$L_{replay}$ 中的权重 $w$ 由 trajectory 级项与 token 级项相乘合成。具体地，对轨迹 $i$ 的 token $t$，
+\begin{equation}
+\label{eq:weight}
+w_t^{(i)} = \mathrm{normalize}\Big(\mathrm{clip}\big(\text{priority}_i \cdot \tfrac{\gamma^{\,\mathrm{block}(t)} + \delta^{\,K_i - 1 - \mathrm{block}(t)}}{2},\ q_5,\ q_{95}\big)\Big),
+\end{equation}
+其中 $\text{priority}_i$ 是 \S\ref{sec:buffer} 的轨迹优先级，第二个因子是仅作用于 response token 的\textbf{U 形块权重}。块索引 $\mathrm{block}(t)\in\{0,1,\dots,K_i-1\}$ 从 0 起始，$K_i$ 因轨迹而异。
+
+\textbf{动作块切分。} 本文不对所有 token 等同处理、也不按原始 token 位置衰减，而是按 OpenAI 对话消息边界把每条轨迹切成 $K_i$ 个动作块——数据集采用 OpenAI tool-use 格式（\texttt{assistant} 消息携带 \texttt{content} 与可选的结构化 \texttt{tool\_calls}，\texttt{tool} 消息携带观测），轨迹中不含 \texttt{<think>}/\texttt{<toolcall>} 等 XML 标签，故一个动作块 $=$ 一条 \texttt{assistant} 消息或一条 \texttt{tool} 消息，$K_i$ 即轨迹中此类响应消息的条数。$K_i$ 因轨迹而异；块内 token 共享权重。当轨迹无法解析成块（如已被展平为扁平 token 序列）或只解析出单块（$K_i=1$、无从形成 U 形）时，回退到等长切分（$K=20$）；单条消息超过 token 阈值（默认 100）时再等长细分为子块、子块继承父块权重。这让权重曲线对齐 agent loop 的语义边界，而非任意 token 偏移。
+
+\textbf{为什么是 U 形。} 块权重对首块（早期、高方差的分支决策——选哪个工具、走哪条路）和末几块（结论生成段）同时赋高权，对中间的执行细节降权。该方案的早期版本用单调衰减加仅在 final-answer 段做单点提升；本文改为对称 U 形，因为轨迹末端的重要性并不局限于 final-answer 这一个 token 段——靠近末端的多个块（结论前的总结、关键判断）同样重要，单点提升无法覆盖一整个区域。当 $\gamma=\delta$ 时方案连续可调：令 $\gamma=\delta=1$ 使每个块权重恒为 1，恢复为内置的均权基线，于是均权与 U 形两种配置之间唯一的变量就是 $(\gamma,\delta)$ 的取值。最后，本文在归一化前对\textbf{乘积}（而非仅优先级）做 $[5\%,95\%]$ 分位裁剪，因为极端权重来自优先级与块位置的相乘放大，只有裁剪最终乘积才能控制住。图~\ref{fig:ushape} 展示了不同 $(\gamma,\delta)$ 下的 U 形曲线。
+
+\begin{figure}[htbp]
+\centering
+\figplaceholder{图 3：U 形块权重曲线。权重对归一化块位置 $\mathrm{block}(t)/K_i$，$\gamma=\delta\in\{1.0, 0.92, 0.88\}$，展示 1.0 时的水平线（均权）与 $\gamma$ 减小时 U 形渐显}
+\caption{U 形块权重}
+\label{fig:ushape}
+\end{figure}
+
+\section{沙箱 Rollout 与 Winner 同步会话}
+\label{sec:rollout}
+
+以上三节（\S\ref{sec:obj}--\ref{sec:reweight}）都默认喂进来的学习信号是干净的——优势只反映策略差异、多轮查询的前提都成立。但正如本章开头所述，这个前提在智能体多轮场景下并不自动成立，需要主动保证。本节与下一节就回到第一半部：在源头把信号做干净。本节先处理组内环境一致性。
+
+每个智能体任务在云沙箱中执行：策略推理（27B 前向，同时产出训练所需的逐 token 对数概率）在沙箱\textbf{外}的 GPU 集群上运行；动作（装包、写文件、跑命令）在沙箱\textbf{内}运行——那里状态可进程级快照、可数百实例并发隔离。轨迹直接从 rollout 引擎的\textbf{原生}输出（token id、response mask、行为对数概率）收集，而非由外部代理事后重建。
+
+一个 rollout step 并行跑 16 个会话，每会话一组 $M=8$ 个槽，共 128 个并发实例。会话内，每条查询的处理如下：8 个槽从同一母版派生，因此起点\textbf{位级一致}；策略随后 rollout 出 8 条轨迹，允许它们在执行中发散（这种发散正是优势方差的来源）；选出优胜者；并在下一条查询前把全部 8 个槽的系统状态\textbf{与}对话历史都对齐到优胜者。会话结束时整体销毁，不回写母版。
+
+这种每轮 winner 同步正是在多查询会话中保持 GRPO 优势干净的关键。若不同步，下一条查询的 8 个槽将从不同状态出发，组内比较就会混入历史路径差异；某个槽可能并非因策略更差、而是因上一条查询留下的不利状态被惩罚，破坏信用分配，且组内标准差会吸收随查询序号累积的环境方差。本文\textbf{只在查询边界}同步；查询执行过程中的发散被保留。一个实现约束是：会话内 winner 实例必须存活——它是累积的进程态与内存态的唯一活载体——所以只淘汰七个输家、由存活的 winner 派生 出替补。图~\ref{fig:winner} 给出单会话时序。
+
+\textbf{正史纠正机制。} winner 同步包含两个必须同时执行的纠正：系统状态对齐与\textbf{对话正史}（会话历史 $H_t$）对齐。本文显式区分这两条纠正，因为它们消除的是两类不同的非策略方差来源。系统状态对齐消除\textit{环境}分歧——8 个槽在执行同一查询时各自修改了不同的文件、安装了不同的包，若不对齐，下一条查询的起点环境就不一致。对话正史对齐消除\textit{上下文}分歧——8 条轨迹各自产生了不同的对话消息（不同的工具调用序列、不同的中间回答），若不对齐，下一条查询的组内比较就会把"上一轮说了不同的话"这一历史路径差异混入优势估计。
+
+具体地，设第 $k$ 轮 8 条轨迹的对话历史分别为 $h_k^{(1)},\dots,h_k^{(M)}$，优胜者为 $\tau^w$，其历史为 $h_k^{(w)}$。正史纠正将全部槽的历史统一覆写为优胜者历史：
+\begin{equation}
+\label{eq:history-correct}
+\forall j\in\{1,\dots,M\},\quad h_k^{(j)} \gets h_k^{(w)}, \quad H_{k+1} = H_k \cup \{h_k^{(w)}\},
+\end{equation}
+其中 $H_k$ 是截至第 $k$ 轮的会话正史（历代 winner 消息的累积拼接）。纠正后，第 $k{+}1$ 轮的 8 个槽从统一正史 $H_{k+1}$ 出发接收下一条查询，使组内方差仅反映本轮策略采样的随机性，而非上一轮的历史路径差异。
+
+正史纠正与系统状态对齐\textbf{缺一不可}。仅对齐系统状态而不纠正正史：下一条查询的 8 个槽虽在同一系统环境上运行，但各自看到不同的对话上下文，出题 agent 或策略本身可能因上下文差异产生不同行为，组内比较仍混入历史路径噪声。仅纠正正史而不对齐系统状态：8 个槽虽看到相同对话历史，但底层系统状态不同（文件内容、安装的包不同），导致相同输入产生不同输出，组内比较仍混入环境噪声。只有两者同时纠正，才能使下一条查询的组内方差纯粹来自策略采样。
+
+正史 $H_t$ 同时服务两个下游消费者，保证了"用来出下一题的上下文"与"训练时策略看到的上下文"完全一致。出题 agent 基于优胜者正史 $H_t$ 生成下一条查询 $q_{t+1}\sim Q(\cdot\mid p, R_t, H_t)$，使后续查询的前提建立在优胜者实际达成的状态之上；训练时策略的输入也是同一份 $H_t$ 作为 prompt 前缀，使 rollout 与训练的前向一致。这与系统状态对齐的语义对称：系统状态对齐保证\textit{环境}在 rollout 与训练间一致，正史纠正保证\textit{对话上下文}在 rollout 与训练间一致。
+
+\begin{figure}[htbp]
+\centering
+\figplaceholder{图 4：Winner 同步会话时序。单会话从母版派生 8 个位级一致槽位；对每条查询，8 路并行 rollout → 选 winner → 全部槽位（磁盘+历史）同步到 winner → 下一条 query；会话结束销毁}
+\caption{Winner 同步会话}
+\label{fig:winner}
+\end{figure}
+
+\textbf{实现注记：在标准框架内落地 winner 同步。} 上述会话调度无法用标准强化学习框架（如 verl/GRPO）的默认 rollout 表达。默认范式是"把整批提示一次性生成完、再统一打分"——而 winner 同步是查询\textit{之间}的耦合（下一条查询的起点取决于上一条的优胜者），单次批量生成内部无法表达这种顺序依赖。本文因此把 rollout 阶段的控制权收归己有：\textbf{由本文编排会话循环（16×8 槽 + 每查询后 winner 同步），但每一步的单条生成仍调用框架原生的生成引擎}，使 token 与对数概率由框架直接产出，而非由外部代理事后重建（这是保证 $L_{rl}$ 的重要性比率与训练前向数值一致的前提）。具体地，本文利用框架预留的 rollout 管理器注入点，以一个自定义的 rollout 管理器替换默认实现：它对外仍满足"输入一批提示、输出一批带 response mask 与对数概率的轨迹"的契约（从而训练循环的其余部分——优势计算、损失、参数更新——完全不变），对内则把这批提示当作种子查询交给本文的会话调度器，跑完 16×8 加 winner 同步后，再把收集到的轨迹组装回框架要求的批张量格式。\textbf{这一替换是非侵入的}：不 fork 框架、不改其训练循环，只在官方注入点挂入；与本文注入持续学习损失用的是同一种"零源码改动"策略（\S\ref{sec:obj}）。其代价是一个适配层——把可变长度的多轮轨迹组装成框架的稠密批张量。
+
+\section{经模拟用户在线构造多轮查询}
+\label{sec:usersim}
+
+信号污染的第二个来源是多轮数据。一条后续查询通常引用上一轮的结果（例如"那份 PPT 第 3 页的数据错了"）。当这样的后续查询在数据采集时被写死、而实际状态 $e_k$ 是策略的随机函数时，该后续查询的前提仅以概率 $\Pr[\phi(q_{k+1})(e_k)] < 1$ 成立，且该概率随策略变强而漂移。前提失败会产生污染信号：模型要么因对不存在的问题硬编一个修复而被奖励，要么因如实指出该问题不存在而被惩罚。
+
+本文通过\textbf{在观察到实际状态之后再在线构造后续查询}来消除前提漂移。从每个真实会话中只保留第一条查询作为种子（保住真实的用户意图分布），并在 winner 同步边界用三个协作智能体生成后续轮次。值得强调的是，回流数据里本就含有真实的后续查询，但它们同样是在采集时针对\textit{原始}会话的执行结果写下的；训练 rollout 中本文策略对首条查询产出的状态与该原始结果不同，这些真实后续查询的前提因而同样不成立——直接复用它们会重新引入前提漂移。\textbf{这正是本文丢弃真实后续查询、只保留种子首条查询的原因}：真实数据的价值在其首条查询所携带的真实意图分布，而非其与特定一次执行绑定的后续轮次。三个协作智能体是：
+
+\begin{itemize}
+  \item 一个\textbf{观察智能体}（无人设），对比该轮\textbf{前后}的 winner 沙箱状态，从由此得到的环境\textbf{差异}（本轮新增/修改/删除的文件及其内容，加系统状态变化，只读）中收集一份中立、结构化的报告 $R_t = \mathrm{Obs}(e_t^w)$，尤其捕获中间结果与最终结果。关键在于观察智能体\textbf{只基于真实状态}：它\textbf{根本不接收 actor 的轨迹或声称}。这使反奖励作弊成为\textit{结构性}的——actor 的叙事从不进入观察判断，完成度只能反映被核实的真实效果，策略无法靠"声称完成"骗分。观察智能体同样独立于策略模型（不同模型/后端），观察与动作解耦。
+  \item 一个\textbf{出题智能体}，携带 42 个固定人设之一（职业、偏好、用户画像，以及一个观察偏好：整体 vs 细节、形式 vs 内容）。\textbf{人设在每个会话开始时随机抽取一个，并在整个会话内保持不变}；它生成下一条查询 $q_{t+1}\sim Q(\cdot\mid p, R_t, H_t)$，其中 $H_t$ 是 winner 衍生的会话历史。
+  \item 一个\textbf{奖励模型}，从同一份报告按两条通道对该轮打分：观察智能体的状态差异（完成度的真值）加在 $R_t$ 上透传携带的 actor 轨迹（判安全/鲁棒性），$r_t = \mathrm{Reward}(R_t, \text{rubric})$。本轮无任何变化（空差异）则短路为 0、不调 judge。
+\end{itemize}
+
+报告 $R_t$ 同时服务两个下游消费者，这保证了"用来打分的事实"与"用来出下一题的事实"完全一致，并把客观证据收集（观察智能体）与主观立场（出题智能体）解耦。由于后续查询是在观察智能体检视实际状态之后才写出的，其前提由构造成立，$\Pr[\phi(q_{t+1})(e_t^w)]\approx 1$。把奖励的完成度落在观察到的实际效果（文件是否真的生成、内容是否正确）而非任何文字声明上，是反奖励作弊的关键——而由于观察智能体本身从不读轨迹，这种 grounding 是\textbf{结构性}的，不依赖 judge 的尽责程度。图~\ref{fig:threeagent} 展示了三智能体在 winner 同步边界的协作环。
+
+\begin{figure}[htbp]
+\centering
+\figplaceholder{图 5：三智能体多轮构造。winner-sync 边界处：观察智能体读 winner 沙箱差异（仅状态）→ 产出报告 $R_t$（透传携带轨迹）；$R_t$ 分发给奖励模型（状态差异→完成度，透传轨迹→安全/鲁棒性）与人设化出题智能体（下一查询或结束会话）}
+\caption{三智能体多轮构造}
+\label{fig:threeagent}
+\end{figure}
+
+\textbf{四维抗坍缩。} 自对话的已知失效模式是模式坍缩——后续查询趋同于少数模板腔，熵随轮数衰减。本文用四个正交维度对抗它：（1）人设多样性，引入 42 个多样人设，每会话随机抽一个，把同一份客观报告问出不同侧面；（2）轮数压制，后续查询轮数在 $\{1,2,3\}$ 中抽样，截断自回归生成链，避免模型学到"固定第 $N$ 轮结束"的捷径；（3）状态逐轮演化，每轮 winner 状态都被上一条后续查询改变，同一个人设每轮看到的报告也不同；（4）出题智能体多模型轮换，出题智能体在 4 个跨厂商模型——anthropic/claude-4.6-sonnet、deepseek/deepseek-v4-pro、qwen/qwen3.7-max、moonshotai/kimi-k2.6——之间轮换，每 5 次提问后切换。前三个维度已有文献先例（人设多样性\upcite{A2}、轮数截断\upcite{B4}、输入漂移），第四个维度是本文新增的\textbf{模型层异质性}：人设决定"问什么"，模型决定"怎么问"，两者从不同维度注入多样性，联合效果大于任一单维度。
+
+\textbf{由人设耐心治理的失败兜底。} 本文不设固定的重试上限，而是把"是否重试"做成模拟用户的属性，由每个人设携带的两个量治理：初始耐心 $P_0(p)$ 与基础扣减 $d_0(p)$。设 $k=1,2,\dots$ 标记会话内连续失败的轮次。第 $k$ 次失败时耐心按一个指数增长的扣减衰减，
+\begin{equation}
+\label{eq:patience}
+P_k = P_{k-1} - d_0(p)\,2^{\,k-1} \;=\; P_0(p) - d_0(p)\,(2^{k}-1).
+\end{equation}
+控制器随后以概率 $\mathrm{clip}(P_k,0,1)$ 重做该轮，否则以 \texttt{<end\_session>} 结束会话；特别地 $P_k<0$ 时确定性终止。让 $P_0$ 与 $d_0$ 均由人设携带，解耦了两个不同的性格特质——初始容忍度与升级速度。由于扣减每次翻倍，耐心在 $O(\log_2(P_0/d_0))$ 次失败后越过零，因此重试天然有界、无需单独设上限。
+
+一个有用的副作用是\textbf{自适应课程}：出题智能体始终针对\textit{当前}策略的实际输出挑刺，因此策略越强、残留缺陷越细微，它提出的后续查询也越精细，自动跟随能力前沿，无需人工设计难度调度。
+
+\begin{algorithm}[htbp]
+\caption{winner 同步会话 + 三智能体在线多轮构造（单会话）}
+\label{alg:session}
+\begin{algorithmic}[1]
+\Require 母版镜像 $M$，种子查询 $q_1$，人设 $p\sim\mathrm{Persona}$
+\State 从 $M$ 派生 8 个位级一致槽位 $\{s_1,\dots,s_8\}$
+\State $H \gets \emptyset$ \Comment{会话正史}
+\For{$t = 1, 2, \dots$ 直到 \texttt{<end\_session>}}
+  \State 8 路并行 rollout：$\{\tau_j\}_{j=1}^{8} \gets \pi_\theta(\,\cdot\mid q_t, s_j)$
+  \State 选 winner $\tau^w \gets \arg\max_j r(\tau_j)$
+  \State winner 同步：$\forall j,\ s_j \gets \mathrm{sync}(s_j, \tau^w)$ \Comment{系统状态+历史对齐}
+  \State $e_t^w \gets$ winner 沙箱状态；$R_t \gets \mathrm{Obs}(e_t^w)$ \Comment{观察智能体，仅状态}
+  \State $r_t \gets \mathrm{Reward}(R_t, \text{rubric})$ \Comment{奖励模型，空差异短路为 0}
+  \State $H \gets H \cup \{\tau^w\}$
+  \State $q_{t+1} \gets Q(\,\cdot\mid p, R_t, H)$ \Comment{出题智能体，或 \texttt{<end\_session>}}
+\EndFor
+\State 销毁全部槽位，不回写母版
+\State \Return 收集的轨迹 $\{(\tau^w_t, r_t)\}$ 入桶
+\end{algorithmic}
+\end{algorithm}
+
+综上，在定义了如何产出干净信号（\S\ref{sec:rollout}--\ref{sec:usersim}）以及如何在不遗忘的前提下巩固它（\S\ref{sec:obj}--\ref{sec:reweight}）之后，本文设计受控消融实验，逐一隔离每个组件的边际贡献（第~\ref{chap:exp} 章）。三个智能体与奖励模型的完整提示词见附录~\ref{app:prompts}。

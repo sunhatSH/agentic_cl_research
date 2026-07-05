@@ -9,7 +9,7 @@ def test_allocate_quota_sums_to_capacity():
     targets = allocate_quota(
         total_capacity=25000,
         q_min=2000,
-        bucket_task_counts=[54, 52, 38, 18, 12, 11, 10],
+        bucket_task_counts=[56, 44, 36, 20, 11, 11, 9, 2, 6],
         alpha=0.5,
     )
     assert sum(targets) == 25000
@@ -81,13 +81,13 @@ def test_eviction_kicks_in_above_soft_target():
 
 
 def test_single_bucket_collapse_for_r0():
-    # num_buckets=1 with inherited 7-name list -> collapse to one "All" bucket.
+    # num_buckets=1 with inherited 9-name list -> collapse to one "All" bucket.
     buf = BucketReplayBuffer(
         num_buckets=1,
         total_capacity=10000,
         q_min=10000,
         bucket_names=["workflow", "ops", "qa", "finance", "office", "communication", "safety", "coding", "research"],
-        bucket_task_counts=[54, 52, 38, 18, 12, 11, 10],
+        bucket_task_counts=[56, 44, 36, 20, 11, 11, 9, 2, 6],
     )
     assert buf.bucket_names == ["All"]
     assert buf.bucket_task_counts == [195]

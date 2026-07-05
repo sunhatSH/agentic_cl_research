@@ -44,7 +44,7 @@ def make_cl_loss_from_cfg(cfg: Any):
     return make_cl_loss(
         replay_enabled=lambda_replay > 0.0,
         lambda_replay=lambda_replay,
-        replay_batch_size=int(cl.get("replay_batch_size", 32)),
+        replay_batch_size=int(cl.get("replay_batch_size", 512)),
         use_token_weighting=scheme != "W0",
         weighting_scheme=scheme,
         actor_cfg=actor_cfg,
@@ -71,7 +71,7 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
 
     cl = cfg.get("cl", {}) or {}
     lambda_replay = float(cl.get("lambda_replay", 0.0))
-    replay_batch_size = int(cl.get("replay_batch_size", 32))
+    replay_batch_size = int(cl.get("replay_batch_size", 512))
     replay_warmup_size = int(cl.get("replay_warmup_size", 0))
     # Paper-evidence cadences (0 disables). See doc/Progress.md / replay_metrics.
     stats_log_freq = int(cl.get("buffer_stats_log_freq", 1))

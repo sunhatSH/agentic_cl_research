@@ -77,7 +77,7 @@ def test_trajectory_to_buffer_item_carries_logprobs():
 
 
 def test_full_chain_into_buffer():
-    """scheduler (2×2 mock) -> score -> ingest into real 7-bucket buffer."""
+    """scheduler (2×2 mock) -> score -> ingest into real 9-bucket buffer."""
     agent_fn = make_react_agent_fn(_mock_generate(), max_turns=4)
     sched = RolloutScheduler(
         agent_fn,

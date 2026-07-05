@@ -1,0 +1,74 @@
+\chapter{系统实现}
+\label{chap:system}
+
+本章给出持续学习训练系统的工程实现。系统以 verl 0.8.0 为训练框架，通过零源码改动的注入点接入持续学习损失与回放缓冲区；沙箱 rollout 与三智能体在线构造解耦为独立模块。本章重点描述几个关键的工程决策与解耦设计。
+
+\section{基于 verl 的零侵入集成}
+\label{sec:sys-verl}
+
+本文以 verl 0.8.0（pip 安装，不 fork）作为强化学习训练框架。verl 自身没有经验回放缓冲区的概念，本文的缓冲区作为纯 Python 模块外挂接入；持续学习损失则通过框架暴露的注入点接入，无需修改框架源码。
+
+\textbf{损失注入。} verl 在 \texttt{actor.set\_loss\_fn()} 接口处支持自定义策略损失函数。本文的 \texttt{trainer/cl\_loss.py::make\_cl\_loss} 返回一个 verl 兼容的损失闭包，实现式~\eqref{eq:lcl} 的四项目标。回放行通过专用 mask 拼接进训练 batch：回放行的 PPO \texttt{response\_mask} 置 0（从而不进入 PPO 损失的分母），另设 \texttt{replay\_response\_mask} 标记真实回放 span，使 $L_{replay}$ 独占该 mask。这一双 mask 设计保证了回放行只贡献 $L_{replay}$、绝不污染 PPO 损失。
+
+\textbf{缓冲区钩子。} 本文通过 \texttt{install\_buffer\_hooks} 在训练器的参数更新阶段挂入缓冲区交互：每个 step 从缓冲区采样回放轨迹、组装成回放行拼入 batch，训练后再把当前 rollout 的新轨迹入库。该钩子 patch 训练器的 \texttt{\_update\_actor} 方法，不使用全局 monkey-patch。
+
+\textbf{Fully Async 对接。} 为支持推理与训练分离部署（\S\ref{sec:sys-gpu}），本文实现了 \texttt{trainer/verl\_async\_runner.py}，将持续学习 mixin 注入 verl 的 Fully Async Policy 训练器底层类并重新注册为 Ray actor，在 \texttt{\_fit\_update\_actor} 处挂入缓冲区钩子。$L_{replay}$ 本身是 off-policy 的，与 fully-async 的异步样本天然契合。
+
+\section{沙箱架构与厂商无关后端}
+\label{sec:sys-sandbox}
+
+\textbf{动作在内、推理在外。} 每个智能体任务在云沙箱中执行。策略推理（27B 前向与采样，同时产出训练所需的逐 token 对数概率）在沙箱\textbf{外}的 GPU 集群上由推理引擎（部署采用 LightLLM 异步 server，与 verl agent-loop 对接）运行；动作（装包、写文件、跑命令）在沙箱\textbf{内}运行，那里状态可进程级快照、可数百实例并发隔离。128 个沙箱不可能各带一份 27B 模型，而动作必须落到"那台用户机器"的系统状态上，因此推理与动作在物理上分离。轨迹直接从 rollout 引擎的原生字段（token id、\texttt{response\_mask}、\texttt{rollout\_log\_probs}）收集，而非由外部代理事后重建，从而保证 $L_{rl}$ 的重要性比率与训练前向数值一致。
+
+\textbf{16×8 winner 同步调度。} 每个 rollout step 并行 16 个会话，每会话 8 个槽位，共 128 个并发实例。会话内每条查询：8 槽从同一母版派生（位级一致）→ 8 路并行 rollout（中途发散即优势方差来源）→ 选 winner → 8 槽系统状态与对话正史都对齐到 winner → 下一条查询。会话结束销毁全部、不回写母版。会话内绝不淘汰 winner（它是累积进程态与内存态的唯一活载体），只淘汰 7 个输家、由存活 winner 派生替补。
+
+\textbf{厂商无关的沙箱后端。} 本文将沙箱后端设计为接口与实现解耦的注册表：\texttt{SandboxClient} 协议定义接口契约，\texttt{register\_backend} 与 \texttt{make\_sandbox} 按名选择后端。已实现 \texttt{local}（本地开发）与 \texttt{e2b}（腾讯云）两个真后端，\texttt{aliyun}（阿里云 AgentBay）留空 stub。换或加沙箱厂商时，rollout 循环零改动。
+
+\section{模型选型}
+\label{sec:sys-model}
+
+各角色的模型选型如表~\ref{tab:model} 所示。选型的单一信源为 \texttt{configs/agents.yaml}，代码（\texttt{agents/base.py}、\texttt{trainer/model\_reward.py}）与启动脚本统一读取该文件（配置优先，缺省时回退到 \texttt{OBSERVER\_*} / \texttt{USERSIM\_*} / \texttt{JUDGE\_*} 环境变量）。所有角色共用同一 sufy 网关端点（\texttt{openai.sufy.com/v1}）与同一密钥 \texttt{SUFY\_API\_KEY}，但观察、出题、判分选用\textbf{不同厂商/不同模型}，抗 self-preference 偏置。判分模型冻结且能力不低于策略，作为一把不变的尺子衡量遗忘，避免版本漂移污染遗忘度量。
+
+\begin{table}[htbp]
+\centering
+\caption{各角色模型选型（单一信源：\texttt{configs/agents.yaml}）}
+\label{tab:model}
+\begin{tabular}{llcl}
+\toprule[1.5pt]
+角色 & 选型 & 温度 & 说明 \\
+\midrule[1pt]
+Actor / 基座策略 & Qwen3.6-27B & rollout 1.0 & 训练对象，本地权重 \\
+观察智能体 Observer & openai/gpt-5.4-mini & 0.0 & 客观取证，确定性 \\
+出题智能体 Questioner & anthropic/claude-4.6-sonnet（主） & 0.9 & 4 模型轮换，抗坍缩 \\
+奖励 / Judge & anthropic/claude-4.8-opus & 0.0 & 冻结，与评测同构 \\
+\bottomrule[1.5pt]
+\end{tabular}
+\end{table}
+
+出题智能体采用\textbf{多模型轮换}：在 4 个跨厂商模型——anthropic/claude-4.6-sonnet、deepseek/deepseek-v4-pro、qwen/qwen3.7-max、moonshotai/kimi-k2.6——之间轮换，每 5 次提问后切换到下一个（\S\ref{sec:usersim}）。轮换池的模型来自不同厂商，最大化输出风格异质性：人设决定"问什么"，模型决定"怎么问"，两者从不同维度注入多样性。
+
+观察智能体的 LLM 调用是\textbf{可选}的：默认 \texttt{use\_llm=False}，走确定性取证（沙箱 before/after 内容级差异为真值），零模型调用；仅在需要模型归纳或差异标记时才启用 LLM。这一设计避免了"让奖励模型去观察"的高消耗，同时反奖励作弊的取证层始终运行。
+
+\section{GPU 部署与训练精度}
+\label{sec:sys-gpu}
+
+\textbf{部署。} 64 张 H800，采用推理与训练分离的 40+24 配置：推理组 40 卡（5 个 TP8 replica 承载 rollout 引擎），训练组 24 卡（FSDP2）。在智能体工具执行延迟 4--8 秒/轮的 Deep Research 场景下，分离部署比 Colocate 64 快约 3--7\%，因训练与 rollout 可并行。Colocate 64 为后备方案。（资源估算中的单 TP8 replica 吞吐 $\sim$1500 tok/s 以 vLLM 为基准；实际部署 rollout 引擎为 LightLLM 异步 server，见 \S\ref{sec:sys-sandbox}。）
+
+\textbf{异步框架。} 采用 verl 的 Fully Async Policy，通过 \texttt{staleness\_threshold=0.3} 严格控制异步程度（最多 30\% 样本来自旧策略），\texttt{trigger\_parameter\_sync\_step=4}，\texttt{require\_batches=4}，\texttt{partial\_rollout=False}。该方案可平滑退化为同步（\texttt{staleness\_threshold=0}），是更稳的工程选择。27B 单次权重同步约 4--5 秒（参考 verl 实测 30B 为 4.38 秒）。
+
+\textbf{精度。} 全栈 BF16 混合精度：训练参数、激活、梯度均 BF16；保留 FP32 主权重与 FP32 Adam 一阶/二阶动量以保证更新数值稳定。FP8 不进入主路径——27B + 智能体 + 持续学习三重叠加的 FP8 稳定性未验证，且 27B 显存余量充裕（训练侧约 50 GB/卡，80 GB 余 30 GB）。Phase 5 大 rollout 量下若吞吐成瓶颈，可考虑仅 rollout 切 FP8（训练保持 BF16），并配合 Token-level TIS 兜底。
+
+\section{工程解耦与可测试性}
+\label{sec:sys-decouple}
+
+\textbf{回放缓冲区与框架解耦。} \texttt{replay\_buffer/} 是纯 Python 模块，不 import verl、不依赖 Ray，可在 CPU 单机上独立单元测试。截至本文写作时，该模块含 100 余项单元测试。这一解耦使缓冲区的优先级、配额、淘汰、采样逻辑可在无 GPU 环境下充分验证。
+
+\textbf{三智能体离线 harness。} 配套 \texttt{scripts/agents\_harness.py} 提供观察+出题+奖励三智能体的离线回路，无 GPU 即可跑通，利于复现与调试。
+
+\textbf{轨迹收集用框架原生字段。} 轨迹直接从 verl 的 \texttt{ToolAgentLoop} 原生输出收集，不写外部代理，保证 token 与对数概率由框架直接产出。
+
+\section{当前实现状态与残缺模块}
+\label{sec:sys-status}
+
+截至本文写作时（2026-07），训练系统代码已全部完成，CPU 单机通过约 290 项单元测试（288 passed + 7 skipped，skip 均为"未装 verl/无 GPU"）。回放路径已在真实 H800 上通过 CUDA smoke（回放行反向、梯度大于零）。verl 集成的关键接线（损失闭包签名对齐、回放行双 mask 与跨长度填充、forgetting\_risk 当前对数概率前向）均已审计修复并通过纯逻辑单测。
+
+唯一阻塞正式训练的是外部依赖：64 卡 GPU 集群、真实 Qwen3.6-27B 权重、ClawEval 任务 manifest、沙箱 rollout 环境、用户 query 种子。残缺模块（Gap A--H）中，奖励模型、数据转换、沙箱调度、rollout 桥均已落地代码；全栈 1--2 step GPU smoke 待集群验证。21 个消融实验均未实际运行，checkpoint 产出为 0——这是第~\ref{chap:exp} 章只能呈现实验设计而非结果的根本原因。

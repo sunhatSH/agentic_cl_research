@@ -327,6 +327,7 @@
 % \begin{macro}{\maketitle} 插入扉页
 %    \begin{macrocode}
 \RequirePackage{graphicx}
+\RequirePackage{eso-pic}
 \newif\if@subtitle
 \ifruc@bachelor
 \renewcommand{\maketitle}{ 
@@ -581,7 +582,6 @@ text={\paperwidth,\paperheight},marginparwidth=0mm}\hspace{-9mm}
 \RequirePackage{lscape}
 \RequirePackage{multicol}
 \RequirePackage{color}
-\RequirePackage[dvipsnames,prologue,table]{pstricks}
 \definecolor{rucblue}{rgb}{0.129,0.482,0.663}
 \definecolor{rucorange}{rgb}{0.976,0.769,0.325}
 \definecolor{rucred}{rgb}{0.569,0.129,0.2}
@@ -613,6 +613,7 @@ text={\paperwidth,\paperheight},marginparwidth=0mm}\hspace{-9mm}
 \fi
 \fi
 \begin{landscape}
+\enlargethispage{25mm}
 \begin{multicols}{2}
 \rule[0mm]{22mm}{0mm}
 \ifruc@doctor
@@ -685,14 +686,14 @@ text={\paperwidth,\paperheight},marginparwidth=0mm}\hspace{-9mm}
 \end{center}
 \end{multicols}
 \thispagestyle{empty}
-%    \end{macrocode}
-% \end{macro}
-% 要求中只有博士是需要书脊的(硕士可选)，需要设置纸张高度为两张A4纸宽度(420mm)再加书脊的宽度，100张A4纸厚度约为1cm。
-%    \begin{macrocode}
 \ifruc@shuji
-\ifruc@doctor\color{rucbalck}\else\color{rucwhite}\fi
-\uput[u]{0}(0.5\paperheight,15){{\sf\zihao{3}\shortstack[c]{\@covertitle}}}
-\uput[u]{0}(0.5\paperheight,3){{\sf\zihao{3}\shortstack[c]{中\\国\\人\\民\\大\\学}}}
+\AddToShipoutPictureFG*{%
+  \setlength{\unitlength}{1mm}%
+  \AtPageLowerLeft{%
+    \put(15,205){\makebox(0,0)[c]{\ifruc@doctor\color{rucbalck}\else\color{rucwhite}\fi\sf\zihao{3}\@covertitle}}%
+    \put(3,205){\makebox(0,0)[c]{\ifruc@doctor\color{rucbalck}\else\color{rucwhite}\fi\sf\zihao{3}\shortstack[c]{中\\国\\人\\民\\大\\学}}}%
+  }%
+}%
 \else\fi
 \end{landscape}
 \restoregeometry
@@ -742,4 +743,4 @@ text={\paperwidth,\paperheight},marginparwidth=0mm}\hspace{-9mm}
 %</cls>
 %    \end{macrocode}
 % \Finale
- \endinput
+ \endinput                         

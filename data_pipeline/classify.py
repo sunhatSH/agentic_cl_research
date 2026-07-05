@@ -124,7 +124,8 @@ def parse_classify_output(text: str) -> dict:
 
     bucket = str(obj.get("bucket", "")).strip()
     sub = obj.get("sub_bucket")
-    if bucket in DEFAULT_BUCKETS:
+    if bucket.lower() in DEFAULT_BUCKETS:
+        bucket = bucket.lower()  # normalize LLM output case
         result["bucket"] = bucket
         valid_subs = SUB_BUCKETS.get(bucket, [])
         if isinstance(sub, str) and sub.strip() in valid_subs:

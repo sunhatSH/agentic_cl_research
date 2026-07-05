@@ -99,7 +99,7 @@ def extract_trajectories_from_batch(
     if present in ``non_tensor_batch``.
 
     Bug B12: rows without a resolvable bucket are SKIPPED (and counted in a
-    warning) rather than silently dumped into a default "Workflow" bucket,
+    warning) rather than silently dumped into a default bucket,
     which would distort the quota distribution. Pass ``default_bucket`` only
     when a deliberate catch-all bucket is wanted.
     """

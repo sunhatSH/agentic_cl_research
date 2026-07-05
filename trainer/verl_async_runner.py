@@ -114,7 +114,7 @@ def make_cl_fully_async_trainer_cls(buffer: Any, cfg: Any):
 
     cl = cfg.get("cl", {}) or {}
     lambda_replay = float(cl.get("lambda_replay", 0.0))
-    replay_batch_size = int(cl.get("replay_batch_size", 32))
+    replay_batch_size = int(cl.get("replay_batch_size", 512))
     replay_warmup_size = int(cl.get("replay_warmup_size", 0))
     weighting = build_weighting_from_cfg(cl) if lambda_replay > 0 else None
 

@@ -5,7 +5,7 @@
 buffer 计算冷启动自身指标，并按硬 gate 判定该臂是否进入下游短RL (Stage 3)。
 
 判定项 (可算的即判 gate；依赖 judge 的项冷数据未打分时标 N/A)：
-  - 桶配额达标率        : 各桶 size >= q_min 的桶数 / 7   (gate: == 7/7)
+  - 桶配额达标率        : 各桶 size >= q_min 的桶数 / 9   (gate: == 9/9)
   - tool-call 合法率     : assistant 消息里结构化 tool_calls 可解析占比 (gate: >= 0.90)
   - 轨迹多样性          : distinct_4 (>= 0.6) 且 self_bleu_4 (<= 0.5)
   - judge 有效分命中率   : 需采集期 judge 打分；冷 buffer 无 reward 时 N/A + 提示
@@ -27,7 +27,7 @@ from replay_buffer.bucket import BucketReplayBuffer
 from trainer.domain_tagging import DEFAULT_BUCKETS
 
 # gate 阈值 (doc/Plan_冷启动数据来源消融.md §4.1)
-GATE_QUOTA_BUCKETS = len(DEFAULT_BUCKETS)  # 必须 7/7
+GATE_QUOTA_BUCKETS = len(DEFAULT_BUCKETS)  # 必须 9/9
 GATE_TOOLCALL_RATE = 0.90
 GATE_DISTINCT4 = 0.60
 GATE_SELFBLEU4 = 0.50
@@ -121,7 +121,7 @@ def main() -> int:
     # --- 判定 ---
     fails: list[str] = []
     if not quota_ok:
-        fails.append(f"桶配额 {ok_buckets}/{GATE_QUOTA_BUCKETS} (需 7/7, q_min={args.q_min})")
+        fails.append(f"桶配额 {ok_buckets}/{GATE_QUOTA_BUCKETS} (需 9/9, q_min={args.q_min})")
     if toolcall_rate is not None and toolcall_rate < GATE_TOOLCALL_RATE:
         fails.append(f"tool-call 合法率 {toolcall_rate:.3f} < {GATE_TOOLCALL_RATE}")
     d4 = div.get("distinct_4")

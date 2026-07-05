@@ -17,7 +17,7 @@ sample105_v2 是 OpenClaw 平台采集产物：事件流（``agent/sessions/*.js
    ``find_main_session_log`` / ``iter_message_events`` / ``extract_text`` /
    ``first_user_query_text``）已就绪、可复用。
 2. **classify** — LLM 给首 query 分桶 + 子桶（category，取自
-   ``doc/BucketDesign.md``），JSON 容错解析（截断/非 JSON 降级 unknown）。
+   ``data_pipeline/classify.py`` 的 ``SUB_BUCKETS`` 及 ``configs/base.yaml``），JSON 容错解析（截断/非 JSON 降级 unknown）。
 3. **route_trajectories** — 按桶把主会话完整轨迹重建为 OpenAI chat 入桶；
    **route_subagents** — 子会话事件流原样转 chat、独立成样本（主子各自单独训练）。
 
@@ -25,7 +25,7 @@ sample105_v2 是 OpenClaw 平台采集产物：事件流（``agent/sessions/*.js
   - 纯函数（extract / route）不联网，可离线单测；classify 用可注入的
     ``ChatClient``（与 ``agents/base.py`` 同一 Protocol），mock 单测。
   - 复用既有约定：bucket 名取自 ``trainer/domain_tagging.DEFAULT_BUCKETS``，
-    category 取自 ``BucketDesign.md``（见 ``SUB_BUCKETS``）。
+    category 取自 ``data_pipeline/classify.py`` 的 ``SUB_BUCKETS``（与 ``configs/base.yaml`` 对齐）。
   - 输出落 ``data/``（gitignored 运行时产物），不入库。
 """
 

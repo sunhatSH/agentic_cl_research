@@ -23,8 +23,8 @@ EXPERIMENT_CONFIGS = sorted(p for p in CONFIG_ROOT.glob("phase*/*.yaml") if not 
 
 
 def test_found_all_experiment_configs():
-    # 21 = B1 + K(6) + R(8: R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K) + C(4) + S(2)
-    assert len(EXPERIMENT_CONFIGS) == 21, [p.name for p in EXPERIMENT_CONFIGS]
+    # 26 = P0(5) + B1(1) + K(6) + R(8: R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K) + C(4) + S(2)
+    assert len(EXPERIMENT_CONFIGS) == 26, [p.name for p in EXPERIMENT_CONFIGS]
 
 
 @pytest.mark.parametrize("cfg_path", EXPERIMENT_CONFIGS, ids=lambda p: p.stem)

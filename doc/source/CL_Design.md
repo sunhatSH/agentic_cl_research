@@ -361,7 +361,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 | 指标 | 验收 gate |
 |---|---|
-| 桶配额达标率（各桶 `size ≥ q_min=2000`） | **= 7/7** |
+| 桶配额达标率（各桶 `size ≥ q_min=2000`） | **= 9/9** |
 | tool-call 合法率 | **≥ 90%** |
 | judge 有效分命中率（非 `judge_error`） | **≥ 95%** |
 | 轨迹多样性（`eval.metrics.trajectory_diversity`） | distinct_4 **≥ 0.6** 且 self_bleu_4 **≤ 0.5** |
@@ -814,7 +814,7 @@ async_training:
 **每个值的依据**：
 
 - **`staleness_threshold=0.3`**：verl 官方 128 卡 ablation 显示 0.1→0.3→0.5 加速比 1.93×→2.35×→2.36×（边际收益在 0.3 附近饱和），但 staleness 越大对训练稳定性威胁越大。本项目 27B + 多轮 + CL replay 已经引入额外 off-policy 偏移，再叠加大 staleness 风险高，起步压到 0.3。
-- **`trigger_parameter_sync_step=4`**：参考 30B GRPO 实验配置（`512/128=4`，`train_batch_size/(require_batches × ppo_mini_batch_size)`）。本项目 `train_batch_size=512`、`ppo_mini_batch_size=32`、`require_batches=4`，恰好 `512/(4×32)=4`。
+- **`trigger_parameter_sync_step=4`**：参考 30B GRPO 实验配置（`512/128=4`，`train_batch_size/(require_batches × ppo_mini_batch_size)`）。本项目 `train_batch_size=1024`、`ppo_mini_batch_size=64`、`require_batches=4`，恰好 `1024/(4×64)=4`。
 - **`require_batches=4`**：verl 的 require_batches ablation 显示 1→2→4 训练时间反而下降（4h25m→3h35m→3h13m），原因是过细粒度流式分发会扰乱采样顺序、拉长 response，故选 4。
 - **`partial_rollout=False`（Phase 1–4）**：partial_rollout 必须配合 `staleness_threshold>0` 才生效，且对 Echo Trap 监控、轨迹完整性追踪都引入额外复杂度；CL 训练的核心信号是完整 trajectory 上的 priority 与块权重，半截轨迹做 replay 数据脏。Phase 5（4096×8 大 rollout）再评估是否开启。
 

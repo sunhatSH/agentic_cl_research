@@ -181,6 +181,7 @@ pdfsubject={中国人民大学学位论文}}
   \fancyfoot[RO]{\thepage}
 }
 \RequirePackage{graphicx}
+\RequirePackage{eso-pic}
 \newif\if@subtitle
 \ifruc@bachelor
 \renewcommand{\maketitle}{
@@ -381,7 +382,6 @@ subsubsection/numberformat = \bf\zihao{5}
 \RequirePackage{lscape}
 \RequirePackage{multicol}
 \RequirePackage{color}
-\RequirePackage[dvipsnames,prologue,table]{pstricks}
 \definecolor{rucblue}{rgb}{0.129,0.482,0.663}
 \definecolor{rucorange}{rgb}{0.976,0.769,0.325}
 \definecolor{rucred}{rgb}{0.569,0.129,0.2}
@@ -406,6 +406,7 @@ subsubsection/numberformat = \bf\zihao{5}
 \fi
 \fi
 \begin{landscape}
+\enlargethispage{25mm}
 \begin{multicols}{2}
 \rule[0mm]{22mm}{0mm}
 \ifruc@doctor
@@ -479,9 +480,13 @@ subsubsection/numberformat = \bf\zihao{5}
 \end{multicols}
 \thispagestyle{empty}
 \ifruc@shuji
-\ifruc@doctor\color{rucbalck}\else\color{rucwhite}\fi
-\uput[u]{0}(0.5\paperheight,15){{\sf\zihao{3}\shortstack[c]{\@covertitle}}}
-\uput[u]{0}(0.5\paperheight,3){{\sf\zihao{3}\shortstack[c]{中\\国\\人\\民\\大\\学}}}
+\AddToShipoutPictureFG*{%
+  \setlength{\unitlength}{1mm}%
+  \AtPageLowerLeft{%
+    \put(15,205){\makebox(0,0)[c]{\ifruc@doctor\color{rucbalck}\else\color{rucwhite}\fi\sf\zihao{3}\@covertitle}}%
+    \put(3,205){\makebox(0,0)[c]{\ifruc@doctor\color{rucbalck}\else\color{rucwhite}\fi\sf\zihao{3}\shortstack[c]{中\\国\\人\\民\\大\\学}}}%
+  }%
+}%
 \else\fi
 \end{landscape}
 \restoregeometry

@@ -144,7 +144,7 @@ def _resolve_ppo_loss(actor_cfg):
 def make_cl_loss(
     replay_enabled: bool = False,
     lambda_replay: float = 0.5,
-    replay_batch_size: int = 32,
+    replay_batch_size: int = 512,
     use_token_weighting: bool = True,
     weighting_scheme: str = "W2",
     actor_cfg: Any = None,

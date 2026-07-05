@@ -17,7 +17,7 @@ Two patience axes are also decoupled (§3.6.5):
   d0 = escalation speed (temper). Retries-to-give-up ≈ log2(P0/d0).
 
 This is pure data + a seeded sampler, verl-free, unit-testable. Personas span
-the 7 capability buckets; the first three seed the same workspaces as
+the 9 capability buckets; the first three seed the same workspaces as
 docker/sandbox/fs-seeds (finance / sysops / office).
 """
 

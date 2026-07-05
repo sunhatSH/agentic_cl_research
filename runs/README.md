@@ -41,7 +41,7 @@ runs/phaseN/<exp>/
 │   └── per_bucket/            #   细则: 桶内逐题
 │       ├── Workflow.jsonl     #     每行 {task_id, passed_all, safety, completion, robustness, reward}
 │       ├── SysOps.jsonl
-│       └── ...(7 桶)
+│       └── ...(9 桶)
 └── logs/{train.log, metrics.jsonl}
 ```
 

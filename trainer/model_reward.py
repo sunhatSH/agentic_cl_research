@@ -4,14 +4,14 @@
 
 We deliberately do NOT score with hand-written rules. Reasons:
 
-1. Scale alignment. A reward must be ONE consistent scale across all 7 buckets.
+1. Scale alignment. A reward must be ONE consistent scale across all 9 buckets.
    Rule scores (deterministic [0,1]) and the semantic scores needed for soft
    buckets live on different distributions; combining them per-bucket gives
    inconsistent reward baselines and distorts buffer priority / cross-bucket
    comparisons. A single frozen judge keeps one scale everywhere.
-2. Coverage. Rules only cover tasks with verifiable artifacts (SysOps / Workflow
-   / Finance / OfficeQA). Semantic buckets -- Communication, Dialogue, ungrounded
-   Knowledge -- cannot be graded by rules at all.
+2. Coverage. Rules only cover tasks with verifiable artifacts (ops / workflow
+   / finance / office). Semantic buckets -- communication, qa, ungrounded
+   research -- cannot be graded by rules at all.
 3. Eval consistency. ClawEval itself grades with model judges over
    completion / safety / robustness rubrics. Using a model judge for reward keeps
    training aligned with the evaluation metric (reward == eval shape).

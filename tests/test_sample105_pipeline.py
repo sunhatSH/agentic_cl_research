@@ -203,21 +203,21 @@ class TestClassify:
         msgs = build_classify_prompt("算营收")
         assert msgs[0]["role"] == "system"
         assert msgs[1]["role"] == "user"
-        # 七桶名都在
+        # 九桶名都在
         for b in SUB_BUCKETS:
             assert b in msgs[1]["content"]
         # 子桶也在（如 finance）
         assert "finance" in msgs[1]["content"]
 
     def test_parse_valid_json(self) -> None:
-        out = parse_classify_output('{"bucket": "Finance", "sub_bucket": "finance", "rationale": "营收计算"}')
-        assert out["bucket"] == "Finance"
+        out = parse_classify_output('{"bucket": "finance", "sub_bucket": "finance", "rationale": "营收计算"}')
+        assert out["bucket"] == "finance"
         assert out["sub_bucket"] == "finance"
         assert out["rationale"] == "营收计算"
 
     def test_parse_invalid_sub_bucket_keeps_bucket(self) -> None:
-        out = parse_classify_output('{"bucket": "Finance", "sub_bucket": "不存在的子桶"}')
-        assert out["bucket"] == "Finance"
+        out = parse_classify_output('{"bucket": "finance", "sub_bucket": "不存在的子桶"}')
+        assert out["bucket"] == "finance"
         assert out["sub_bucket"] is None
 
     def test_parse_invalid_bucket_to_unknown(self) -> None:
@@ -226,8 +226,8 @@ class TestClassify:
         assert out["sub_bucket"] is None
 
     def test_parse_non_json_falls_back_to_block_regex(self) -> None:
-        out = parse_classify_output('前缀文字 {"bucket": "SysOps", "sub_bucket": "ops"} 后缀')
-        assert out["bucket"] == "SysOps"
+        out = parse_classify_output('前缀文字 {"bucket": "ops", "sub_bucket": "ops"} 后缀')
+        assert out["bucket"] == "ops"
         assert out["sub_bucket"] == "ops"
 
     def test_parse_truncated_or_empty_is_unknown_not_silent(self) -> None:
@@ -241,10 +241,10 @@ class TestClassify:
 
             def chat(self, messages, *, max_tokens=256):
                 # 返回合法分类 JSON
-                return '{"bucket": "Finance", "sub_bucket": "finance", "rationale": "营收"}'
+                return '{"bucket": "finance", "sub_bucket": "finance", "rationale": "营收"}'
 
         out = classify_query("帮我算 Q3 营收", MockClient())
-        assert out["bucket"] == "Finance"
+        assert out["bucket"] == "finance"
         assert out["sub_bucket"] == "finance"
         assert out["ok"] is True
         assert out["model"] == "mock-model"
@@ -304,7 +304,7 @@ class TestRoute:
                 "session_id": "dyn-tmp-main-test-000001-12345",
                 "first_query": "营收",
                 "session_dir": str(sample_root / "000001"),
-                "bucket": "Finance",
+                "bucket": "finance",
                 "sub_bucket": "finance",
                 "rationale": "营收",
                 "model": "mock",
@@ -315,7 +315,7 @@ class TestRoute:
                 "session_id": "dyn-tmp-main-test-000002-12345",
                 "first_query": "对话",
                 "session_dir": str(sample_root / "000002"),
-                "bucket": "Dialogue",
+                "bucket": "qa",
                 "sub_bucket": "what",
                 "rationale": "多轮",
                 "model": "mock",
@@ -326,7 +326,7 @@ class TestRoute:
                 "session_id": "x",
                 "first_query": "x",
                 "session_dir": str(sample_root / "000099"),  # 不存在
-                "bucket": "Workflow",
+                "bucket": "workflow",
                 "sub_bucket": "workflow",
                 "model": "mock",
                 "ok": True,
@@ -344,17 +344,17 @@ class TestRoute:
         ]
         out_root = tmp_path / "buckets"
         stats = route_trajectories(classified, out_root)
-        # Finance、Dialogue 各 1 条入桶；Workflow 因 session_dir 不存在 skipped；unknown 跳过
-        assert stats["per_bucket"] == {"Finance": 1, "Dialogue": 1}
+        # finance、qa 各 1 条入桶；workflow 因 session_dir 不存在 skipped；unknown 跳过
+        assert stats["per_bucket"] == {"finance": 1, "qa": 1}
         assert stats["unknown"] == 1
         assert stats["skipped"] == 1
         assert stats["total"] == 4
 
         # 验证写入的轨迹文件内容
-        traj_path = out_root / "Finance" / "000001.jsonl"
+        traj_path = out_root / "finance" / "000001.jsonl"
         assert traj_path.exists()
         traj = json.loads(traj_path.read_text(encoding="utf-8"))
-        assert traj["bucket"] == "Finance"
+        assert traj["bucket"] == "finance"
         assert traj["sub_bucket"] == "finance"
         assert traj["record_id"] == "000001"
         assert traj["messages"][0]["role"] == "system"
