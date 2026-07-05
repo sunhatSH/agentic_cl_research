@@ -28,23 +28,27 @@ ROOT = Path(__file__).resolve().parent.parent
 TASKSPECS_DIR = ROOT / "data" / "taskspecs"
 
 CANONICAL_BUCKETS = [
-    "Workflow",
-    "SysOps",
-    "Dialogue",
-    "Finance",
-    "Communication",
-    "Knowledge",
-    "OfficeQA",
+    "workflow",
+    "ops",
+    "qa",
+    "finance",
+    "office",
+    "communication",
+    "safety",
+    "coding",
+    "research",
 ]
 
 BUCKET_DEFINITIONS = {
-    "Workflow":      "多步骤任务的组织与编排（计划、串联多个动作完成一个目标）",
-    "SysOps":        "工具使用与系统操作（读写文件、执行命令、调用外部工具/接口）",
-    "Dialogue":      "多轮交互与状态跟踪（澄清、追问、依赖上下文的连续对话）",
-    "Finance":       "结构化业务规则（金融/财务/交易等有明确规则的业务计算）",
-    "Communication": "表达与沟通（撰写、润色、翻译、面向人的表达）",
-    "Knowledge":     "检索与推理（知识问答、分析、基于资料的推断）",
-    "OfficeQA":      "办公语境问答（办公文档、表格、日常办公场景的问答）",
+    "workflow":      "多步骤工作流编排（拆解目标、串联动作、条件分支与流程协调）",
+    "ops":           "系统操作（文件读写、命令行/终端执行、系统运维、资源增删改查）",
+    "qa":            "问答检索（查事实、答问题、阅读理解、记忆检索；即查即答，不产出长报告）",
+    "finance":       "财务金融（贷款/税务/估值/ROI 计算、采购等按金融业务规则算账）",
+    "office":        "办公文档（办公问答、表格/报表处理、办公数据分析）",
+    "communication": "沟通表达（邮件撰写/分类、内容创作、润色改写、翻译）",
+    "safety":        "安全合规（拒绝不安全请求、漏洞/威胁评估、合规审查、敏感操作把关）",
+    "coding":        "代码（编写、审查、调试、修复代码，代码正确性推理）",
+    "research":      "研究综合（查多源信息并综合成报告/简报/摘要；区别于 qa 的即查即答）",
 }
 
 
@@ -97,7 +101,7 @@ def cmd_generate_template() -> None:
 
 _FEW_SHOT_SYSTEM = textwrap.dedent("""\
 You are a task classifier for a continual-learning agent training pipeline.
-Your job is to classify each task into one of 7 capability buckets.
+Your job is to classify each task into one of 9 capability buckets.
 
 ## Bucket definitions
 {bucket_defs}
@@ -221,7 +225,7 @@ def cmd_few_shot(few_shot_path: str, write: bool, model: str, dry_run: bool) -> 
         sub = verdict.get("bucket_sub", "")
         reasoning = verdict.get("reasoning", "")
         if bucket not in CANONICAL_BUCKETS:
-            print(f"\n[label] WARN {ts['task_id']}: bucket={bucket!r} 不在 7 桶名单，跳过", file=sys.stderr)
+            print(f"\n[label] WARN {ts['task_id']}: bucket={bucket!r} 不在 9 桶名单，跳过", file=sys.stderr)
             continue
 
         ts["bucket"] = bucket

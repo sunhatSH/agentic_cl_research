@@ -9,7 +9,7 @@
 
 | Skill | 主题 |
 |-------|------|
-| [seven-bucket-replay-buffer.md](seven-bucket-replay-buffer.md) | 7 桶 Replay Buffer 设计（quota / priority / 两级采样 / 淘汰 / 持久化） |
+| [seven-bucket-replay-buffer.md](seven-bucket-replay-buffer.md) | 9 桶 Replay Buffer 设计（quota / priority / 两级采样 / 淘汰 / 持久化） |
 | [verl-noninvasive-loss-injection.md](verl-noninvasive-loss-injection.md) | verl 无侵入自定义 loss 注入（不 fork，`set_loss_fn` + hooks，含 fully-async） |
 | [cl-loss-zero-coefficient-shortcircuit.md](cl-loss-zero-coefficient-shortcircuit.md) | CL Loss 组合实现与零系数端到端短路 |
 | [experiment-yaml-conventions.md](experiment-yaml-conventions.md) | 实验 yaml 规范（OmegaConf 继承 + verl Hydra key path + 全量校验） |

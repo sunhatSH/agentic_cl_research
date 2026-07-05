@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sample105_v2 采集数据 → 7 桶 Replay Buffer 数据管道 CLI。
+"""sample105_v2 采集数据 → 9 桶 Replay Buffer 数据管道 CLI。
 
 三步（可单独跑，也可串联）：
 

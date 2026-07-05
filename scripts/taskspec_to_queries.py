@@ -41,10 +41,10 @@ from typing import Any
 
 import yaml
 
-# 7 桶（与 replay_buffer / configs/base.yaml 对齐，仅用于统计打印）
+# 9 桶（与 replay_buffer / configs/base.yaml 对齐，仅用于统计打印）
 CANONICAL_BUCKETS = [
-    "Workflow", "SysOps", "Dialogue", "Finance",
-    "Communication", "Knowledge", "OfficeQA",
+    "workflow", "ops", "qa", "finance", "office",
+    "communication", "safety", "coding", "research",
 ]
 
 

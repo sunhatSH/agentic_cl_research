@@ -109,7 +109,7 @@ research step2     ← 真实并发，不保存
 - assistant/tool：子 agent 内部的工具调用序列
 - 末条 assistant：子 agent 的最终输出（=回填到主轨迹 spawn toolResult 的那段）
 
-子轨迹按它自己的首 query / task 语义分桶（7 桶），独立进 Replay Buffer。**子 agent 的子 agent 递归同理**（DFS）。
+子轨迹按它自己的首 query / task 语义分桶（9 桶），独立进 Replay Buffer。**子 agent 的子 agent 递归同理**（DFS）。
 
 ### 3.3 为何单独训练
 

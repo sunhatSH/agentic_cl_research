@@ -47,7 +47,7 @@
 
 ### 3.2 领域分布（从 C-series 任务目录推断）
 
-> **⚠️ 证据缺口（C4）**：本小节的领域分组是从 `tasks/` 目录的 **C-series** 任务名**推断**的。但 C-series 共 38 个任务，**属于 Multi-turn split，并非 General split**——因此下表**不能**直接作为 General split「24 个 category × 各自数量」的依据，仅作领域覆盖的**直觉参考**。General split 的 161 个任务的真实 category 字段必须从 HuggingFace 数据集加载后统计（见 §「未决数据缺口」）。在 manifest 落地前，buffer 的 7 桶映射（见 `CLAUDE.md`）不应以本表为准。
+> **⚠️ 证据缺口（C4）**：本小节的领域分组是从 `tasks/` 目录的 **C-series** 任务名**推断**的。但 C-series 共 38 个任务，**属于 Multi-turn split，并非 General split**——因此下表**不能**直接作为 General split「24 个 category × 各自数量」的依据，仅作领域覆盖的**直觉参考**。General split 的 161 个任务的真实 category 字段必须从 HuggingFace 数据集加载后统计（见 §「未决数据缺口」）。在 manifest 落地前，buffer 的 9 桶映射（见 `CLAUDE.md` / `runs/_analysis/capability_buckets/buckets.json`）不应以本表为准。
 
 论文提到 General split 覆盖 **24 个 category**，但未完整列出。以下从 `tasks/` 目录的 C-series（38 个任务，Multi-turn split）推断领域分组（**非 General split 证据**）：
 

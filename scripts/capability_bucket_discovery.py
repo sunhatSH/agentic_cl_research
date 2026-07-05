@@ -4,8 +4,9 @@
 背景（@孙豪 2026-07-04）：
   - 之前 claweval_bucket_discovery.py 做的是"主桶+子桶"两层、且 LLM 自由归纳出的
     其实是【话题/领域】划分（loan_prepayment / sla_audit ...），不是能力划分。
-  - 现有 7 桶（Workflow/SysOps/Dialogue/Finance/Communication/Knowledge/OfficeQA）
-    是【能力维度】划分，但划得"不够细也不够好"。
+  - 现有桶体系（见 configs/base.yaml bucket_names = 9-bucket: workflow/ops/qa/finance/
+    office/communication/safety/coding/research）是【能力维度】划分，但之前版本的
+    7 桶划分"不够细也不够好"。
   - 目标：让 GPT 从任务本身归纳一套【能力维度】的【单层】桶——按"完成任务所需的
     核心能力"分，不按业务领域/话题/具体任务分。数量由 GPT 自定，不锁 7。不要子桶。
 

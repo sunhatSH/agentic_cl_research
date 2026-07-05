@@ -1,4 +1,4 @@
-"""OpenClaw 采集数据 → 7 桶 Replay Buffer 数据管道。
+"""OpenClaw 采集数据 → 9 桶 Replay Buffer 数据管道。
 
 ⚠️ **数据单元逻辑待重写**：原按"1 沙箱 ↔ 1 首 query"（1:1）处理，现要改为
 "1 沙箱 ↔ N 会话 ↔ N 首 query"（1:n，N 个初始 query 互不依赖、都从同一沙箱
@@ -16,7 +16,7 @@ sample105_v2 是 OpenClaw 平台采集产物：事件流（``agent/sessions/*.js
    N 个会话的首 query（1 沙箱 ↔ N 首 query）。底层工具（``iter_session_dirs`` /
    ``find_main_session_log`` / ``iter_message_events`` / ``extract_text`` /
    ``first_user_query_text``）已就绪、可复用。
-2. **classify** — LLM 给首 query 分 7 桶 + 子桶（category，取自
+2. **classify** — LLM 给首 query 分桶 + 子桶（category，取自
    ``doc/BucketDesign.md``），JSON 容错解析（截断/非 JSON 降级 unknown）。
 3. **route_trajectories** — 按桶把主会话完整轨迹重建为 OpenAI chat 入桶；
    **route_subagents** — 子会话事件流原样转 chat、独立成样本（主子各自单独训练）。

@@ -13,7 +13,7 @@
 # Logs (all under logs/cold/ on the shared FS):
 #   vllm.log     -- vllm server stdout/stderr (model load, OOM, inference errors)
 #   collect.log  -- collector progress ([cold] lines), also shown on platform stdout
-#   buffer.sqlite -- the collected 7-bucket replay buffer (the product)
+#   buffer.sqlite -- the collected 9-bucket replay buffer (the product)
 #
 # Usage (cluster GPU node) -- E2B creds auto-loaded from docker/sandbox/tencent.env:
 #   bash scripts/collect_cold.sh

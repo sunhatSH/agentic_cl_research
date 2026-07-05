@@ -4,7 +4,7 @@
 #
 # 7 步：
 #   1. build_fs_seeds        : taskspec files/ → 沙箱 seed 镜像
-#   2. label_buckets         : taskspec → 7 桶能力标签（--write 回写 manifest）
+#   2. label_buckets         : taskspec → 9 桶能力标签（--write 回写 manifest）
 #   3. taskspec_to_queries   : taskspec → queries.jsonl（新增脚本）
 #   4. collect_cold          : queries + fs-seeds → trajectory（需集群+沙箱+GPU）
 #   5. warmup_buffer         : trajectory → buffer.sqlite 预热
@@ -81,7 +81,7 @@ run_step() {
 # ---- Step 1: build_fs_seeds（taskspec files/ → 沙箱 seed）-----------------
 run_step 1 python "$ROOT_DIR/scripts/build_fs_seeds.py" $LIMIT
 
-# ---- Step 2: label_buckets（taskspec → 7 桶标签，--write 回写 manifest）--
+# ---- Step 2: label_buckets（taskspec → 9 桶标签，--write 回写 manifest）--
 run_step 2 python "$ROOT_DIR/scripts/label_buckets.py" --write
 
 # ---- Step 3: taskspec_to_queries（taskspec → queries.jsonl）---------------

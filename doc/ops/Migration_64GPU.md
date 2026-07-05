@@ -138,7 +138,7 @@ bash scripts/run_phases.sh
 | 实验 | 配置 | KL | Replay | Agentic Rollout | 说明 |
 |------|------|:--:|:------:|:---------------:|------|
 | **B1** | `configs/run/b1.yaml` | ❌ | ❌ | ❌ | 纯 RL 遗忘基线 |
-| **R4** | `configs/run/r4.yaml` | ❌ | ✅ (λ=0.5) | ✅ (e2b) | 7 桶 + 抗遗忘 |
+| **R4** | `configs/run/r4.yaml` | ❌ | ✅ (λ=0.5) | ✅ (e2b) | 9 桶 + 抗遗忘 |
 
 B1 与 R4 **共用同一套 agentic 多轮 rollout**（差异仅在 CL 项），否则拿多轮 R4 和单轮 B1 比遗忘不公平。
 

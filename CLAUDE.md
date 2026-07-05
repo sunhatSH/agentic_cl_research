@@ -187,7 +187,7 @@ agentic_cl_research/
 ├── pyproject.toml           # 项目元数据与依赖
 ├── doc/                     # 设计文档（详见下表）
 ├── paper/                   # 论文产出：drafts/(md 草稿) latex/ assets/ refs/
-├── replay_buffer/           # 7 桶 Buffer 实现（与 verl 解耦的纯 Python 模块）
+├── replay_buffer/           # 9 桶 Buffer 实现（与 verl 解耦的纯 Python 模块）
 ├── trainer/                 # CL Loss 与训练入口（基于 verl，零源码改动）
 ├── configs/                 # 实验配置（按 phase 分子目录）
 │   ├── base.yaml            #   共享默认配置
@@ -201,7 +201,7 @@ agentic_cl_research/
 │   ├── phase5/              #   S1, S2
 │   └── phase6/              #   X* (按需)
 ├── trainer/                 # CL Loss + 训练入口 + verl runner（零源码改动）
-├── replay_buffer/           # 7 桶 Buffer（纯 Python，与 verl 解耦）
+├── replay_buffer/           # 9 桶 Buffer（纯 Python，与 verl 解耦）
 ├── rollout/                 # 采样侧：沙箱客户端 / 会话池 / 轨迹采集 / simulated_session 驱动
 ├── agents/                  # UserSim 三 agent：observer / questioner / reward(judge) + personas
 ├── inference/               # 单步生成边界（VerlRolloutGenerateFn / HTTP）
@@ -242,7 +242,7 @@ agentic_cl_research/
 
 | 文件 | 内容 |
 |------|------|
-| `doc/source/CL_Design.md` | **主文档**：CL Loss / Replay Buffer（7桶+quota+priority+冷启动数据需求）/ 实验路线（含 Phase 0）/ 评测 / GPU / 精度 / 文献 |
+| `doc/source/CL_Design.md` | **主文档**：CL Loss / Replay Buffer（9桶+quota+priority+冷启动数据需求）/ 实验路线（含 Phase 0）/ 评测 / GPU / 精度 / 文献 |
 | `doc/source/usersim.md` | **UserSim 单一信源**：模型选型 + 三 agent 架构（observer/questioner/reward）+ 多轮 query 在线生成 + 42 人设表 |
 | `doc/source/训练与推理流程.md` | 训练循环 + 推理全链路 + verl 0.8.0 集成（不 fork，外挂注入）+ 数据 pipeline |
 | `doc/source/ClawEval_Metadata.md` | 评测基准数据 |
@@ -282,7 +282,7 @@ agentic_cl_research/
 
 | Skill | 主题 |
 |-------|------|
-| `seven-bucket-replay-buffer.md` | 7 桶 Buffer（quota / priority / 两级采样 / 淘汰 / 持久化） |
+| `seven-bucket-replay-buffer.md` | 9 桶 Buffer（quota / priority / 两级采样 / 淘汰 / 持久化） |
 | `verl-noninvasive-loss-injection.md` | verl 无侵入 loss 注入（不 fork，`set_loss_fn` + hooks，含 fully-async） |
 | `cl-loss-zero-coefficient-shortcircuit.md` | CL Loss 组合实现与零系数端到端短路 |
 | `experiment-yaml-conventions.md` | 实验 yaml 规范（OmegaConf 继承 + verl Hydra key path + 全量校验） |
@@ -298,19 +298,21 @@ $$L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_
 - $\lambda_4 = 0.001$ **所有 Phase 固定开启**，防 Echo Trap，不参与 ablation
 - $L_{kl}$ 用 reverse KL：$D_{KL}(\pi_{new} \| \pi_{ref})$
 
-### Replay Buffer 7 桶结构
+### Replay Buffer 9 桶结构
 
-桶按**能力/领域**划分，不按难度划分（难度会随模型能力漂移）：
+桶按**能力/领域**划分，不按难度划分（难度会随模型能力漂移）。桶体系（2026-07-04）= ClawEval 官方 category 合并（去多模态、单层无子桶），定义与映射见 `runs/_analysis/capability_buckets/buckets.json`，配置见 `configs/base.yaml`：
 
-1. Workflow [54] — 多步骤任务组织
-2. SysOps [52] — 工具使用与系统操作
-3. Dialogue [38] — 多轮交互与状态跟踪
-4. Finance [18] — 结构化业务规则
-5. Communication [12] — 表达与沟通
-6. Knowledge/Analysis [11] — 检索与推理
-7. OfficeQA [10] — 办公语境问答（单独成桶，不并入 Knowledge）
+1. workflow [56] — 多步骤任务组织（workflow+productivity+organization）
+2. ops [44] — 工具使用与系统操作（ops+operations+terminal+file_ops）
+3. qa [36] — 问答检索与阅读理解（what+knowledge+comprehension+memory）
+4. finance [20] — 结构化业务规则（finance+procurement）
+5. office [11] — 办公文档与数据处理（office_qa+data_analysis）
+6. communication [11] — 表达与沟通（communication+content+rewriting）
+7. safety [9] — 安全合规与风险判断（safety+security+compliance）
+8. coding [2] — 代码编写与调试（coding）
+9. research [6] — 多源检索并综合成报告（research+synthesis）
 
-**不纳入 multimodal(4)**：模态不同、数据太少、目标不一致。纯文本共 195 任务。
+**不纳入 multimodal**：模态不同、数据太少、目标不一致。纯文本共 195 任务（含12条user_agent多轮按首轮归桶，作 quota 权重基准）。
 
 ### 关键设计约束
 
@@ -456,7 +458,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 ### 2. 训练方式
 按桶顺序训练（先训 A 桶，再训 B 桶...），同一桶内的任务本身是打乱的（或数据本身就是乱序的）。这与线上持续学习场景一致 —— 线上数据更新快，无法集齐分布覆盖足够的数据，所以需要按桶分批训练。
 
-桶即类型，不另造概念。7 桶：Workflow、SysOps、Finance、Knowledge、Communication、OfficeQA、Dialogue。桶数量不固定，按设计来。
+桶即类型，不另造概念。9 桶（由 ClawEval 官方 category 合并、去多模态、单层无子桶而来）：workflow(56)、ops(44)、qa(36)、finance(20)、office(11)、communication(11)、safety(9)、coding(2)、research(6)，合计 195 个纯文本任务（含12条user_agent多轮按首轮归桶）。定义与映射见 `runs/_analysis/capability_buckets/buckets.json`。桶数量不固定，按设计来。
 
 ### 3. 评测方式
 所有桶任务依次训完后统一评测，训练过程中不做中间评测，避免浪费。

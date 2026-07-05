@@ -22,7 +22,7 @@
 输出：
   - 替换 docker/sandbox/fs-seeds/（删旧 3 手造 persona + manifest，写 14 task seed）
   - 重写 manifest.json（每个 task: id/dir/buckets/summary）
-  - buckets 由 LLM 对 seed_query 分 7 桶（复用 data_pipeline.classify）
+  - buckets 由 LLM 对 seed_query 分桶（复用 data_pipeline.classify）
 
 用法：
   python scripts/build_fs_seeds.py [--taskspecs data/taskspecs] [--out docker/sandbox/fs-seeds] [--no-classify]
@@ -97,7 +97,7 @@ def load_taskspec(taskspec_yaml: Path) -> dict | None:
 
 
 def classify_buckets(seed_queries: list[str]) -> list[str]:
-    """LLM 对每个 seed_query 分 7 桶（复用 data_pipeline.classify）。无网/失败留空。"""
+    """LLM 对每个 seed_query 分桶（复用 data_pipeline.classify）。无网/失败留空。"""
     try:
         from data_pipeline.classify import classify_query, make_default_client
     except ImportError:

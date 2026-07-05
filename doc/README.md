@@ -10,7 +10,7 @@
 
 | 文档 | 内容 |
 |------|------|
-| [CL_Design.md](source/CL_Design.md) | **主文档**：CL Loss / Replay Buffer（7桶+quota+priority+冷启动数据需求）/ 实验路线（含 Phase 0）/ 评测 / GPU / 精度 / 文献 |
+| [CL_Design.md](source/CL_Design.md) | **主文档**：CL Loss / Replay Buffer（9桶+quota+priority+冷启动数据需求）/ 实验路线（含 Phase 0）/ 评测 / GPU / 精度 / 文献 |
 | [usersim.md](source/usersim.md) | **UserSim 单一信源**：模型选型 + 三 agent 架构 + 多轮 query 在线生成 + 42 人设表 |
 | [训练与推理流程.md](source/训练与推理流程.md) | 训练循环 + 推理全链路 + verl 0.8.0 集成 + 数据 pipeline |
 | [ClawEval_Metadata.md](source/ClawEval_Metadata.md) | 评测基准数据 |

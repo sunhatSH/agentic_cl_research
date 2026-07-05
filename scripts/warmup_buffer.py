@@ -1,8 +1,8 @@
-"""Warm-start the 7-bucket replay buffer from collected rollout JSONL.
+"""Warm-start the 9-bucket replay buffer from collected rollout JSONL.
 
 Reads cold-collection output (data/mock/rollouts/{actor}/rollouts_*.jsonl, each
 line = one multi-turn session with `trajectories`) and ingests every trajectory
-into the 7-bucket BucketReplayBuffer, then dumps a single sqlite snapshot for the
+into the 9-bucket BucketReplayBuffer, then dumps a single sqlite snapshot for the
 trainer to preload (warm-start, anti-forgetting cold start).
 
 Classification (孙豪 2026-06-13: "得分类、填进去、后续再淘汰"):
@@ -35,8 +35,8 @@ from replay_buffer.bucket import BucketReplayBuffer
 from scripts.convert_dataset import bucket_hint
 from trainer.domain_tagging import DEFAULT_BUCKETS
 
-VALID_BUCKETS = tuple(DEFAULT_BUCKETS)  # Workflow/SysOps/Dialogue/Finance/Communication/Knowledge/OfficeQA
-FALLBACK_BUCKET = "Knowledge"  # least-specific catch-all; evicted later if low value
+VALID_BUCKETS = tuple(DEFAULT_BUCKETS)  # 9 buckets from configs/base.yaml via trainer/domain_tagging
+FALLBACK_BUCKET = "qa"  # least-specific catch-all; evicted later if low value
 
 # Cold-start data-source tags (Phase 0, doc/Plan_冷启动数据来源消融.md).
 SRC_27B = "pi0_27b"  # on-policy: the training policy itself (Qwen3.6-27B)
@@ -112,7 +112,7 @@ def _mix_by_ratio(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Warm-start 7-bucket buffer from rollout JSONL.")
+    ap = argparse.ArgumentParser(description="Warm-start 9-bucket buffer from rollout JSONL.")
     ap.add_argument("--in-dir", default="data/mock/rollouts", help="dir with {actor}/rollouts_*.jsonl")
     ap.add_argument("--out", default="data/mock/buffer_dumps/warmup.sqlite")
     ap.add_argument("--total-capacity", type=int, default=25000)

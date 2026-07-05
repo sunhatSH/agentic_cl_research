@@ -1,18 +1,20 @@
-"""Step 2 — LLM 把首 query 分到 7 桶之一，并精确到子桶（category）。
+"""Step 2 — LLM 把首 query 分到 9 桶之一，并精确到子桶（category）。
 
-子桶清单取自 ``doc/BucketDesign.md`` 各桶的 category 细分（实测 ClawEval
-General split 的 source category），是项目的既定设计——不另起炉灶::
+子桶清单取自 ``runs/_analysis/capability_buckets/buckets.json`` 各桶的官方 category
+（ClawEval General split），是项目的既定设计——不另起炉灶::
 
-    Workflow    : workflow, productivity
-    SysOps      : ops, operations, terminal, safety, security, file_ops, coding
-    Finance     : finance, compliance, procurement
-    Knowledge   : research, knowledge, synthesis, comprehension, data_analysis, memory
-    Communication: communication, content, rewriting, organization
-    OfficeQA    : office_qa
-    Dialogue    : what, user_agent
+    workflow      : workflow, productivity, organization
+    ops           : ops, operations, terminal, file_ops
+    qa            : what, knowledge, comprehension, memory
+    finance       : finance, procurement
+    office        : office_qa, data_analysis
+    communication : communication, content, rewriting
+    safety        : safety, security, compliance
+    coding        : coding
+    research      : research, synthesis
 
 LLM 返回 JSON ``{"bucket": str, "sub_bucket": str, "rationale": str}``，``bucket``
-必须是 7 桶之一（``trainer/domain_tagging.DEFAULT_BUCKETS``），``sub_bucket``
+必须是 9 桶之一（``trainer/domain_tagging.DEFAULT_BUCKETS``），``sub_bucket``
 必须是该桶下的 category 之一；无法归类时 ``bucket="unknown"``、``sub_bucket=None``
 （不入 buffer，与 ``trajectory_adapter`` 的 B12 跳过纪律一致）。
 
@@ -37,15 +39,17 @@ from trainer.domain_tagging import DEFAULT_BUCKETS
 
 logger = logging.getLogger(__name__)
 
-# 7 桶 → 各桶的子桶（category）清单。取自 doc/BucketDesign.md（既定设计）。
+# 9 桶 → 各桶的子桶（category）清单。取自 runs/_analysis/capability_buckets/buckets.json（既定设计）。
 SUB_BUCKETS: dict[str, list[str]] = {
-    "Workflow": ["workflow", "productivity"],
-    "SysOps": ["ops", "operations", "terminal", "safety", "security", "file_ops", "coding"],
-    "Finance": ["finance", "compliance", "procurement"],
-    "Knowledge": ["research", "knowledge", "synthesis", "comprehension", "data_analysis", "memory"],
-    "Communication": ["communication", "content", "rewriting", "organization"],
-    "OfficeQA": ["office_qa"],
-    "Dialogue": ["what", "user_agent"],
+    "workflow": ["workflow", "productivity", "organization"],
+    "ops": ["ops", "operations", "terminal", "file_ops"],
+    "qa": ["what", "knowledge", "comprehension", "memory"],
+    "finance": ["finance", "procurement"],
+    "office": ["office_qa", "data_analysis"],
+    "communication": ["communication", "content", "rewriting"],
+    "safety": ["safety", "security", "compliance"],
+    "coding": ["coding"],
+    "research": ["research", "synthesis"],
 }
 
 # 桶 + 一句话定义（给 LLM 的判据，取自 trainer/domain_tagging.DOMAIN_DEFINITIONS）。
@@ -55,12 +59,12 @@ _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.S)
 
 _CLASSIFY_SYSTEM = (
     "你是一个任务分类器。给定用户对一个 agentic 助手的首条 query，判断它属于以下"
-    "7 个能力桶中的哪一个，并精确到该桶下的子桶（category）。"
+    "9 个能力桶中的哪一个，并精确到该桶下的子桶（category）。"
 )
 
 
 def _build_options_block() -> str:
-    """渲染 7 桶 + 各子桶的选项清单（供 prompt 注入）。"""
+    """渲染 9 桶 + 各子桶的选项清单（供 prompt 注入）。"""
     lines = []
     for bucket, sub_buckets in SUB_BUCKETS.items():
         # DOMAIN_DEFINITIONS 是 [(name, def), ...]，取该桶定义
@@ -81,10 +85,9 @@ def build_classify_prompt(query: str) -> list[dict[str, str]]:
         f"## 待分类的首条 query\n{query}\n\n"
         "## 输出要求\n"
         "只输出一个 JSON 对象，不要任何额外文字：\n"
-        '{"bucket": "七桶之一", "sub_bucket": "该桶子桶之一", "rationale": "一句话理由"}\n'
+        '{"bucket": "九桶之一", "sub_bucket": "该桶子桶之一", "rationale": "一句话理由"}\n'
         "规则：\n"
-        "1. bucket 必须是七桶之一（Workflow/SysOps/Finance/Knowledge/Communication/"
-        "OfficeQA/Dialogue），原样英文。\n"
+        "1. bucket 必须是九桶之一（workflow/ops/qa/finance/office/communication/safety/coding/research），原样英文。\n"
         "2. sub_bucket 必须是你选的 bucket 下列出的子桶之一，原样。\n"
         "3. 若确实无法归入任何桶，返回 {\"bucket\": \"unknown\", \"sub_bucket\": null}。"
     )
@@ -98,7 +101,7 @@ def parse_classify_output(text: str) -> dict:
     """容错解析 LLM 的分类 JSON。
 
     返回 ``{"bucket": str|None, "sub_bucket": str|None, "rationale": str}``。
-    bucket 校验为 7 桶之一；sub_bucket 校验为该桶子桶之一；不合法降级为
+    bucket 校验为 9 桶之一；sub_bucket 校验为该桶子桶之一；不合法降级为
     ``bucket="unknown"``（不入 buffer）。截断/非 JSON → unknown（不静默）。
     """
     result: dict = {"bucket": "unknown", "sub_bucket": None, "rationale": ""}

@@ -5,7 +5,7 @@ Drives the SIMPLEST useful rollout loop to manufacture an initial replay buffer:
     queries.jsonl ─► seed q1 (each session's first user query)
         └─ per seed: SessionSandboxPool(backend=e2b).run_query(q1, react_agent)
               react_agent = make_react_agent_fn(HTTPGenerateFn(local 27B vllm))
-        └─ ingest all M slot trajectories into the 7-bucket BucketReplayBuffer
+        └─ ingest all M slot trajectories into the 9-bucket BucketReplayBuffer
     buffer.dump(out.sqlite)
 
 Input is a queries file (output of prepare_queries or data-filter): one JSON line
@@ -46,15 +46,17 @@ from replay_buffer.bucket import BucketReplayBuffer
 from rollout.collect import ingest_trajectories, make_react_agent_fn
 from rollout.session_pool import SessionSandboxPool
 
-# The 7 capability buckets (must match BucketReplayBuffer / configs/base.yaml).
+# The 9 capability buckets (must match BucketReplayBuffer / configs/base.yaml).
 VALID_BUCKETS = (
-    "Workflow",
-    "SysOps",
-    "Dialogue",
-    "Finance",
-    "Communication",
-    "Knowledge",
-    "OfficeQA",
+    "workflow",
+    "ops",
+    "qa",
+    "finance",
+    "office",
+    "communication",
+    "safety",
+    "coding",
+    "research",
 )
 
 
@@ -87,7 +89,7 @@ def iter_seeds(queries_path: str | Path, limit: int | None):
 
 
 def build_buffer() -> BucketReplayBuffer:
-    """7-bucket buffer with library defaults (capacity etc.)."""
+    """9-bucket buffer with library defaults (capacity etc.)."""
     return BucketReplayBuffer()
 
 

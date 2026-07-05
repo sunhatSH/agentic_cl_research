@@ -37,13 +37,16 @@ from typing import Any
 
 # Best-effort keyword -> bucket hints (offline stats only; not authoritative).
 _BUCKET_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
-    ("Finance", ("股", "财报", "财务", "营收", "stock", "revenue", "invoice", "账", "交易", "预算")),
-    ("SysOps", ("docker", "服务器", "部署", "命令", "脚本", "日志", "config", "ssh", "运维", "kubectl")),
-    ("OfficeQA", ("excel", "表格", "ppt", "word", "文档", "会议", "邮件", "csv", "spreadsheet")),
-    ("Communication", ("翻译", "润色", "撰写", "草拟", "回复邮件", "translate", "rewrite", "draft")),
-    ("Dialogue", ("澄清", "追问", "上一个", "刚才", "继续", "follow up", "clarify")),
-    ("Knowledge", ("分析", "总结", "检索", "research", "analyze", "summari", "解释")),
-    ("Workflow", ("流程", "步骤", "计划", "编排", "workflow", "pipeline", "automate")),
+    ("finance", ("股", "财报", "财务", "营收", "stock", "revenue", "invoice", "账", "交易", "预算")),
+    ("ops", ("docker", "服务器", "部署", "命令", "脚本", "日志", "config", "ssh", "运维", "kubectl")),
+    ("office", ("excel", "表格", "ppt", "word", "文档", "会议", "邮件", "csv", "spreadsheet")),
+    ("communication", ("翻译", "润色", "撰写", "草拟", "回复邮件", "translate", "rewrite", "draft",
+                       "澄清", "追问", "继续", "follow up", "clarify")),
+    ("qa", ("分析", "总结", "检索", "research", "analyze", "summari", "解释")),
+    ("workflow", ("流程", "步骤", "计划", "编排", "workflow", "pipeline", "automate")),
+    ("safety", ("安全", "合规", "漏洞", "威胁", "审计", "security", "compliance", "safety")),
+    ("coding", ("代码", "编程", "debug", "review", "重构", "refactor", "function", "class")),
+    ("research", ("调研", "报告", "综合", "简报", "摘要", "synthesis", "report")),
 ]
 
 # A "bounded answer" token worth turning into a regex checker: a number (incl.

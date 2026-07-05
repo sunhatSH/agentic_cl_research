@@ -72,63 +72,44 @@ $$ L_{reg} = ||\theta - \theta_{prev}||^2 \quad \text{（弃用，权重 0）} $
 
 > 目标：纯文本 continual learning，学新任务时不遗忘旧能力。不纳入 multimodal（仅 4 任务，能力结构不同）。
 
-### 7 桶结构
+### 9 桶结构
 
 按**能力/领域**分桶，不按难度分桶（难度随模型能力提升漂移，非稳定依据；灾难性遗忘更常沿能力类型发生）。每桶保底配额，桶内按 priority 存留，桶间不直接竞争。Priority 不依赖 reward 绝对值（reward 整体上升会使旧轨迹系统性被淘汰，buffer 退化为滑动窗口）。
 
+桶体系（2026-07-04）= ClawEval 官方 category 合并（去多模态），**单层、无子桶**。定义与官方 category 映射见 `runs/_analysis/capability_buckets/buckets.json`，配置见 `configs/base.yaml`。
+
 ```text
 ReplayBuffer
-├── Workflow [54]
-│   ├── workflow [47]
-│   └── productivity [7]
-├── SysOps [52]
-│   ├── ops [31]
-│   ├── operations [6]
-│   ├── terminal [5]
-│   ├── safety [5]
-│   ├── security [2]
-│   ├── coding [2]
-│   └── file_ops [1]
-├── Finance [18]
-│   ├── finance [14]
-│   ├── compliance [2]
-│   └── procurement [2]
-├── Knowledge/Analysis [11]
-│   ├── research [3]
-│   ├── knowledge [2]
-│   ├── synthesis [2]
-│   ├── comprehension [2]
-│   ├── data_analysis [1]
-│   └── memory [1]
-├── Communication [12]
-│   ├── communication [8]
-│   ├── content [2]
-│   ├── rewriting [1]
-│   └── organization [1]
-├── OfficeQA [10]
-│   └── office_qa [10]
-└── Dialogue [38]
-    ├── what [26]
-    └── user_agent [12]
+├── workflow      [55]  (workflow+productivity+organization)
+├── ops           [43]  (ops+operations+terminal+file_ops)
+├── qa            [31]  (what+knowledge+comprehension+memory)
+├── finance       [16]  (finance+procurement)
+├── office        [11]  (office_qa+data_analysis)
+├── communication [11]  (communication+content+rewriting)
+├── safety        [ 9]  (safety+security+compliance)
+├── coding        [ 2]  (coding)
+└── research      [ 5]  (research+synthesis)
 ```
 
-纯文本 buffer 总任务数 = 195（199 纯文本任务剔除 4 个 multimodal）。
+纯文本 buffer 总任务数 = 195（含12条user_agent多轮按首轮归桶，去多模态）。
 
 | 桶 | 任务数 | 核心能力 |
 |---|---:|---|
-| **Workflow** | 54 | 多步骤任务组织、流程推进、子任务拆解与执行顺序控制 |
-| **SysOps** | 52 | 工具使用、命令与系统操作、约束遵守、安全边界、程序性执行 |
-| **Finance** | 18 | 结构化业务规则、数值意识、规范判断与合规约束 |
-| **Knowledge/Analysis** | 11 | 检索、阅读理解、归纳总结、信息整合与轻量分析推理 |
-| **Communication** | 12 | 表达、改写、风格控制、信息组织和面向受众的沟通 |
-| **OfficeQA** | 10 | 办公语境中的结构化问答、字段定位、文档细节理解；单独成桶不并入 Knowledge |
-| **Dialogue** | 38 | 多轮交互中的状态跟踪、上下文保持、角色一致性与对话策略 |
+| **workflow** | 56 | 多步骤任务组织、流程推进、子任务拆解与执行顺序控制 |
+| **ops** | 44 | 工具使用、命令与系统操作、文件读写、约束遵守、程序性执行 |
+| **qa** | 36 | 检索、阅读理解、事实问答、记忆检索（即查即答，不产长报告） |
+| **finance** | 20 | 结构化业务规则、数值意识、采购与合规约束、按金融规则算账 |
+| **office** | 11 | 办公文档与表格处理、办公语境问答、数据分析类办公任务 |
+| **communication** | 11 | 表达、改写、润色、翻译、面向受众的沟通与内容创作 |
+| **safety** | 9 | 安全合规与风险判断、拒绝不安全请求、漏洞/威胁评估、审慎裁定 |
+| **coding** | 2 | 代码编写、审查、调试、修复与正确性推理 |
+| **research** | 6 | 多来源检索并综合成报告/简报/摘要（区别于 qa 的即查即答） |
 
 ### Quota 分配
 
 $$q_i = q_{min} + (C - B \cdot q_{min}) \cdot \frac{n_i^{\alpha}}{\sum_j n_j^{\alpha}}$$
 
-- $C$：总 buffer 容量（轨迹条数）；$B$：桶数 $= 7$；$q_{min}$：每桶 hard floor；$n_i$：第 $i$ 桶任务数；$\alpha$：次线性指数，推荐 $0.5$（平方根分配）
+- $C$：总 buffer 容量（轨迹条数）；$B$：桶数 $= 9$；$q_{min}$：每桶 hard floor；$n_i$：第 $i$ 桶任务数；$\alpha$：次线性指数，推荐 $0.5$（平方根分配）
 
 **含义**：$q_{min}$ 保证每桶最低生存空间；第二项将剩余容量按桶规模次线性分配。大桶容量更多但增长慢于任务数增长，兼顾主流与长尾能力。
 
@@ -138,13 +119,15 @@ $$q_i = q_{min} + (C - B \cdot q_{min}) \cdot \frac{n_i^{\alpha}}{\sum_j n_j^{\a
 
 | 桶 | 任务数 | quota 近似值 |
 |---|---:|---:|
-| Workflow | 54 | 4,319 |
-| SysOps | 52 | 4,272 |
-| Dialogue | 38 | 3,938 |
-| Finance | 18 | 3,337 |
-| Communication | 12 | 3,092 |
-| Knowledge/Analysis | 11 | 3,047 |
-| OfficeQA | 10 | 2,995 |
+| workflow | 55 | 3,410 |
+| ops | 43 | 3,246 |
+| qa | 31 | 3,058 |
+| finance | 16 | 2,760 |
+| office | 11 | 2,630 |
+| communication | 11 | 2,630 |
+| safety | 9 | 2,570 |
+| research | 5 | 2,425 |
+| coding | 2 | 2,269 |
 
 ### Priority 定义（抗遗忘）
 
@@ -176,15 +159,15 @@ $$q_i = q_{min} + (C - B \cdot q_{min}) \cdot \frac{n_i^{\alpha}}{\sum_j n_j^{\a
 
 > **受众**：数据制造（@吴健）、沙箱 rollout（@郑乃榕）。RL 训练开始前向 buffer 预灌冷数据，避免 `L_replay = 0`、空桶 starvation。
 
-**数量**：硬下限每桶 `q_min = 2000`，7 桶合计 **14,000 轨迹**；推荐 **20,000**。每 query 8 轨迹（标准）或 1（经济版，仅救火）。约需会话：下限 ~218、推荐 ~312（假设平均每会话 8 query）。
+**数量**：硬下限每桶 `q_min = 2000`，9 桶合计 **18,000 轨迹**；推荐 **20,000**。每 query 8 轨迹（标准）或 1（经济版，仅救火）。约需会话：下限 ~281、推荐 ~312（假设平均每会话 8 query）。
 
 **交付格式**：会话清单 JSON（`record_id` / `bucket` / `queries` / `meta.cold_seed` / `meta.policy`）+ 轨迹记录（`trajectory_id` / `messages` / `response_token_ids` / `original_logprobs` / `reward` / `bucket` 等必填字段）。
 
-**单/多 query 占比**：多 query ≥ 60%。Dialogue 桶不得交付单 query 会话。各桶建议见 `bucket_buffer.md`（archive）§7.6。
+**单/多 query 占比**：多 query ≥ 60%。多轮会话任务不得交付单 query 会话。各桶建议见 `bucket_buffer.md`（archive）§7.6。
 
 **失败处理**：A（打分器异常）不进 buffer 不 sync 但继续；B（软失败）进 buffer + 随机 winner sync + 继续；C（硬失败）终止 session。
 
-**验收清单**：轨迹总数 ≥ 14k；每桶 ≥ 2k；Dialogue 无单 query；每条含 messages+token+logprob+bucket；`reward=null` 不计入配额；硬失败 session 无脏数据。
+**验收清单**：轨迹总数 ≥ 18k；每桶 ≥ 2k；多轮会话无单 query；每条含 messages+token+logprob+bucket；`reward=null` 不计入配额；硬失败 session 无脏数据。
 
 **数据来源配比（Phase 0）**：每条带 `meta.policy` 来源标记；两来源分目录存；`warmup_buffer.py --ratio-27b` 按桶内配比混合；**红线**：gpt-5 数据只进 buffer 做 replay，绝不 SFT 蒸馏 27B。
 
@@ -360,7 +343,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 ### Phase 0：冷启动数据来源配比预实验（独立，不进 21）
 
-**验证目标**：冷启动填 7 桶 replay buffer 时，actor 用 Qwen3.6-27B（on-policy，分布同源）还是更强的 gpt-5（off-policy，质量高）还是按比例混合，对下游 CL 训练最好？选出最佳配比后**固定**为所有 21 个正式实验的 buffer 预热来源。完整设计与代码落点见 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)。
+**验证目标**：冷启动填 9 桶 replay buffer 时，actor 用 Qwen3.6-27B（on-policy，分布同源）还是更强的 gpt-5（off-policy，质量高）还是按比例混合，对下游 CL 训练最好？选出最佳配比后**固定**为所有 21 个正式实验的 buffer 预热来源。完整设计与代码落点见 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)。
 
 | 编号 | 27B : gpt-5 | 角色 |
 |---|---|---|
@@ -384,7 +367,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | 轨迹多样性（`eval.metrics.trajectory_diversity`） | distinct_4 **≥ 0.6** 且 self_bleu_4 **≤ 0.5** |
 | 平均 judge 分 | 报告值（非 gate；gpt-5 臂预期更高，不作淘汰依据） |
 
-*轨 2 — 下游短RL（占 GPU，通过轨 1 的臂才跑；5 臂唯一变量 = buffer 来源，固定新任务种子 + 同随机 seed，7 桶拆旧/新两组）*：
+*轨 2 — 下游短RL（占 GPU，通过轨 1 的臂才跑；5 臂唯一变量 = buffer 来源，固定新任务种子 + 同随机 seed，9 桶拆旧/新两组）*：
 
 | 指标 | 判定 |
 |---|---|
@@ -468,7 +451,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 **验证目标**：桶结构和 priority 是否真有价值（vs CLEAR 单 buffer）？Replay 在有 KL 时是否仍有效？
 
-**Buffer 容量约定**：7 桶方案统一 **25k**，桶容量不作超参（固定值，不进消融）。CLEAR baseline 单独测两档容量 **10k（原论文）/ 25k（与 7 桶对齐）**，以隔离"容量 vs 桶结构"两个因素。
+**Buffer 容量约定**：9 桶方案统一 **25k**，桶容量不作超参（固定值，不进消融）。CLEAR baseline 单独测两档容量 **10k（原论文）/ 25k（与 9 桶对齐）**，以隔离"容量 vs 桶结构"两个因素。
 
 | 编号 | $\lambda_2$ | $\lambda_3$ | Buffer | 采样策略 | 角色 |
 |---|---|---|---|---|---|
@@ -497,8 +480,8 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 
 | 维度 | R0-10k（CLEAR baseline） | R3（基础版） | R4（完整版） |
 |---|---|---|---|
-| 任务边界 | task-agnostic | 7 桶分类 | 7 桶分类 |
-| Buffer 结构 | 单 buffer（10k；R0-25k 为 25k） | 7 桶独立配额（25k） | 7 桶独立配额（25k） |
+| 任务边界 | task-agnostic | 9 桶分类 | 9 桶分类 |
+| Buffer 结构 | 单 buffer（10k；R0-25k 为 25k） | 9 桶独立配额（25k） | 9 桶独立配额（25k） |
 | 淘汰规则 | reservoir 随机 | 桶内均匀 | 桶内 priority |
 | 采样策略 | 全 buffer 均匀 | 两级（quota + 均匀） | 两级 + priority 加权 |
 | 工程复杂度 | 极低 | 中 | 高 |

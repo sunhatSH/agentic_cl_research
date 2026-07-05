@@ -64,7 +64,7 @@
 | **slot 数** | 仅 `s0`（1 slot/单轨迹采集） | 8 slot/query（GRPO 组） |
 | **reward** | ❌ 无 | ✅ model judge 分（必填） |
 | **original_logprobs** | ❌ 无 | ✅ π₀ 的逐 token logprob（抗遗忘根基） |
-| **bucket** | ❌ None | ✅ 7 桶之一（必填，B12 否则跳过） |
+| **bucket** | ❌ None | ✅ 9 桶之一（必填，B12 否则跳过） |
 | **query_index** | ❌ 隐含在 trajectory_id | ✅ 显式字段 |
 | **格式来源** | OpenClaw/旧采集 | Hermes（spawn 同步、子轨迹分离） |
 | **actor** | mock/远程对照 | π₀（Qwen3.6-27B） |
@@ -90,7 +90,7 @@
   "slot_idx": 0,                        // 必填，0–7（GRPO 组内槽位）
 
   // ---- 分桶 ----
-  "bucket": "Workflow",                 // 必填，7 桶之一；unknown/缺失 → 整条跳过（B12）
+  "bucket": "workflow",                 // 必填，9 桶之一；unknown/缺失 → 整条跳过（B12）
   "sub_bucket": "workflow",             // 可选，子桶（category，BucketDesign 清单）
 
   // ---- 对话（Hermes 主轨迹）----
@@ -182,7 +182,7 @@ Hermes 主 agent 调子 agent 时**同步等待**，子轨迹**独立成一条 b
 | 8 slot/query | 现状单 slot → **自跑 GRPO 8 路**（Hermes `SessionSandboxPool`，8 槽同 seed fork） |
 | `reward` | **model judge 打分**（taskspec.verifier rubric → reward judge，anthropic/claude-4.8-opus，走 sufy） |
 | `original_logprobs` | **π₀ vLLM 前向产出**（必须 Qwen3.6-27B，不能 Claude） |
-| `bucket` | **LLM 分桶**（对 seed_query 分 7 桶，复用 classify） |
+| `bucket` | **LLM 分桶**（对 seed_query 分 9 桶，复用 classify） |
 | `query_index`/`slot_idx` | rollout 时由 Hermes scheduler 填 |
 | 格式 | **Hermes 产**（spawn 同步、子分离），非 OpenClaw |
 

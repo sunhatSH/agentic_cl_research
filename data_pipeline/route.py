@@ -201,13 +201,15 @@ def route_trajectories(
         stats["total"] += 1
         bucket = rec.get("bucket", "unknown")
         if bucket == "unknown" or bucket not in {
-            "Workflow",
-            "SysOps",
-            "Finance",
-            "Knowledge",
-            "Communication",
-            "OfficeQA",
-            "Dialogue",
+            "workflow",
+            "ops",
+            "qa",
+            "finance",
+            "office",
+            "communication",
+            "safety",
+            "coding",
+            "research",
         }:
             stats["unknown"] += 1
             continue

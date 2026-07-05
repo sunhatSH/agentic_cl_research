@@ -111,7 +111,7 @@ def main() -> None:
         )
     print(
         f"\nexpected={expected}  winner={trajs[winner]['trajectory_id']}  "
-        f"-> bucket={trajs[winner]['domain']}  (B×M trajectories route into the 7-bucket buffer)"
+        f"-> bucket={trajs[winner]['domain']}  (B×M trajectories route into the 9-bucket buffer)"
     )
 
 
