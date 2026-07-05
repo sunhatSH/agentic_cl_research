@@ -41,7 +41,7 @@ L_{replay} = \mathbb{E}_{(s,a)\sim \mathcal{B}}\big[-\log \pi_{new}(a\mid s)\cdo
 
 回放缓冲区是 $L_{replay}$ 取数的记忆体。两条原则使它区别于 CLEAR\upcite{A2} 这类朴素经验回放缓冲区。
 
-\textbf{按能力分桶，不按难度。} 本文把缓冲区组织为 $B=9$ 个对齐能力域的桶：Workflow（工作流编排，55 任务）、SysOps（系统操作，43）、QA（问答检索，31）、Finance（财务金融，16）、OfficeQA（办公文档，11）、Communication（沟通表达，11）、Safety（安全合规，9）、Coding（代码，2）、Research（研究综合，5）。桶体系由 ClawEval 官方任务 category 合并而来（去多模态、单层无子桶），任务数为纯文本非多轮评测集的分布（合计 183）。难度是不稳定的划分轴——随策略变强，任务难度会漂移、迫使不断重新分类——而能力是稳定的；能力域直接采用评测基准自带的官方 category，避免自造分类的权威性争议。不纳入多模态任务，因模态不同、数据太少、目标不一致。每个桶按一个平方根、带保底的配额分配获得额度，
+\textbf{按能力分桶，不按难度。} 本文把缓冲区组织为 $B=9$ 个对齐能力域的桶：Workflow（工作流编排，56 任务）、Ops（系统操作，44 任务）、QA（问答检索，36 任务）、Finance（财务金融，20 任务）、Office（办公文档，11 任务）、Communication（沟通表达，11 任务）、Safety（安全合规，9 任务）、Coding（代码，2 任务）、Research（研究综合，6 任务）。桶体系由 ClawEval 官方任务 category 合并而来（去多模态、单层无子桶），任务数为纯文本评测集的分布（合计 195，其中 12 条 user\_agent 多轮任务按首轮内容归桶）。难度是不稳定的划分轴——随策略变强，任务难度会漂移、迫使不断重新分类——而能力是稳定的；能力域直接采用评测基准自带的官方 category，避免自造分类的权威性争议。不纳入多模态任务，因模态不同、数据太少、目标不一致。每个桶按一个平方根、带保底的配额分配获得额度，
 \begin{equation}
 \label{eq:quota}
 q_i = q_{min} + (C - B\,q_{min})\cdot \frac{n_i^{0.5}}{\sum_j n_j^{0.5}},
@@ -56,17 +56,17 @@ q_i = q_{min} + (C - B\,q_{min})\cdot \frac{n_i^{0.5}}{\sum_j n_j^{0.5}},
 \toprule[1.5pt]
 桶 & 任务数 $n_i$ & 平方根占比 & 配额 $q_i$ \\
 \midrule[1pt]
-Workflow & 55 & 0.201 & $\approx$3410 \\
-SysOps & 43 & 0.178 & $\approx$3246 \\
-QA & 31 & 0.151 & $\approx$3058 \\
-Finance & 16 & 0.109 & $\approx$2760 \\
-OfficeQA & 11 & 0.090 & $\approx$2630 \\
-Communication & 11 & 0.090 & $\approx$2630 \\
-Safety & 9 & 0.081 & $\approx$2570 \\
-Research & 5 & 0.061 & $\approx$2425 \\
-Coding & 2 & 0.038 & $\approx$2269 \\
+Workflow & 56 & 0.197 & $\approx$3375 \\
+Ops & 44 & 0.174 & $\approx$3219 \\
+QA & 36 & 0.158 & $\approx$3103 \\
+Finance & 20 & 0.117 & $\approx$2822 \\
+Office & 11 & 0.087 & $\approx$2610 \\
+Communication & 11 & 0.087 & $\approx$2610 \\
+Safety & 9 & 0.079 & $\approx$2551 \\
+Research & 6 & 0.064 & $\approx$2450 \\
+Coding & 2 & 0.037 & $\approx$2260 \\
 \midrule
-合计 & 183 & 1.000 & 25000 \\
+合计 & 195 & 1.000 & 25000 \\
 \bottomrule[1.5pt]
 \end{tabular}
 \end{table}

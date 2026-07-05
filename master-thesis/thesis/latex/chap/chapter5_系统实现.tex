@@ -66,6 +66,45 @@ Actor / 基座策略 & Qwen3.6-27B & rollout 1.0 & 训练对象，本地权重 \
 
 \textbf{轨迹收集用框架原生字段。} 轨迹直接从 verl 的 \texttt{ToolAgentLoop} 原生输出收集，不写外部代理，保证 token 与对数概率由框架直接产出。
 
+\section{数据管道与评测口径对齐}
+\label{sec:sys-data}
+
+训练与评测的数据流转涉及多个环节，本节描述从原始任务规格到可训练数据的端到端管道，以及保证训练桶与评测桶口径一致的适配机制。
+
+\subsection{七步数据管道}
+
+冷启动与正式训练的数据准备由 \texttt{scripts/run\_data\_pipeline.sh} 串联为七步管道，分离线预处理（Step 1--3, 6，无需 GPU）与在线采集（Step 4--5，需集群+沙箱+GPU）两段：
+
+\begin{enumerate}
+  \item \textbf{构建沙箱种子镜像}（\texttt{scripts/build\_fs\_seeds.py}）：从 taskspec 的 \texttt{files/} 声明生成每个任务的初始文件系统，打包为沙箱种子镜像，供 rollout 时派生位级一致槽位。
+  \item \textbf{能力桶打标}（\texttt{scripts/label\_buckets.py}）：对每个 taskspec 用 LLM 按首条查询内容归入 9 桶之一，回写 manifest，作为后续分桶路由的依据。
+  \item \textbf{查询生成}（\texttt{scripts/taskspec\_to\_queries.py}）：从 taskspec 提取首条查询文本，输出 \texttt{queries.jsonl}，供 rollout 引擎消费。
+  \item \textbf{冷启动采集}（\texttt{scripts/collect\_cold.py}）：在集群上用本地 vLLM 加载 Qwen3.6-27B，以单轮模式对全部 query 做 rollout 并写入沙箱执行，产出轨迹集合（无需 observer/questioner/judge 三智能体）。这是回放缓冲区预热的数据来源。
+  \item \textbf{缓冲区预热}（\texttt{scripts/warmup\_buffer.py}）：将冷启动采集的轨迹按桶路由写入 \texttt{replay\_buffer/} 的 SQLite 存储，使正式训练从第 0 步即有旧经验可回放。
+  \item \textbf{轨迹转 Parquet}（\texttt{scripts/trajectory\_to\_parquet.py}）：将轨迹集合按 95/5 切分为训练集与验证集，输出 \texttt{train.parquet} 与 \texttt{val.parquet}，供 verl 数据加载器直接消费。
+  \item \textbf{配置填入}（手动）：将 \texttt{train.parquet} 与 \texttt{val.parquet} 路径填入 \texttt{configs/cluster.yaml} 的 \texttt{data.train\_files} / \texttt{data.val\_files}，即可启动训练。
+\end{enumerate}
+
+离线预处理段可在开发机上独立运行与单测；在线采集段需 GPU 集群与沙箱后端，是当前唯一依赖集群环境的部分。
+
+\subsection{脏字符清洗管道}
+
+从上游采集的原始数据在进入训练或回放缓冲区之前，需经由 \texttt{bin/clean\_zerowidth.py} 与 \texttt{data/cleaning.py} 组成的清洗管道处理。清洗逻辑分三阶段：
+
+\begin{enumerate}
+  \item \textbf{全量零宽字符剥离}：扫描全部文本字段，移除无语义的零宽字符（零宽空格 U+200B、零宽不连字 U+200C 等），避免这些不可见字符污染 tokenizer 分词边界。
+  \item \textbf{按脏字符定义分类}：按预定义的脏字符集合（控制字符、私用区字符、孤立的组合标记等）将每行分为 clean（完全干净）、acceptable（含允许的边界情况）、discarded（含不可容忍的脏字符）三类。
+  \item \textbf{物化干净子集}：输出仅含 clean + acceptable 行的 \texttt{accepted.jsonl}，作为下游训练与回放缓冲区的唯一入口。
+\end{enumerate}
+
+该管道与数据采集脚本解耦，独立可测；任何进入回放缓冲区或训练 batch 的数据均须通过此清洗关口。
+
+\subsection{评测与训练桶口径对齐}
+
+训练时的桶分类（决定轨迹入哪个桶）与评测时的桶分组（决定评测分数按哪个桶出）必须使用\textbf{同一套映射口径}，否则训练桶 A 的防遗忘效果无法对应到评测桶 A 的分数变化。本文通过 \texttt{eval/bucket\_adapter.py} 保证这一一致性：
+
+该模块将 ClawEval 的 38 个扁平官方 category 按 \texttt{buckets.json} 的定义映射为 9 个能力桶；多模态 category（multimodal、video\_*、doc\_*、webpage\_generation、web\_dev 共 13 个）返回 \texttt{None}（不归桶）；\texttt{user\_agent} 多轮任务不进入静态映射表，而是通过可注入的 \texttt{user\_agent\_classifier} 回调按首轮 prompt 内容归桶，由调用方（评测脚本或数据管线）提供 LLM 分类逻辑，模块本身不含硬编码的模型调用。输出为评测 manifest（\texttt{eval/claweval\_manifest.json}），每条记录含 \texttt{task\_id}、\texttt{split}、\texttt{modality}、\texttt{bucket}、\texttt{category}、\texttt{prompt} 六个字段，训练打标与评测分组均读同一份 manifest，确保口径一致。
+
 \section{当前实现状态与残缺模块}
 \label{sec:sys-status}
 

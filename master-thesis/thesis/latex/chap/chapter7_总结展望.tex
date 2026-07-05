@@ -36,7 +36,7 @@
 \begin{enumerate}
   \item \textbf{完成 21 个消融实验}。在 64 卡集群上跑完 Phase 1--5 全部实验，回填结果数字，验证每个组件的边际贡献，并据负面结果调整方法。
   \item \textbf{Phase 6 探索项}。包括 Forward KL 替代逆向 KL（X6，若 Phase 5 熵仍不稳定）、自适应 $\lambda_4$（X7a，熵阈值反馈）、动态 $\lambda_2$/$\lambda_3$ 调度、桶间亲和度加权回放等。
-  \item \textbf{多模态任务扩展}。当前仅用纯文本 183 任务，未来可纳入 ClawEval 的 Multimodal split（101 任务），但需先解决模态不同带来的缓冲区与回放问题。
+  \item \textbf{多模态任务扩展}。当前仅用纯文本 195 任务，未来可纳入 ClawEval 的 Multimodal split（101 任务），但需先解决模态不同带来的缓冲区与回放问题。
   \item \textbf{真实用户数据回流闭环}。将线上真实用户的后续查询分布纳入人设库校准，缩小模拟用户与真实分布的差距。
   \item \textbf{FP8 训练探索}。在 Phase 5 大 rollout 量下评估 FP8 rollout-only 模式的吞吐收益与精度代价，配合 Token-level TIS 兜底。
 \end{enumerate}

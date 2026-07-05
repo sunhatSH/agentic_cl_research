@@ -6,7 +6,7 @@
 \section{评测基准}
 \label{sec:exp-claweval}
 
-本文采用 ClawEval 作为评测基准。ClawEval 共 300 个任务，分为三个 split：General（161，单轮纯文本）、Multimodal（101，多模态）、Multi-turn（38，多轮）。本文当前仅使用纯文本任务：将 General 与 Multi-turn 两个 split 的纯文本任务按 ClawEval 官方 category 归入 9 个能力桶，共 183 个任务（其中多轮任务按首轮内容归桶），落盘为评测 manifest（\texttt{eval/claweval\_manifest.json}）。多模态 split 不纳入。
+本文采用 ClawEval 作为评测基准。ClawEval 共 300 个任务，分为三个 split：General（161，单轮纯文本）、Multimodal（101，多模态）、Multi-turn（38，多轮）。本文当前仅使用纯文本任务：将 General 与 Multi-turn 两个 split 的纯文本任务按 ClawEval 官方 category 归入 9 个能力桶，共 195 个任务（其中 12 条 user\_agent 多轮任务按首轮内容归桶），落盘为评测 manifest（\texttt{eval/claweval\_manifest.json}，由 \texttt{eval/bucket\_adapter.py} 按 \S\ref{sec:sys-data} 的统一映射口径生成）。多模态 split 不纳入。
 
 \textbf{评分公式。} 每个任务在三个维度上评分：完成度 $s_{completion}$、安全 $s_{safety}$、鲁棒性 $s_{robustness}$，均为 $[0,1]$ 浮点。综合分按
 \begin{equation}
@@ -24,7 +24,7 @@ score = s_{safety} \times (0.8 \cdot s_{completion} + 0.2 \cdot s_{robustness})
 
 传统端到端评测只看模型的最终能力，无法回答本文的核心问题：模型学了新桶之后，\textit{旧桶的能力保住了多少}。本节给出面向遗忘度量的评测协议——它与第~\ref{chap:method} 章的按桶训练设定咬合，把"回放是否有效"落成可量化、可对照的分桶分数。
 
-\textbf{训练：桶既是组织单元也是时间阶段单元。} 每个实验\textbf{内部}都按 9 桶的固定顺序依次训练（先训完 Workflow，再训 SysOps，直至最后一桶），桶内任务打乱。桶因此有双重身份：它既是回放缓冲区的组织单元（\S\ref{sec:buffer}，控制回放什么），也是训练的\textbf{时间阶段单元}（先训完一桶再进下一桶）。这正是持续学习与灾难性遗忘的经典设定——"顺序学 A、B、C，看学到 C 时 A 忘没忘"；若改为混采训练，遗忘现象被弱化，回放的防遗忘价值便无从体现。这也贴合线上持续学习的现实：数据更新快、无法一次集齐覆盖全分布的样本，只能按桶分批到达。
+\textbf{训练：桶既是组织单元也是时间阶段单元。} 每个实验\textbf{内部}都按 9 桶的固定顺序依次训练（先训完 Workflow，再训 Ops，直至最后一桶），桶内任务打乱。桶因此有双重身份：它既是回放缓冲区的组织单元（\S\ref{sec:buffer}，控制回放什么），也是训练的\textbf{时间阶段单元}（先训完一桶再进下一桶）。这正是持续学习与灾难性遗忘的经典设定——"顺序学 A、B、C，看学到 C 时 A 忘没忘"；若改为混采训练，遗忘现象被弱化，回放的防遗忘价值便无从体现。这也贴合线上持续学习的现实：数据更新快、无法一次集齐覆盖全分布的样本，只能按桶分批到达。
 
 \textbf{统一训练起点 $\pi_0$。} 全部 21 个实验的训练起点\textbf{一律为初始策略 $\pi_0$（27B 基座）}，\textbf{不接续上一 Phase 的 checkpoint}。这是 ablation 矩阵可比性的生命线：21 个实验只在受控变量上相异，若某实验接上一 Phase 的 ckpt 训（继承底子），Phase 之间的对比就分不清增益来自本 Phase 的参数还是继承的底子，控制变量失效。因此 Phase 之间\textbf{只传递选中的超参配置}（如 $\lambda_2$、回放类型），\textbf{不传递 ckpt}——例如 Phase 4 的 C1 采用 Phase 2 选出的 $\lambda_2$ 与 Phase 3 选出的回放配置，但 C1 仍从 $\pi_0$ 起训。
 
@@ -42,7 +42,7 @@ w_i \propto
 \end{equation}
 其中 $o_i\in\{0,1,\dots,N-1\}$ 是桶 $i$ 的训练序号（越早训序号越小、权重越大），$N$ 为桶数。本文先试线性衰减，若 CL 相对 baseline 的优势不够显著再改指数衰减（$\beta$ 越小越放大早期桶），选取最能体现防遗忘优势的口径用于叙事。由于评测只跑一次，线性、指数及其参数的对比全是式~\eqref{eq:weighted-score} 的代数运算，零额外推理成本。
 
-\textbf{Baseline 与终点对决。} 参照系统一为一个\textbf{无 CL 手段}、同样从 $\pi_0$ 出发、按同一 9 桶序训练但\textbf{不做回放}的 27B baseline。所有实验的每桶 delta 都对齐到这同一个 baseline 计算，全程可比；\textbf{不与上一 Phase 相比}（起点都是 $\pi_0$，跨 Phase 的 delta 无意义）。终点对决即"走完全 Phase 选参的最终 CL 模型 vs baseline"，在同一评测集上按桶分组打分，逐桶对比并按式~\eqref{eq:weighted-score} 出加权总分。预期 CL 模型在早期训练的桶（如 Workflow、SysOps）上因回放保住能力而分数显著高于 baseline，从而以\textbf{分桶遗忘曲线}的形式体现回放的防遗忘价值。表~\ref{tab:cl-vs-baseline} 概括二者的评测设定对照，其分数列在训练完成后回填。
+\textbf{Baseline 与终点对决。} 参照系统一为一个\textbf{无 CL 手段}、同样从 $\pi_0$ 出发、按同一 9 桶序训练但\textbf{不做回放}的 27B baseline。所有实验的每桶 delta 都对齐到这同一个 baseline 计算，全程可比；\textbf{不与上一 Phase 相比}（起点都是 $\pi_0$，跨 Phase 的 delta 无意义）。终点对决即"走完全 Phase 选参的最终 CL 模型 vs baseline"，在同一评测集上按桶分组打分，逐桶对比并按式~\eqref{eq:weighted-score} 出加权总分。预期 CL 模型在早期训练的桶（如 Workflow、Ops）上因回放保住能力而分数显著高于 baseline，从而以\textbf{分桶遗忘曲线}的形式体现回放的防遗忘价值。表~\ref{tab:cl-vs-baseline} 概括二者的评测设定对照，其分数列在训练完成后回填。
 
 \begin{table}[htbp]
 \centering
