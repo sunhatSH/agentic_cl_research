@@ -189,8 +189,8 @@ def stage_queries(*, classify: bool, classify_workers: int = 16) -> int:
 
 
 def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
-                   max_turns: int, slot_timeout: int) -> int:
-    """Run parallel sandbox collection."""
+                   max_turns: int, hermes_max_turns: int, slot_timeout: int) -> int:
+    """Run parallel sandbox collection — 1 slot per query, collect mode."""
 
     from scripts.sandbox_grpo_collect import _load_queries, _run_one_collect_query
 
@@ -207,13 +207,9 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
             ex.submit(
                 _run_one_collect_query,
                 t, i,
-                actor="hermes",
-                actor_model=actor_model,
-                actor_base="",
-                max_turns=max_turns,
-                slot_timeout=slot_timeout,
-                backend="e2b",
-                template="agentic-cl-sandbox",
+                actor="hermes", actor_model=actor_model, actor_base="",
+                max_turns=max_turns, hermes_max_turns=hermes_max_turns,
+                slot_timeout=slot_timeout, backend="e2b", template="agentic-cl-sandbox",
             ): i
             for i, t in enumerate(tasks)
         }
@@ -231,7 +227,6 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
     elapsed = time.time() - t0
     print(f"  done in {elapsed:.0f}s  ok={ok}  err={err}  ({total/max(1,elapsed):.1f} traj/s)")
 
-    # Write output
     _OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_file = _OUT_DIR / "grpo_hermes.jsonl"
     with open(out_file, "w", encoding="utf-8") as fh:
@@ -263,7 +258,8 @@ def main() -> None:
     ap.add_argument("--num-queries", type=int, default=100)
     ap.add_argument("--max-concurrent", type=int, default=128)
     ap.add_argument("--actor-model", default="openai/gpt-5")
-    ap.add_argument("--max-turns", type=int, default=12)
+    ap.add_argument("--max-turns", type=int, default=8, help="session turn cap")
+    ap.add_argument("--hermes-max-turns", type=int, default=50, help="hermes ReAct limit")
     ap.add_argument("--slot-timeout", type=int, default=600)
     args = ap.parse_args()
 
@@ -277,6 +273,7 @@ def main() -> None:
             max_concurrent=args.max_concurrent,
             actor_model=args.actor_model,
             max_turns=args.max_turns,
+            hermes_max_turns=args.hermes_max_turns,
             slot_timeout=args.slot_timeout,
         )
 

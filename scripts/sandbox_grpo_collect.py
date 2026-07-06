@@ -113,7 +113,7 @@ def _write_hermes_config(sb: Any, model: str, base: str) -> ExecResult:
     return sb.run_code(code)
 
 
-def _run_hermes_slot(sb: Any, query: str, model: str, base: str, max_turns: int, timeout: int) -> SlotTrajectory:
+def _run_hermes_slot(sb: Any, query: str, model: str, base: str, hermes_max_turns: int, timeout: int) -> SlotTrajectory:
     """Real actor: configure hermes inside the sandbox, then run `hermes chat` directly.
 
     Uses ``commands.run`` (NOT a Python wrapper subprocess) so hermes stdout/stderr
@@ -131,7 +131,7 @@ def _run_hermes_slot(sb: Any, query: str, model: str, base: str, max_turns: int,
     # protects query/model from shell injection while preserving UTF-8.
     cmd = (
         f"hermes chat -q {shlex.quote(query)} -m {shlex.quote(model)} "
-        f"--provider agent -Q --max-turns {max_turns} --yolo"
+        f"--provider agent -Q --max-turns {hermes_max_turns} --yolo"
     )
     try:
         out = sb._sb.commands.run(cmd, timeout=timeout)  # type: ignore[union-attr]
@@ -271,6 +271,7 @@ def _run_one_collect_query(
     actor_model: str,
     actor_base: str,
     max_turns: int,
+    hermes_max_turns: int,
     slot_timeout: int,
     backend: str,
     template: str,
@@ -290,7 +291,7 @@ def _run_one_collect_query(
             n = _upload_workspace(sb, record_id)
             if n:
                 print(f"  q{qi}: uploaded {n} ws files ({record_id})", flush=True)
-        t = _run_hermes_slot(sb, query, actor_model, actor_base, max_turns, slot_timeout)
+        t = _run_hermes_slot(sb, query, actor_model, actor_base, hermes_max_turns, slot_timeout)
     except Exception as exc:  # noqa: BLE001
         t = SlotTrajectory(query_index=qi, slot_idx=0, sandbox_id=sid,
                            error=f"{type(exc).__name__}: {exc}")
@@ -322,6 +323,7 @@ def run_session(
     actor_model: str = "gpt-5.1",
     actor_base: str = "",
     max_turns: int = 8,
+    hermes_max_turns: int = 50,
     slot_timeout: int = 180,
     out_dir: Path = Path("rollouts/grpo"),
     max_concurrent: int = 1,
@@ -348,7 +350,8 @@ def run_session(
             t = _run_one_collect_query(
                 tasks[task_idx], task_idx,
                 actor=actor, actor_model=actor_model, actor_base=actor_base,
-                max_turns=max_turns, slot_timeout=slot_timeout,
+                max_turns=max_turns, hermes_max_turns=hermes_max_turns,
+                slot_timeout=slot_timeout,
                 backend=backend, template=template,
             )
             done += 1
@@ -421,7 +424,7 @@ def run_session(
                             n = _upload_workspace(sb, _rid)
                             if n:
                                 print(f"  slot{slot_idx}: uploaded {n} workspace files for {_rid}", flush=True)
-                        t = _run_hermes_slot(sb, _query, actor_model, actor_base, max_turns, slot_timeout)
+                        t = _run_hermes_slot(sb, _query, actor_model, actor_base, hermes_max_turns, slot_timeout)
                     else:
                         t = _run_run_code_slot(sb, _task, slot_timeout)
                 except Exception as exc:  # noqa: BLE001 -- isolate slot failures
@@ -568,7 +571,9 @@ def main() -> None:
     ap.add_argument("--queries", help="JSONL of {record_id, queries:[q1,...]} per line (collect mode; takes queries[0])")
     ap.add_argument("--actor-model", default="gpt-5.1", help="hermes model name (hermes actor)")
     ap.add_argument("--actor-base", default="", help="override AGENT_MODEL_BASE (else runtime env)")
-    ap.add_argument("--max-turns", type=int, default=8, help="hermes ReAct turn cap")
+    ap.add_argument("--max-turns", type=int, default=8, help="session turn cap (questioner rounds per session)")
+    ap.add_argument("--hermes-max-turns", type=int, default=50,
+                    help="hermes internal ReAct loop cap (per invocation)")
     ap.add_argument("--slot-timeout", type=int, default=180, help="per-slot hermes timeout (s)")
     ap.add_argument("--max-concurrent", type=int, default=1,
                     help="parallel queries (cold-start mode: each query = own sandbox lifecycle)")
@@ -618,6 +623,7 @@ def main() -> None:
         actor_model=args.actor_model,
         actor_base=actor_base,
         max_turns=args.max_turns,
+        hermes_max_turns=args.hermes_max_turns,
         slot_timeout=args.slot_timeout,
         out_dir=Path(args.out_dir),
         max_concurrent=args.max_concurrent,

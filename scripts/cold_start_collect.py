@@ -96,7 +96,8 @@ def step_collect(
     num_queries: int,
     max_concurrent: int,
     actor_model: str = "openai/gpt-5",
-    max_turns: int = 12,
+    max_turns: int = 8,
+    hermes_max_turns: int = 50,
     slot_timeout: int = 600,
     out_dir: str = "rollouts/cold_start",
     backend: str = "e2b",
@@ -115,6 +116,7 @@ def step_collect(
         "--template", template,
         "--actor-model", actor_model,
         "--max-turns", str(max_turns),
+        "--hermes-max-turns", str(hermes_max_turns),
         "--slot-timeout", str(slot_timeout),
         "--max-concurrent", str(max_concurrent),
         "--out-dir", out_dir,
@@ -149,8 +151,10 @@ def main() -> None:
                     help="parallel sandboxes")
     ap.add_argument("--actor-model", default="openai/gpt-5",
                     help="sufy model for hermes")
-    ap.add_argument("--max-turns", type=int, default=12,
-                    help="hermes ReAct turn cap")
+    ap.add_argument("--max-turns", type=int, default=8,
+                    help="session turn cap (questioner rounds)")
+    ap.add_argument("--hermes-max-turns", type=int, default=50,
+                    help="hermes internal ReAct loop cap")
     ap.add_argument("--slot-timeout", type=int, default=600,
                     help="per-sandbox timeout (s)")
     ap.add_argument("--out-dir", default="rollouts/cold_start")
