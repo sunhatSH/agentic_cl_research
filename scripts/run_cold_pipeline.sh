@@ -9,9 +9,9 @@ echo "========== STAGE 1: 打标 (32 并发) =========="
 .venv/bin/python scripts/run_cold_start.py --no-collect --classify-workers 32
 
 echo ""
-echo "========== STAGE 2: 采集 (128 并发) =========="
+echo "========== STAGE 2: 采集 (128 并发, 每条 fsync 落盘) =========="
 .venv/bin/python scripts/run_cold_start.py \
-    --no-classify --num-queries 3878 --max-concurrent 128
+    --no-classify --no-generate --num-queries 3878 --max-concurrent 128
 
 echo ""
 echo "========== ALL DONE =========="

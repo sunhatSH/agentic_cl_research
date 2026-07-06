@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections import Counter
@@ -224,8 +225,8 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
                 else:
                     ok += 1
                 fh.write(traj.to_jsonl() + "\n")
-                if ok % 100 == 0:
-                    fh.flush()
+                fh.flush()          # flush every trajectory — never lose data on crash
+                os.fsync(fh.fileno())
                 pbar.set_postfix(ok=ok, err=err, refresh=False)
                 pbar.update(1)
 
@@ -260,11 +261,19 @@ def main() -> None:
     ap.add_argument("--max-turns", type=int, default=8, help="session turn cap")
     ap.add_argument("--hermes-max-turns", type=int, default=50, help="hermes ReAct limit")
     ap.add_argument("--slot-timeout", type=int, default=600)
+    ap.add_argument("--no-generate", action="store_true",
+                    help="skip queries.jsonl regeneration (use existing file as-is)")
     args = ap.parse_args()
 
     t0 = time.time()
 
-    stage_queries(classify=not args.no_classify, classify_workers=args.classify_workers)
+    # Only (re)generate queries.jsonl when explicitly asked. Regenerating with
+    # --no-classify would OVERWRITE an already-classified file with empty buckets.
+    if not args.no_generate:
+        stage_queries(classify=not args.no_classify, classify_workers=args.classify_workers)
+    else:
+        n = sum(1 for _ in open(_QUERIES_PATH)) if _QUERIES_PATH.exists() else 0
+        print(f"[skip] using existing queries.jsonl ({n} rows)")
 
     if not args.no_collect:
         stage_collect(
