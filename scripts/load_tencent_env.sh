@@ -5,7 +5,8 @@
 #   source scripts/load_tencent_env.sh
 #   bash scripts/create_sandbox_via_api.sh builtin
 
-_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve repo root via git (works in any shell, any current directory).
+_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/.." && pwd)")"
 _TENCENT="${_ROOT}/docker/sandbox/tencent.env"
 _IMAGE="${_ROOT}/docker/sandbox/image.env"
 _RUNTIME="${_ROOT}/docker/sandbox/runtime.env"
