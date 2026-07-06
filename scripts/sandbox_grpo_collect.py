@@ -64,16 +64,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rollout.sandbox_client import ExecResult, grpo_advantages, make_sandbox, select_winner
 
-# Default tasks for the run_code fallback. Each has a query + an expected answer
-# so reward can be exact-match (no model judge needed). The real path supplies
-# tasks via --tasks <jsonl> (one {"query": ...} per line; reward via the judge).
-_DEFAULT_TASKS = [
-    {"query": "Compute 23*17-19 and write the number to /home/user/result.txt", "expected": "372"},
-    {"query": "Compute 100*100 and write the number to /home/user/result.txt", "expected": "10000"},
-    {"query": "Compute 2**10 and write the number to /home/user/result.txt", "expected": "1024"},
-    {"query": "Compute 7*8+9 and write the number to /home/user/result.txt", "expected": "65"},
-    {"query": "Compute 999-333 and write the number to /home/user/result.txt", "expected": "666"},
-]
 
 
 @dataclass
@@ -89,6 +79,7 @@ class SlotTrajectory:
     advantage: float | None = None
     is_winner: bool = False
     error: str = ""
+    bucket: str = ""
 
     def to_jsonl(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -123,32 +114,45 @@ def _write_hermes_config(sb: Any, model: str, base: str) -> ExecResult:
 
 
 def _run_hermes_slot(sb: Any, query: str, model: str, base: str, max_turns: int, timeout: int) -> SlotTrajectory:
-    """Real actor: configure hermes inside the sandbox, run `hermes chat -q`."""
+    """Real actor: configure hermes inside the sandbox, then run `hermes chat` directly.
+
+    Uses ``commands.run`` (NOT a Python wrapper subprocess) so hermes stdout/stderr
+    are captured cleanly without wrapper noise.
+    """
+    import shlex
+
     traj = SlotTrajectory(query_index=-1, slot_idx=-1, sandbox_id=getattr(sb, "_sandbox_id", ""))
     cfg = _write_hermes_config(sb, model, base)
     if not cfg.ok:
         traj.error = f"hermes config write failed: {cfg.stderr[:200]}"
         return traj
-    # Non-interactive single query. --yolo auto-approves tool use; -Q is quiet
-    # (final answer only); --max-turns caps the ReAct loop.
-    code = (
-        "import subprocess\n"
-        f"r=subprocess.run(['hermes','chat','-q',{query!r},'-m',{model!r},'--provider','agent',"
-        f"'-Q','--max-turns',{str(max_turns)!r},'--yolo'],capture_output=True,text=True,timeout={str(timeout)!r})\n"
-        "print('EXIT',r.returncode)\n"
-        "print(r.stdout or '')\n"
-        "if r.stderr: print('STDERR',r.stderr[:500])\n"
+
+    # Run hermes directly via the sandbox shell — no Python wrapper.  shlex.quote
+    # protects query/model from shell injection while preserving UTF-8.
+    cmd = (
+        f"hermes chat -q {shlex.quote(query)} -m {shlex.quote(model)} "
+        f"--provider agent -Q --max-turns {max_turns} --yolo"
     )
-    res = sb.run_code(code)
+    try:
+        out = sb._sb.commands.run(cmd, timeout=timeout)  # type: ignore[union-attr]
+        stdout = (out.stdout or "").strip()
+        stderr = (out.stderr or "").strip()
+        ok = out.exit_code == 0
+    except Exception as exc:  # noqa: BLE001 — isolate slot failures
+        traj.error = f"{type(exc).__name__}: {exc}"
+        return traj
+
     traj.messages = [
         {"role": "user", "content": query},
-        {"role": "assistant", "content": (res.stdout or "").strip()},
+        {"role": "assistant", "content": stdout},
     ]
-    if res.stderr.strip():
-        traj.messages.append({"role": "system", "content": f"[stderr] {res.stderr[:300]}"})
-    traj.answer = (res.stdout or "").strip().splitlines()[-1] if res.stdout else ""
-    if not res.ok and not traj.answer:
-        traj.error = res.stderr[:200] or "hermes run produced no output"
+    if stderr:
+        traj.messages.append({"role": "system", "content": f"[stderr] {stderr[:500]}"})
+    # Last non-empty line is typically the hermes session-id line; the real answer
+    # is above it.  Store both for downstream consumers.
+    traj.answer = [l for l in stdout.splitlines() if l.strip()][-1] if stdout.strip() else ""
+    if not ok and not traj.answer:
+        traj.error = stderr[:200] or "hermes run produced no output"
     return traj
 
 
@@ -190,6 +194,45 @@ def _run_run_code_slot(sb: Any, task: dict[str, Any], timeout: int) -> SlotTraje
 
 
 # --------------------------------------------------------------------------- #
+# Workspace upload                                                              #
+# --------------------------------------------------------------------------- #
+
+# Root directory of taskspec data. Each subdir s_<id>/files/ mirrors the
+# sandbox workspace layout and is uploaded before hermes runs.
+_TASKSPECS_DIR = Path(__file__).resolve().parent.parent / "data" / "taskspecs"
+
+# Files skipped during upload (OS junk / lock files).
+_SKIP_NAMES = frozenset({".DS_Store", "Thumbs.db"})
+
+
+def _upload_workspace(sb: Any, record_id: str) -> int:
+    """Upload ``data/taskspecs/<record_id>/files/`` into the sandbox.
+
+    Preserves the directory structure (relative paths).  Junk files
+    (.DS_Store, Thumbs.db, ~$* lock files) are skipped.  Returns the
+    number of files uploaded (0 if the taskspec has no files/ dir).
+    """
+    src = _TASKSPECS_DIR / record_id / "files"
+    if not src.is_dir():
+        return 0
+
+    entries: list[dict[str, Any]] = []
+    for fpath in sorted(src.rglob("*")):
+        if not fpath.is_file():
+            continue
+        name = fpath.name
+        if name in _SKIP_NAMES or name.startswith("~$"):
+            continue
+        rel = str(fpath.relative_to(src))
+        entries.append({"path": rel, "data": fpath.read_bytes()})
+
+    if entries:
+        # write_files accepts list[WriteEntry] where WriteEntry = {"path": str, "data": bytes}.
+        sb._sb.files.write_files(entries)  # type: ignore[union-attr]
+    return len(entries)
+
+
+# --------------------------------------------------------------------------- #
 # Reward                                                                       #
 # --------------------------------------------------------------------------- #
 
@@ -220,6 +263,49 @@ def _judge_reward(traj: SlotTrajectory, query: str) -> float:
     return float(aggregate(verdict))
 
 
+def _run_one_collect_query(
+    task: dict[str, Any],
+    qi: int,
+    *,
+    actor: str,
+    actor_model: str,
+    actor_base: str,
+    max_turns: int,
+    slot_timeout: int,
+    backend: str,
+    template: str,
+) -> SlotTrajectory:
+    """Full lifecycle for ONE query in collect mode: spawn → upload → hermes → destroy.
+
+    Each query gets its own sandbox so workspace files don't collide across tasks.
+    Returns a SlotTrajectory (slot_idx always 0, exactly one row per query).
+    """
+    query = task["query"]
+    record_id = task.get("record_id", "")
+    bucket = task.get("bucket", "")
+    sb = make_sandbox(backend, template=template, timeout=slot_timeout)
+    sid = getattr(sb, "_sandbox_id", "")
+    try:
+        if record_id:
+            n = _upload_workspace(sb, record_id)
+            if n:
+                print(f"  q{qi}: uploaded {n} ws files ({record_id})", flush=True)
+        t = _run_hermes_slot(sb, query, actor_model, actor_base, max_turns, slot_timeout)
+    except Exception as exc:  # noqa: BLE001
+        t = SlotTrajectory(query_index=qi, slot_idx=0, sandbox_id=sid,
+                           error=f"{type(exc).__name__}: {exc}")
+    finally:
+        try:
+            sb.kill()
+        except Exception:  # noqa: BLE001
+            pass
+    t.query_index = qi
+    t.slot_idx = 0
+    t.sandbox_id = sid
+    t.bucket = bucket
+    return t
+
+
 # --------------------------------------------------------------------------- #
 # The 8-way GRPO session driver                                                #
 # --------------------------------------------------------------------------- #
@@ -229,16 +315,73 @@ def run_session(
     *,
     tasks: list[dict[str, Any]],
     actor: str,
-    slots: int,
-    backend: str,
-    template: str,
-    actor_model: str,
-    actor_base: str,
-    max_turns: int,
-    slot_timeout: int,
-    out_dir: Path,
+    mode: str = "grpo",
+    slots: int = 8,
+    backend: str = "e2b",
+    template: str = "agentic-cl-sandbox",
+    actor_model: str = "gpt-5.1",
+    actor_base: str = "",
+    max_turns: int = 8,
+    slot_timeout: int = 180,
+    out_dir: Path = Path("rollouts/grpo"),
+    max_concurrent: int = 1,
 ) -> dict[str, Any]:
-    """Run one 8-way GRPO session over `tasks`. Returns a summary dict."""
+    """Run one session over `tasks`.
+
+    When ``max_concurrent <= 1`` (default), runs queries sequentially with
+    sandbox reuse (original GRPO path).  When ``max_concurrent > 1``, runs
+    queries in parallel — each query gets its own sandbox lifecycle (spawn →
+    upload workspace → hermes → destroy) — suitable for cold-start collection
+    where each task has different workspace files.
+    """
+    # ── parallel path (cold-start collection) ──────────────────────────
+    if max_concurrent > 1:
+        if actor != "hermes":
+            raise ValueError("parallel mode requires --actor hermes")
+        total = len(tasks)
+        done = 0
+        t0 = time.time()
+        all_rows: list[SlotTrajectory] = []
+
+        def _run_one(task_idx: int) -> SlotTrajectory:
+            nonlocal done
+            t = _run_one_collect_query(
+                tasks[task_idx], task_idx,
+                actor=actor, actor_model=actor_model, actor_base=actor_base,
+                max_turns=max_turns, slot_timeout=slot_timeout,
+                backend=backend, template=template,
+            )
+            done += 1
+            if done % max(1, total // 20) == 0:
+                print(f"[collect] {done}/{total} queries done ({done/max(1e-9,time.time()-t0):.1f}/s)", flush=True)
+            return t
+
+        print(f"[collect] parallel mode: {total} queries, {max_concurrent} concurrent", flush=True)
+        with ThreadPoolExecutor(max_workers=max_concurrent) as ex:
+            all_rows = list(ex.map(_run_one, range(total)))
+        all_rows = [r for r in all_rows if r is not None]
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / f"grpo_{actor}.jsonl"
+        with open(out_file, "w", encoding="utf-8") as fh:
+            for t in all_rows:
+                fh.write(t.to_jsonl() + "\n")
+
+        ok = sum(1 for t in all_rows if not t.error)
+        err = sum(1 for t in all_rows if t.error)
+        elapsed = time.time() - t0
+        print(f"[collect] DONE {total} queries in {elapsed:.0f}s ({total/max(1,elapsed):.1f}/s) ok={ok} err={err}", flush=True)
+        summary = {
+            "actor": actor, "mode": mode, "max_concurrent": max_concurrent,
+            "num_queries": total, "ok": ok, "errors": err,
+            "out_file": str(out_file),
+        }
+        manifest = out_dir / "manifest.json"
+        with open(manifest, "w", encoding="utf-8") as fh:
+            json.dump(summary, fh, ensure_ascii=False, indent=2)
+        return summary
+
+    # ── sequential path (GRPO / single-query debug) ────────────────────
     all_rows: list[SlotTrajectory] = []
     winners: list[int] = []  # winner slot idx per query
     per_query_rewards: list[list[float]] = []
@@ -262,16 +405,22 @@ def run_session(
     try:
         for qi, task in enumerate(tasks):
             query = task["query"]
+            record_id = task.get("record_id", "")
+            bucket = task.get("bucket", "")
             expected = task.get("expected")
             t_q = time.time()
             print(f"\n[grpo] === query {qi+1}/{len(tasks)}: {query[:70]} ===", flush=True)
 
             # 8 parallel rollouts. _rollout takes qi/query/task explicitly so the
             # closure does not capture the loop variable (ruff B023).
-            def _rollout(slot_idx: int, _qi: int = qi, _query: str = query, _task: dict[str, Any] = task) -> SlotTrajectory:
+            def _rollout(slot_idx: int, _qi: int = qi, _query: str = query, _task: dict[str, Any] = task, _rid: str = record_id, _bucket: str = bucket) -> SlotTrajectory:
                 sb = sandbox_specs[slot_idx]
                 try:
                     if actor == "hermes":
+                        if _rid:
+                            n = _upload_workspace(sb, _rid)
+                            if n:
+                                print(f"  slot{slot_idx}: uploaded {n} workspace files for {_rid}", flush=True)
                         t = _run_hermes_slot(sb, _query, actor_model, actor_base, max_turns, slot_timeout)
                     else:
                         t = _run_run_code_slot(sb, _task, slot_timeout)
@@ -280,43 +429,58 @@ def run_session(
                                        sandbox_id=getattr(sb, "_sandbox_id", ""), error=f"{type(exc).__name__}: {exc}")
                 t.query_index = _qi
                 t.slot_idx = slot_idx
+                t.bucket = _bucket
                 return t
 
             with ThreadPoolExecutor(max_workers=slots) as ex:
                 trajs = list(ex.map(_rollout, range(slots)))
             trajs.sort(key=lambda t: t.slot_idx)
 
-            # reward
-            for t in trajs:
-                if t.error:
-                    t.reward = 0.0
-                elif actor == "run_code" and expected is not None:
-                    t.reward = _exact_match_reward(t, expected)
-                else:
-                    try:
-                        t.reward = _judge_reward(t, query)
-                    except Exception as exc:  # noqa: BLE001 -- judge failure -> 0, not crash
+            # reward (skip in collect mode)
+            if mode == "collect":
+                for t in trajs:
+                    t.reward = None
+                rewards = [0.0] * len(trajs)
+            else:
+                for t in trajs:
+                    if t.error:
                         t.reward = 0.0
-                        t.error = (t.error + " | " if t.error else "") + f"judge: {exc}"
+                    elif actor == "run_code" and expected is not None:
+                        t.reward = _exact_match_reward(t, expected)
+                    else:
+                        try:
+                            t.reward = _judge_reward(t, query)
+                        except Exception as exc:  # noqa: BLE001 -- judge failure -> 0, not crash
+                            t.reward = 0.0
+                            t.error = (t.error + " | " if t.error else "") + f"judge: {exc}"
+                rewards = [t.reward if t.reward is not None else 0.0 for t in trajs]
 
-            rewards = [t.reward if t.reward is not None else 0.0 for t in trajs]
             per_query_rewards.append(rewards)
 
-            # GRPO advantage + winner
-            advs = grpo_advantages(rewards)
-            for t, a in zip(trajs, advs, strict=True):
-                t.advantage = a
-            try:
-                widx = select_winner(rewards, [t.sandbox_id or f"q{qi}-s{t.slot_idx}" for t in trajs])
-            except ValueError:
-                widx = 0
-            trajs[widx].is_winner = True
-            winners.append(widx)
+            # GRPO advantage + winner (skip in collect mode)
+            if mode == "collect":
+                for t in trajs:
+                    t.advantage = None
+                widx = -1  # no winner
+            else:
+                advs = grpo_advantages(rewards)
+                for t, a in zip(trajs, advs, strict=True):
+                    t.advantage = a
+                try:
+                    widx = select_winner(rewards, [t.sandbox_id or f"q{qi}-s{t.slot_idx}" for t in trajs])
+                except ValueError:
+                    widx = 0
+                trajs[widx].is_winner = True
+                winners.append(widx)
 
             for t in trajs:
-                mark = " <-- WINNER" if t.is_winner else ""
-                print(f"  slot{t.slot_idx}: reward={t.reward} adv={t.advantage:+.2f} "
-                      f"ans={t.answer[:30]!r} sid={t.sandbox_id[:12]}{mark}", flush=True)
+                if mode == "collect":
+                    print(f"  slot{t.slot_idx}: ans={t.answer[:40]!r} sid={t.sandbox_id[:12]}"
+                          f"{' ERR='+t.error[:40] if t.error else ''}", flush=True)
+                else:
+                    mark = " <-- WINNER" if t.is_winner else ""
+                    print(f"  slot{t.slot_idx}: reward={t.reward} adv={t.advantage:+.2f} "
+                          f"ans={t.answer[:30]!r} sid={t.sandbox_id[:12]}{mark}", flush=True)
             all_rows.extend(trajs)
             print(f"[grpo] query {qi+1} done in {time.time()-t_q:.1f}s, winner=slot{widx}", flush=True)
     finally:
@@ -337,11 +501,12 @@ def run_session(
 
     summary = {
         "actor": actor,
+        "mode": mode,
         "slots": slots,
         "num_queries": len(tasks),
-        "winners": winners,
+        "winners": winners if mode != "collect" else [],
         "per_query_rewards": per_query_rewards,
-        "mean_reward": sum(r for t in all_rows for r in [t.reward or 0.0]) / max(1, len(all_rows)),
+        "mean_reward": sum(r for t in all_rows for r in [t.reward or 0.0]) / max(1, len(all_rows)) if mode != "collect" else None,
         "out_file": str(out_file),
     }
     manifest = out_dir / "manifest.json"
@@ -350,31 +515,63 @@ def run_session(
     return summary
 
 
+def _load_queries(queries_path: str, num_queries: int | None) -> list[dict[str, Any]]:
+    """Load tasks from a queries JSONL (output of taskspec_to_queries.py).
+
+    Each line: {"record_id": "...", "queries": ["q1", ...]}. Takes queries[0] as
+    the seed query; record_id is stashed in the task dict for traceability.
+    """
+    tasks: list[dict[str, Any]] = []
+    with open(queries_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            qs = obj.get("queries") or []
+            if not qs:
+                continue
+            tasks.append({
+                "query": qs[0],
+                "record_id": obj.get("record_id", ""),
+                "bucket": obj.get("bucket", ""),
+            })
+            if num_queries is not None and len(tasks) >= num_queries:
+                break
+    return tasks
+
+
 def _load_tasks(tasks_path: str | None, num_queries: int) -> list[dict[str, Any]]:
-    if tasks_path:
-        tasks = []
-        with open(tasks_path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    tasks.append(json.loads(line))
-        return tasks[:num_queries] if num_queries else tasks
-    return _DEFAULT_TASKS[:num_queries]
+    """Load tasks from a JSONL file; raises if no path is given."""
+    if not tasks_path:
+        raise SystemExit("ERROR: --tasks <jsonl> or --queries <jsonl> is required (no built-in defaults).")
+    tasks = []
+    with open(tasks_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                tasks.append(json.loads(line))
+    return tasks[:num_queries] if num_queries else tasks
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--actor", choices=["hermes", "run_code"], default="run_code",
                     help="run_code = framework smoke (no model); hermes = real in-sandbox actor")
+    ap.add_argument("--mode", choices=["grpo", "collect"], default="grpo",
+                    help="grpo = full judge+winner; collect = pure trajectory collection (no judge/winner)")
     ap.add_argument("--num-queries", type=int, default=2, help="N queries (sequential)")
     ap.add_argument("--slots", type=int, default=8, help="parallel sandboxes per query (GRPO group size)")
     ap.add_argument("--backend", default="e2b", choices=["e2b", "local"])
     ap.add_argument("--template", default="agentic-cl-sandbox")
-    ap.add_argument("--tasks", help="JSONL of {query[, expected]} per line (default: built-in arithmetic)")
+    ap.add_argument("--tasks", help="JSONL of {query[, expected]} per line (required unless --queries given)")
+    ap.add_argument("--queries", help="JSONL of {record_id, queries:[q1,...]} per line (collect mode; takes queries[0])")
     ap.add_argument("--actor-model", default="gpt-5.1", help="hermes model name (hermes actor)")
     ap.add_argument("--actor-base", default="", help="override AGENT_MODEL_BASE (else runtime env)")
     ap.add_argument("--max-turns", type=int, default=8, help="hermes ReAct turn cap")
     ap.add_argument("--slot-timeout", type=int, default=180, help="per-slot hermes timeout (s)")
+    ap.add_argument("--max-concurrent", type=int, default=1,
+                    help="parallel queries (cold-start mode: each query = own sandbox lifecycle)")
     ap.add_argument("--out-dir", default="rollouts/grpo")
     args = ap.parse_args()
 
@@ -399,8 +596,13 @@ def main() -> None:
               file=sys.stderr)
         sys.exit(2)
 
-    tasks = _load_tasks(args.tasks, args.num_queries)
-    print(f"[grpo] actor={args.actor} slots={args.slots} num_queries={len(tasks)} "
+    tasks: list[dict[str, Any]]
+    if args.queries:
+        tasks = _load_queries(args.queries, args.num_queries)
+        print(f"[grpo] loaded {len(tasks)} queries from {args.queries}", flush=True)
+    else:
+        tasks = _load_tasks(args.tasks, args.num_queries)
+    print(f"[grpo] actor={args.actor} mode={args.mode} slots={args.slots} num_queries={len(tasks)} "
           f"backend={args.backend} template={args.template}", flush=True)
     if args.actor == "hermes":
         print(f"[grpo] in-sandbox hermes -> model={args.actor_model} base={actor_base}", flush=True)
@@ -409,6 +611,7 @@ def main() -> None:
     summary = run_session(
         tasks=tasks,
         actor=args.actor,
+        mode=args.mode,
         slots=args.slots,
         backend=args.backend,
         template=args.template,
@@ -417,11 +620,14 @@ def main() -> None:
         max_turns=args.max_turns,
         slot_timeout=args.slot_timeout,
         out_dir=Path(args.out_dir),
+        max_concurrent=args.max_concurrent,
     )
     print(f"\n[grpo] DONE in {time.time()-t0:.0f}s")
-    print(f"  winners per query: {summary['winners']}")
-    print(f"  mean reward: {summary['mean_reward']:.3f}")
-    print(f"  trajectories -> {summary['out_file']}")
+    if args.mode == "collect":
+        print(f"  trajectories -> {summary['out_file']}")
+    else:
+        print(f"  winners per query: {summary['winners']}")
+        print(f"  mean reward: {summary['mean_reward']:.3f}")
     print(f"  manifest     -> {Path(args.out_dir)/'manifest.json'}")
 
 
