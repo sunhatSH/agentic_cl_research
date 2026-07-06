@@ -42,6 +42,31 @@ _STATIC_MAP: dict[str, str] = {
 }
 
 
+# ── Stage 1: queries generation + LLM classify ──────────────────────────
+
+
+def _ensure_sufy_key() -> None:
+    """Ensure SUFY_API_KEY is set for classify.py (reads AGENT_MODEL_KEY or runtime.env)."""
+    import os
+
+    if os.environ.get("SUFY_API_KEY", "").strip():
+        return
+    key = os.environ.get("AGENT_MODEL_KEY", "").strip()
+    if key:
+        os.environ["SUFY_API_KEY"] = key
+        return
+    env_file = _REPO / "docker" / "sandbox" / "runtime.env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() == "AGENT_MODEL_KEY" and v.strip().strip('"').strip("'"):
+                os.environ["SUFY_API_KEY"] = v.strip().strip('"').strip("'")
+                return
+
+
 def _load_one_taskspec(subdir: Path) -> dict[str, Any] | None:
     import yaml
 
@@ -103,6 +128,7 @@ def stage_queries(*, classify: bool, classify_workers: int = 16) -> int:
 
     # 1b — classify
     if classify:
+        _ensure_sufy_key()
         from data_pipeline.classify import make_default_client
 
         client = make_default_client()
