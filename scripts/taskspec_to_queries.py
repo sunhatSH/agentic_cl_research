@@ -25,6 +25,8 @@ from typing import Any
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 # 9 桶（与 replay_buffer / configs/base.yaml 对齐，仅用于统计打印）
 CANONICAL_BUCKETS = [
     "workflow", "ops", "qa", "finance", "office",
@@ -100,6 +102,20 @@ def convert(taskspecs_dir: Path, output: Path, limit: int | None, *, classify: b
 
     client = None
     if classify:
+        # Ensure SUFY_API_KEY is set (reads AGENT_MODEL_KEY from runtime.env)
+        import os as _os
+        if not _os.environ.get("SUFY_API_KEY", "").strip():
+            env_file = Path(__file__).resolve().parent.parent / "docker" / "sandbox" / "runtime.env"
+            if env_file.is_file():
+                for line in env_file.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    if k.strip() == "AGENT_MODEL_KEY" and v.strip().strip('"').strip("'"):
+                        _os.environ["SUFY_API_KEY"] = v.strip().strip('"').strip("'")
+                        break
+
         from data_pipeline.classify import classify_query, make_default_client
 
         client = make_default_client()
@@ -159,7 +175,7 @@ def convert(taskspecs_dir: Path, output: Path, limit: int | None, *, classify: b
             elif client is not None:
                 verdict = classify_query(queries[0], client)
                 row["bucket"] = verdict.get("bucket", "unknown")
-                row["sub_bucket"] = verdict.get("sub_bucket")
+                row["sub_bucket"] = None  # taskspecs 无官方 category，子桶留空
                 row["bucket_rationale"] = verdict.get("rationale", "")
                 if verdict.get("ok"):
                     stats["classified_ok"] += 1

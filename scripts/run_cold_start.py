@@ -198,9 +198,12 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
     total = len(tasks)
     print(f"\n  collection: {total} queries, {max_concurrent} concurrent sandboxes")
 
-    all_rows = []
     ok = err = 0
     t0 = time.time()
+
+    _OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_file = _OUT_DIR / "grpo_hermes.jsonl"
+    fh = open(out_file, "w", encoding="utf-8")  # incremental write, flush every N rows
 
     with ThreadPoolExecutor(max_workers=max_concurrent) as ex:
         futures = {
@@ -216,23 +219,19 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
         with tqdm(total=total, desc="Sandbox collecting", unit="traj", smoothing=0.01) as pbar:
             for fut in as_completed(futures):
                 traj = fut.result()
-                all_rows.append(traj)
                 if traj and traj.error:
                     err += 1
                 else:
                     ok += 1
+                fh.write(traj.to_jsonl() + "\n")
+                if ok % 100 == 0:
+                    fh.flush()
                 pbar.set_postfix(ok=ok, err=err, refresh=False)
                 pbar.update(1)
 
+    fh.close()
     elapsed = time.time() - t0
     print(f"  done in {elapsed:.0f}s  ok={ok}  err={err}  ({total/max(1,elapsed):.1f} traj/s)")
-
-    _OUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_file = _OUT_DIR / "grpo_hermes.jsonl"
-    with open(out_file, "w", encoding="utf-8") as fh:
-        for t in all_rows:
-            if t is not None:
-                fh.write(t.to_jsonl() + "\n")
 
     manifest = {
         "actor": "hermes", "mode": "collect", "max_concurrent": max_concurrent,
