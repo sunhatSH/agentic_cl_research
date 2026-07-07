@@ -139,7 +139,7 @@ class E2BSandbox:
     on 2026-06-26 (see doc/sandbox/Sandbox_规格与run_code踩坑.md §四).
     """
 
-    def __init__(self, template: str = "agentic-cl-code-interpreter", timeout: int = 300):
+    def __init__(self, template: str = "agentic-cl-code-interpreter", timeout: int = 600):
         import os
 
         api_key = os.environ.get("E2B_API_KEY")
@@ -202,7 +202,7 @@ class AliyunSandbox:
     available for the observer's read-only state probing (see CLAUDE.md TODO#5).
     """
 
-    def __init__(self, image_id: str = "code_latest", timeout: int = 300):
+    def __init__(self, image_id: str = "code_latest", timeout: int = 600):
         raise NotImplementedError(
             "AliyunSandbox is a stub (留空): the SandboxClient interface + registry are "
             "ready, only this vendor body is unimplemented. Fill it in on the cluster "
