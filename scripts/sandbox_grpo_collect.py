@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -116,11 +117,20 @@ def _write_hermes_config(sb: Any, model: str, base: str) -> ExecResult:
     return sb.run_code(code)
 
 
-def _hermes_chat(sb: Any, query: str, model: str, hermes_max_turns: int, timeout: int) -> tuple[str, str, bool]:
-    """Run one `hermes chat -q <query>` in the sandbox; return (stdout, stderr, ok).
+_SESSION_ID_RE = re.compile(r"session_id:\s*(\S+)")
 
-    The sandbox filesystem is persistent across calls, so successive queries on
-    the SAME sandbox see files written by earlier turns (multi-turn support).
+
+def _hermes_chat(
+    sb: Any, query: str, model: str, hermes_max_turns: int, timeout: int,
+    resume_sid: str | None = None,
+) -> tuple[str, str, bool, str | None]:
+    """Run one `hermes chat -q <query>` in the sandbox.
+
+    Returns (stdout, stderr, ok, session_id). The sandbox filesystem is
+    persistent across calls, so successive queries on the SAME sandbox see files
+    written by earlier turns. Passing ``resume_sid`` (from a prior turn's stderr)
+    resumes hermes' OWN conversation memory via ``--resume`` — so the actor keeps
+    its reasoning context across turns, not just the sandbox file state.
     """
     import shlex
 
@@ -128,11 +138,16 @@ def _hermes_chat(sb: Any, query: str, model: str, hermes_max_turns: int, timeout
         f"hermes chat -q {shlex.quote(query)} -m {shlex.quote(model)} "
         f"--provider agent -Q --max-turns {hermes_max_turns} --yolo"
     )
+    if resume_sid:
+        cmd += f" --resume {shlex.quote(resume_sid)}"
     try:
         out = sb._sb.commands.run(cmd, timeout=timeout)  # type: ignore[union-attr]
-        return (out.stdout or "").strip(), (out.stderr or "").strip(), out.exit_code == 0
+        stdout, stderr = (out.stdout or "").strip(), (out.stderr or "").strip()
+        m = _SESSION_ID_RE.search(stderr)
+        sid = m.group(1) if m else None
+        return stdout, stderr, out.exit_code == 0, sid
     except Exception as exc:  # noqa: BLE001 — isolate slot failures
-        return "", f"{type(exc).__name__}: {exc}", False
+        return "", f"{type(exc).__name__}: {exc}", False, None
 
 
 def _run_hermes_slot(sb: Any, query: str, model: str, base: str, hermes_max_turns: int, timeout: int) -> SlotTrajectory:
@@ -147,7 +162,7 @@ def _run_hermes_slot(sb: Any, query: str, model: str, base: str, hermes_max_turn
         traj.error = f"hermes config write failed: {cfg.stderr[:200]}"
         return traj
 
-    stdout, stderr, ok = _hermes_chat(sb, query, model, hermes_max_turns, timeout)
+    stdout, stderr, ok, _sid = _hermes_chat(sb, query, model, hermes_max_turns, timeout)
     if not stdout and not ok and stderr.startswith(("TimeoutException", "Exception", "RuntimeError")):
         traj.error = stderr[:200]
         return traj
@@ -339,10 +354,17 @@ def _run_one_collect_query(
         turn = 0
         ended_by = "k_budget"
         cur_query: str | None = query
+        session_sid: str | None = None   # hermes session id, threaded across turns for --resume
 
         while cur_query is not None:
             turn += 1
-            stdout, stderr, ok = _hermes_chat(sb, cur_query, actor_model, hermes_max_turns, slot_timeout)
+            # Resume hermes' own conversation memory from turn 2 onward.
+            stdout, stderr, ok, sid = _hermes_chat(
+                sb, cur_query, actor_model, hermes_max_turns, slot_timeout,
+                resume_sid=session_sid,
+            )
+            if sid:
+                session_sid = sid   # carry forward for next turn's --resume
             all_messages.append({"role": "user", "content": cur_query})
             all_messages.append({"role": "assistant", "content": stdout})
             if stderr:
