@@ -334,6 +334,7 @@ def _run_one_collect_query(
     import random as _random
 
     from agents.personas import PERSONAS, sample_persona
+    from agents.questioner import PatienceTracker
 
     query = task["query"]
     record_id = task.get("record_id", "")
@@ -368,6 +369,8 @@ def _run_one_collect_query(
         if persona is not None:
             t.persona_name = persona.name
 
+        patience_tracker = PatienceTracker(persona, rng) if (multiturn and persona) else None
+
         baseline = observer.snapshot(sb) if multiturn else None
         turn = 0
         ended_by = "k_budget"
@@ -387,6 +390,7 @@ def _run_one_collect_query(
             if stderr:
                 all_messages.append({"role": "system", "content": f"[stderr] {stderr[:300]}"})
 
+            # Hard failure on first turn: session-ending (not worth retrying).
             if turn == 1 and not stdout and not ok:
                 t.error = stderr[:200] or "hermes produced no output"
                 ended_by = "agent_error"
@@ -396,14 +400,24 @@ def _run_one_collect_query(
                 ended_by = "k_budget"
                 break
 
+            # Determine if this turn failed (no output, or error)
+            turn_failed = (not ok and not stdout)
+
             # observer: diff-driven objective report (state only, no judge).
             try:
                 post = observer.snapshot(sb)
                 report = observer.observe(sb, actor_trajectory=all_messages, baseline=baseline, post=post)
                 baseline = post
             except Exception as exc:  # noqa: BLE001
-                ended_by = "agent_error"
+                turn_failed = True
                 all_messages.append({"role": "system", "content": f"[observer_error] {exc}"})
+
+            if turn_failed and patience_tracker is not None:
+                # Patience-based redo: P_k = P0 * r^k, P ≤ 0.1 → stop.
+                if patience_tracker.on_failure():
+                    all_messages.append({"role": "system", "content": "[redo] retrying failed turn"})
+                    continue  # re-run the SAME query (cur_query unchanged)
+                ended_by = "patience_exhausted"
                 break
 
             # Only Questioner controls the loop: follow-up → continue; None → stop.
