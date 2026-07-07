@@ -378,12 +378,12 @@ def _run_one_collect_query(
         while cur_query is not None:
             turn += 1
             # Resume hermes' own conversation memory from turn 2 onward.
-            stdout, stderr, ok, sid = _hermes_chat(
+            stdout, stderr, ok, hsid = _hermes_chat(
                 sb, cur_query, actor_model, hermes_max_turns, slot_timeout,
                 resume_sid=session_sid,
             )
-            if sid:
-                session_sid = sid   # carry forward for next turn's --resume
+            if hsid:
+                session_sid = hsid   # carry forward for next turn's --resume
             all_messages.append({"role": "user", "content": cur_query})
             all_messages.append({"role": "assistant", "content": stdout})
             if stderr:
