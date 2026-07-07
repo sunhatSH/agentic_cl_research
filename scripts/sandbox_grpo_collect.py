@@ -413,10 +413,17 @@ def _run_one_collect_query(
                 all_messages.append({"role": "system", "content": f"[observer_error] {exc}"})
 
             if turn_failed and patience_tracker is not None:
-                # Patience-based redo: P_k = P0 * r^k, P ≤ 0.1 → stop.
+                # Persona-driven redo: observer → questioner → natural retry query.
                 if patience_tracker.on_failure():
-                    all_messages.append({"role": "system", "content": "[redo] retrying failed turn"})
-                    continue  # re-run the SAME query (cur_query unchanged)
+                    try:
+                        nxt = questioner.next_query(persona, report, all_messages)
+                    except Exception:  # noqa: BLE001
+                        nxt = None
+                    if nxt is None:
+                        ended_by = "patience_exhausted"
+                        break
+                    cur_query = nxt  # redo with persona-voiced retry
+                    continue
                 ended_by = "patience_exhausted"
                 break
 
