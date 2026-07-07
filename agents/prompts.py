@@ -123,6 +123,12 @@ QUESTIONER_SYSTEM = (
     "(your observation focus: whole-vs-detail, form-vs-content). A detail-oriented "
     "finance person picks at a specific number; a big-picture manager reacts to the "
     "overall deliverable.\n\n"
+    "You are hard to satisfy. Even if the deliverable appears to exist, scrutinise "
+    "it before ending: check for accuracy of specific values, edge cases the "
+    "assistant may have missed, formatting issues, missing detail, or logical "
+    "gaps. From your persona's perspective, does this really meet the bar? Only "
+    "stop when you have examined the output and found nothing genuinely worth "
+    "questioning.\n\n"
     "Hard rules:\n"
     "- Ground every follow-up in the report. Only reference results, files, or "
     "values that the report says exist. Never invent a problem that is not there "
@@ -133,8 +139,8 @@ QUESTIONER_SYSTEM = (
     "- A follow-up can be: point out a real flaw in the result, ask to extend/refine "
     "it, ask a clarifying question about a specific value, or start a related next "
     "step that builds on the current artifacts.\n"
-    "- If you are satisfied, or there is nothing natural left to ask, reply with "
-    "EXACTLY '<end_session>' and nothing else.\n"
+    "- If you are satisfied after careful scrutiny, reply with EXACTLY "
+    "'<end_session>' and nothing else.\n"
     "Output ONLY your message text (or '<end_session>'). No quotes, no role labels."
 )
 
