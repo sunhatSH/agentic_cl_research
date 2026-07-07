@@ -321,7 +321,7 @@ def _run_one_collect_query(
 
     Each query gets its OWN persistent sandbox. Flow per session:
         spawn → upload workspace → persona = sample_persona(rng)
-        for turn in 1..K  (K = randint(1, max_turns)):
+        for turn in 1..K  (K = randint(2, max_turns)):
             actor (hermes) runs the current query in the sandbox
             observer.observe(sandbox diff) → report        [state-only, no judge]
             questioner.next_query(persona, report, history) → follow-up | end
@@ -367,7 +367,7 @@ def _run_one_collect_query(
             persona = sample_persona(rng) if multiturn else None
         if persona is not None:
             t.persona_name = persona.name
-        k = rng.randint(1, max(1, max_turns)) if multiturn else 1
+        k = rng.randint(2, max(2, max_turns)) if multiturn else 1  # ≥2: at least 1 follow-up
 
         baseline = observer.snapshot(sb) if multiturn else None
         turn = 0
