@@ -92,7 +92,8 @@ class Questioner:
 class PatienceTracker:
     """Per-session patience over FAILED winner turns (§3.6.5).
 
-    Multiplicative decay: P_k = P0 * (1 - r)^k    (k = failed turns)
+    Multiplicative decay with retention rate r (close to 1):
+        P_k = P0 * r^k        (k = failed turns so far)
 
     Decision after the k-th failure:
       - P ≤ 0.01  → always stop (exhausted)
@@ -109,8 +110,8 @@ class PatienceTracker:
         self.fail_count = 0
 
     def current_patience(self) -> float:
-        """P_k after k failures: P0 * (1-r)^k."""
-        return self.p0 * (1 - self.r) ** self.fail_count
+        """P_k after k failures: P0 * r^k."""
+        return self.p0 * self.r ** self.fail_count
 
     def on_failure(self) -> bool:
         """Register a failed turn; return True to REDO, False to end session.
