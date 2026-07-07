@@ -333,7 +333,7 @@ def _run_one_collect_query(
     """
     import random as _random
 
-    from agents.personas import sample_persona
+    from agents.personas import PERSONAS, sample_persona
 
     query = task["query"]
     record_id = task.get("record_id", "")
@@ -358,7 +358,13 @@ def _run_one_collect_query(
             return t
 
         multiturn = observer is not None and questioner is not None
-        persona = sample_persona(rng) if multiturn else None
+        # Pre-assigned persona (from queries.jsonl) > random
+        pinned_name = task.get("persona_name", "random")
+        if multiturn and pinned_name not in ("", "random"):
+            target = next((p for p in PERSONAS if p.name == pinned_name), None)
+            persona = target if target is not None else sample_persona(rng)
+        else:
+            persona = sample_persona(rng) if multiturn else None
         if persona is not None:
             t.persona_name = persona.name
         k = rng.randint(1, max(1, max_turns)) if multiturn else 1
@@ -663,6 +669,7 @@ def _load_queries(queries_path: str, num_queries: int | None) -> list[dict[str, 
                 "query": qs[0],
                 "record_id": obj.get("record_id", ""),
                 "bucket": obj.get("bucket", ""),
+                "persona_name": obj.get("persona_name", "random"),
             })
             if num_queries is not None and len(tasks) >= num_queries:
                 break

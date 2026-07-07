@@ -98,6 +98,54 @@ def _load_one_taskspec(subdir: Path) -> dict[str, Any] | None:
 
 # ── Stage 1: queries generation + LLM classify ──────────────────────────
 
+_PERSONA_CACHE: list[dict] | None = None
+
+
+def _load_persona_catalog() -> list[dict]:
+    """Load persona summary (name, profession, focus, tone) from agents/personas.json."""
+    global _PERSONA_CACHE
+    if _PERSONA_CACHE is not None:
+        return _PERSONA_CACHE
+    catalog: list[dict] = []
+    for p in json.loads((_REPO / "agents" / "personas.json").read_text(encoding="utf-8"))["personas"]:
+        catalog.append({
+            "name": p["name"],
+            "profession": p["profession"],
+            "focus": p.get("observation_focus", ""),
+            "tone": p.get("tone", "neutral"),
+        })
+    _PERSONA_CACHE = catalog
+    return catalog
+
+
+def _pick_persona(query: str, catalog: list[dict], client: Any) -> str:
+    """LLM picks the best-matching persona; returns 'random' as fallback."""
+    options_text = "\n".join(
+        f'- {p["name"]} ({p["profession"]}, focus={p["focus"]}, tone={p["tone"]})'
+        for p in catalog
+    )
+    msgs = [
+        {"role": "system", "content": (
+            "你是一个任务-人设匹配器。给定一条给 AI agent 的用户任务，从候选人设列表里"
+            "选最匹配的那个。匹配原则：人设的职业和关注点应该最能'审阅'这个任务的产出"
+            "（比如财务任务选会计/银行家，安全任务选律师/合规，工程任务选运维/架构师，"
+            "写作任务选编辑/撰稿人）。只输出人设的 name 字段，不要其他文字。"
+        )},
+        {"role": "user", "content": f"任务：{query}\n\n候选人设：\n{options_text}\n\n输出人设 name："},
+    ]
+    try:
+        raw = client.chat(msgs, max_tokens=60)
+        name = raw.strip().strip('"').strip("'")
+        valid = {p["name"] for p in catalog}
+        if name in valid:
+            return name
+        for vn in valid:
+            if vn in raw:
+                return vn
+        return "random"
+    except Exception:  # noqa: BLE001
+        return "random"
+
 
 def _classify_one(rec: dict, client: Any) -> dict:
     """Classify one seed_query: static mapping (free) > LLM."""
@@ -164,6 +212,29 @@ def stage_queries(*, classify: bool, classify_workers: int = 16) -> int:
         records = classified
         print(f"  classify done: static={static_count}  LLM_ok={llm_ok}  LLM_unknown={llm_unknown}")
 
+        # 1b2 — persona assignment (parallel, same workers)
+        catalog = _load_persona_catalog()
+        persona_fixed = 0
+        persona_random = 0
+
+        def _assign_persona(rec: dict) -> dict:
+            nonlocal persona_fixed, persona_random
+            name = _pick_persona(rec["seed_query"], catalog, client)
+            rec["persona_name"] = name
+            if name != "random":
+                persona_fixed += 1
+            else:
+                persona_random += 1
+            return rec
+
+        with ThreadPoolExecutor(max_workers=classify_workers) as ex:
+            futures = {ex.submit(_assign_persona, rec): rec for rec in records}
+            with tqdm(total=len(records), desc="Picking personas", unit="q", smoothing=0.01) as pbar:
+                for fut in as_completed(futures):
+                    fut.result()
+                    pbar.update(1)
+        print(f"  persona: assigned={persona_fixed}  fallback_random={persona_random}")
+
     # 1c — write queries.jsonl
     _QUERIES_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(_QUERIES_PATH, "w", encoding="utf-8") as fh:
@@ -173,6 +244,7 @@ def stage_queries(*, classify: bool, classify_workers: int = 16) -> int:
                 "queries": [rec["seed_query"]] + rec.get("follow_ups", []),
                 "bucket": rec.get("bucket", ""),
                 "sub_bucket": rec.get("sub_bucket"),
+                "persona_name": rec.get("persona_name", "random"),
             }
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
