@@ -437,7 +437,7 @@ def main() -> None:
     ap.add_argument("--num-queries", type=int, default=100)
     ap.add_argument("--max-concurrent", type=int, default=32)
     ap.add_argument("--actor-model", default="openai/gpt-5")
-    ap.add_argument("--max-turns", type=int, default=5, help="session turn cap")
+    ap.add_argument("--max-turns", type=int, default=20, help="K_max: follow-up upper bound (§3.5 U{1..K_max})")
     ap.add_argument("--hermes-max-turns", type=int, default=30, help="hermes ReAct limit")
     ap.add_argument("--slot-timeout", type=int, default=900, help="per-sandbox timeout (s)")
     ap.add_argument("--collect-mode", choices=["overwrite", "incremental", "retry"],

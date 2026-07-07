@@ -367,7 +367,9 @@ def _run_one_collect_query(
             persona = sample_persona(rng) if multiturn else None
         if persona is not None:
             t.persona_name = persona.name
-        k = rng.randint(2, max(2, max_turns)) if multiturn else 1  # ≥2: at least 1 follow-up
+        # K ~ U{1..K_max} — uniform random per-session, no persona influence on budget.
+        # (Patience P0/d0 is for failure redo, not turn count — doc §3.6.5.)
+        k = rng.randint(1, max(1, max_turns)) if multiturn else 1
 
         baseline = observer.snapshot(sb) if multiturn else None
         turn = 0
