@@ -189,54 +189,128 @@ def stage_queries(*, classify: bool, classify_workers: int = 16) -> int:
 # ── Stage 2: sandbox collection ──────────────────────────────────────────
 
 
-def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
-                   max_turns: int, hermes_max_turns: int, slot_timeout: int) -> int:
-    """Run parallel sandbox collection — 1 slot per query, collect mode."""
+def _load_existing(out_file: Path) -> dict[int, dict]:
+    """Load existing trajectories keyed by query_index (empty if no file)."""
+    rows: dict[int, dict] = {}
+    if not out_file.exists():
+        return rows
+    with open(out_file, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                t = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            qi = t.get("query_index")
+            if qi is not None:
+                rows[qi] = t
+    return rows
 
+
+def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
+                   max_turns: int, hermes_max_turns: int, slot_timeout: int,
+                   mode: str = "overwrite") -> int:
+    """Run parallel sandbox collection — 1 slot per query.
+
+    Modes (which query_index to (re)run; success rows are NEVER re-run except
+    in overwrite):
+      - overwrite   : run ALL queries, replace the whole file.
+      - incremental : run queries that are MISSING or FAILED; keep existing
+                      successes untouched. Safe to resume an interrupted run.
+      - retry       : run ONLY existing FAILED rows; keep everything else.
+
+    In every mode the file is written by merging on query_index: a successful
+    new result replaces whatever was there; existing successes are preserved.
+    """
     from scripts.sandbox_grpo_collect import _load_queries, _run_one_collect_query
 
     tasks = _load_queries(str(_QUERIES_PATH), num_queries)
     total = len(tasks)
-    print(f"\n  collection: {total} queries, {max_concurrent} concurrent sandboxes")
-
-    ok = err = 0
-    t0 = time.time()
 
     _OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_file = _OUT_DIR / "grpo_hermes.jsonl"
-    fh = open(out_file, "w", encoding="utf-8")  # incremental write, flush every N rows
+
+    # Existing state (for incremental / retry merge).
+    existing = {} if mode == "overwrite" else _load_existing(out_file)
+
+    # Decide which query indices to run this pass.
+    if mode == "overwrite":
+        to_run = list(range(total))
+    elif mode == "incremental":
+        to_run = [i for i in range(total)
+                  if i not in existing or existing[i].get("error")]
+    elif mode == "retry":
+        to_run = [i for i in range(total)
+                  if i in existing and existing[i].get("error")]
+    else:
+        raise ValueError(f"unknown mode: {mode!r}")
+
+    print(f"\n  mode={mode}  total={total}  existing={len(existing)}  to_run={len(to_run)}")
+    print(f"  {max_concurrent} concurrent sandboxes")
+
+    if not to_run:
+        print("  nothing to run.")
+        return len(existing)
+
+    # merged holds the final state; start from existing (successes preserved).
+    merged: dict[int, dict] = dict(existing)
+    ok = err = 0
+    t0 = time.time()
+
+    def _flush() -> None:
+        """Rewrite the whole file from merged (atomic-ish: temp + rename)."""
+        tmp = out_file.with_suffix(".jsonl.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            for qi in sorted(merged):
+                f.write(json.dumps(merged[qi], ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(out_file)
 
     with ThreadPoolExecutor(max_workers=max_concurrent) as ex:
         futures = {
             ex.submit(
                 _run_one_collect_query,
-                t, i,
+                tasks[i], i,
                 actor="hermes", actor_model=actor_model, actor_base="",
                 max_turns=max_turns, hermes_max_turns=hermes_max_turns,
                 slot_timeout=slot_timeout, backend="e2b", template="agentic-cl-sandbox",
             ): i
-            for i, t in enumerate(tasks)
+            for i in to_run
         }
-        with tqdm(total=total, desc="Sandbox collecting", unit="traj", smoothing=0.01) as pbar:
+        with tqdm(total=len(to_run), desc=f"Collecting [{mode}]", unit="traj", smoothing=0.01) as pbar:
+            done = 0
             for fut in as_completed(futures):
                 traj = fut.result()
+                row = json.loads(traj.to_jsonl())
                 if traj and traj.error:
                     err += 1
+                    # In incremental/retry: only overwrite if there was no prior
+                    # success (a failed rerun must not clobber an old success —
+                    # but to_run already excludes successes, so this is safe).
+                    merged[traj.query_index] = row
                 else:
                     ok += 1
-                fh.write(traj.to_jsonl() + "\n")
-                fh.flush()          # flush every trajectory — never lose data on crash
-                os.fsync(fh.fileno())
+                    merged[traj.query_index] = row
+                done += 1
+                if done % 50 == 0:      # rewrite file every 50 completions
+                    _flush()
                 pbar.set_postfix(ok=ok, err=err, refresh=False)
                 pbar.update(1)
 
-    fh.close()
+    _flush()
     elapsed = time.time() - t0
-    print(f"  done in {elapsed:.0f}s  ok={ok}  err={err}  ({total/max(1,elapsed):.1f} traj/s)")
+    total_ok = sum(1 for t in merged.values() if not t.get("error"))
+    total_err = sum(1 for t in merged.values() if t.get("error"))
+    print(f"  done in {elapsed:.0f}s  this_pass(ok={ok} err={err})  "
+          f"file_total(ok={total_ok} err={total_err})  ({len(to_run)/max(1,elapsed):.2f} traj/s)")
 
     manifest = {
-        "actor": "hermes", "mode": "collect", "max_concurrent": max_concurrent,
-        "num_queries": total, "ok": ok, "errors": err,
+        "actor": "hermes", "mode": mode, "max_concurrent": max_concurrent,
+        "num_queries": total, "ran_this_pass": len(to_run),
+        "file_ok": total_ok, "file_err": total_err,
         "elapsed_s": elapsed, "out_file": str(out_file),
     }
     (_OUT_DIR / "manifest.json").write_text(
@@ -244,7 +318,7 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
     )
     print(f"  → {out_file}")
 
-    return ok + err
+    return len(merged)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
@@ -260,7 +334,10 @@ def main() -> None:
     ap.add_argument("--actor-model", default="openai/gpt-5")
     ap.add_argument("--max-turns", type=int, default=8, help="session turn cap")
     ap.add_argument("--hermes-max-turns", type=int, default=50, help="hermes ReAct limit")
-    ap.add_argument("--slot-timeout", type=int, default=600)
+    ap.add_argument("--slot-timeout", type=int, default=1200, help="per-sandbox timeout (s)")
+    ap.add_argument("--collect-mode", choices=["overwrite", "incremental", "retry"],
+                    default="incremental",
+                    help="overwrite=全跑覆盖; incremental=跳过已成功,跑缺失+失败; retry=只跑失败")
     ap.add_argument("--no-generate", action="store_true",
                     help="skip queries.jsonl regeneration (use existing file as-is)")
     args = ap.parse_args()
@@ -283,6 +360,7 @@ def main() -> None:
             max_turns=args.max_turns,
             hermes_max_turns=args.hermes_max_turns,
             slot_timeout=args.slot_timeout,
+            mode=args.collect_mode,
         )
 
     print(f"\n{'='*60}")
