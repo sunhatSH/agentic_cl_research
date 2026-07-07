@@ -94,7 +94,7 @@ class PatienceTracker:
 
     Patience decays with exponentially growing decrement:
 
-        P_k = P_0 - d_0 * (2^k - 1)        (cumulative after k failures)
+        P_k = P_0 - d_0 * (1.5^k - 1)        (cumulative after k failures)
 
     Decision after the k-th failure: redo with probability clip(P_k, 0, 1),
     else end the session. P_k < 0 clips to 0 -> always stop. Successful turns
@@ -111,7 +111,7 @@ class PatienceTracker:
     def current_patience(self) -> float:
         """P_k after the failures seen so far (k = fail_count)."""
         k = self.fail_count
-        return self.p0 - self.d0 * (2**k - 1)
+        return self.p0 - self.d0 * (1.5**k - 1)
 
     def on_failure(self) -> bool:
         """Register a failed turn; return True to REDO, False to end session.
