@@ -367,12 +367,6 @@ def _run_one_collect_query(
             persona = sample_persona(rng) if multiturn else None
         if persona is not None:
             t.persona_name = persona.name
-        # Patience-driven session control (§3.6.5): exponential decay every turn,
-        # replaces K=U{1,K_max} random sampling. P0 = willingness to engage;
-        # d0 = frustration speed. P ≤ 0 → definite end; else probabilistic.
-        p = float(persona.patience) if persona else 1.0
-        d0 = float(persona.patience_decay) if persona and persona.patience_decay else 0.1
-        patience_turns = 0
 
         baseline = observer.snapshot(sb) if multiturn else None
         turn = 0
@@ -402,16 +396,6 @@ def _run_one_collect_query(
                 ended_by = "k_budget"
                 break
 
-            # Patience decay: P_k = P_{k-1} - d0 * 2^(k-1), k=1-indexed.
-            p -= d0 * (2 ** (patience_turns))
-            patience_turns += 1
-            if p <= 0:
-                ended_by = "patience_exhausted"  # P ≤ 0 → definite end
-                break
-            if rng.random() > max(0.0, min(1.0, p)):
-                ended_by = "patience_prob"       # coin flip → end
-                break
-
             # observer: diff-driven objective report (state only, no judge).
             try:
                 post = observer.snapshot(sb)
@@ -422,7 +406,8 @@ def _run_one_collect_query(
                 all_messages.append({"role": "system", "content": f"[observer_error] {exc}"})
                 break
 
-            # questioner: persona-driven follow-up (or end).
+            # Only Questioner controls the loop: follow-up → continue; None → stop.
+            # Satisfied persona stops; unsatisfied asks more. No budget / patience / randomness.
             nxt = questioner.next_query(persona, report, all_messages)
             if nxt is None:
                 ended_by = "end_session"
