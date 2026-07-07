@@ -80,6 +80,9 @@ class SlotTrajectory:
     is_winner: bool = False
     error: str = ""
     bucket: str = ""
+    persona_name: str = ""       # session persona (multi-turn collect)
+    num_turns: int = 0           # actual turns run (multi-turn collect)
+    ended_by: str = ""           # k_budget | end_session | agent_error (multi-turn)
 
     def to_jsonl(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -113,33 +116,40 @@ def _write_hermes_config(sb: Any, model: str, base: str) -> ExecResult:
     return sb.run_code(code)
 
 
-def _run_hermes_slot(sb: Any, query: str, model: str, base: str, hermes_max_turns: int, timeout: int) -> SlotTrajectory:
-    """Real actor: configure hermes inside the sandbox, then run `hermes chat` directly.
+def _hermes_chat(sb: Any, query: str, model: str, hermes_max_turns: int, timeout: int) -> tuple[str, str, bool]:
+    """Run one `hermes chat -q <query>` in the sandbox; return (stdout, stderr, ok).
 
-    Uses ``commands.run`` (NOT a Python wrapper subprocess) so hermes stdout/stderr
-    are captured cleanly without wrapper noise.
+    The sandbox filesystem is persistent across calls, so successive queries on
+    the SAME sandbox see files written by earlier turns (multi-turn support).
     """
     import shlex
 
-    traj = SlotTrajectory(query_index=-1, slot_idx=-1, sandbox_id=getattr(sb, "_sandbox_id", ""))
-    cfg = _write_hermes_config(sb, model, base)
-    if not cfg.ok:
-        traj.error = f"hermes config write failed: {cfg.stderr[:200]}"
-        return traj
-
-    # Run hermes directly via the sandbox shell — no Python wrapper.  shlex.quote
-    # protects query/model from shell injection while preserving UTF-8.
     cmd = (
         f"hermes chat -q {shlex.quote(query)} -m {shlex.quote(model)} "
         f"--provider agent -Q --max-turns {hermes_max_turns} --yolo"
     )
     try:
         out = sb._sb.commands.run(cmd, timeout=timeout)  # type: ignore[union-attr]
-        stdout = (out.stdout or "").strip()
-        stderr = (out.stderr or "").strip()
-        ok = out.exit_code == 0
+        return (out.stdout or "").strip(), (out.stderr or "").strip(), out.exit_code == 0
     except Exception as exc:  # noqa: BLE001 — isolate slot failures
-        traj.error = f"{type(exc).__name__}: {exc}"
+        return "", f"{type(exc).__name__}: {exc}", False
+
+
+def _run_hermes_slot(sb: Any, query: str, model: str, base: str, hermes_max_turns: int, timeout: int) -> SlotTrajectory:
+    """Real actor: configure hermes inside the sandbox, then run `hermes chat` directly.
+
+    Uses ``commands.run`` (NOT a Python wrapper subprocess) so hermes stdout/stderr
+    are captured cleanly without wrapper noise.
+    """
+    traj = SlotTrajectory(query_index=-1, slot_idx=-1, sandbox_id=getattr(sb, "_sandbox_id", ""))
+    cfg = _write_hermes_config(sb, model, base)
+    if not cfg.ok:
+        traj.error = f"hermes config write failed: {cfg.stderr[:200]}"
+        return traj
+
+    stdout, stderr, ok = _hermes_chat(sb, query, model, hermes_max_turns, timeout)
+    if not stdout and not ok and stderr.startswith(("TimeoutException", "Exception", "RuntimeError")):
+        traj.error = stderr[:200]
         return traj
 
     traj.messages = [
@@ -275,31 +285,111 @@ def _run_one_collect_query(
     slot_timeout: int,
     backend: str,
     template: str,
+    observer: Any = None,
+    questioner: Any = None,
+    rng_seed: int = 0,
 ) -> SlotTrajectory:
-    """Full lifecycle for ONE query in collect mode: spawn → upload → hermes → destroy.
+    """Full lifecycle for ONE query in collect mode (multi-turn, no reward/winner).
 
-    Each query gets its own sandbox so workspace files don't collide across tasks.
-    Returns a SlotTrajectory (slot_idx always 0, exactly one row per query).
+    Each query gets its OWN persistent sandbox. Flow per session:
+        spawn → upload workspace → persona = sample_persona(rng)
+        for turn in 1..K  (K = randint(1, max_turns)):
+            actor (hermes) runs the current query in the sandbox
+            observer.observe(sandbox diff) → report        [state-only, no judge]
+            questioner.next_query(persona, report, history) → follow-up | end
+        destroy sandbox
+    The whole multi-turn conversation is ONE trajectory (messages = all turns).
+
+    When observer/questioner are None → single-turn (seed query only), for
+    smoke tests. reward/winner are NOT computed here (that's the training stage).
     """
+    import random as _random
+
+    from agents.personas import sample_persona
+
     query = task["query"]
     record_id = task.get("record_id", "")
     bucket = task.get("bucket", "")
+    rng = _random.Random(rng_seed)
+
     sb = make_sandbox(backend, template=template, timeout=slot_timeout)
     sid = getattr(sb, "_sandbox_id", "")
+    t = SlotTrajectory(query_index=qi, slot_idx=0, sandbox_id=sid, bucket=bucket)
+    all_messages: list[dict[str, Any]] = []
+
     try:
         if record_id:
             n = _upload_workspace(sb, record_id)
             if n:
                 print(f"  q{qi}: uploaded {n} ws files ({record_id})", flush=True)
-        t = _run_hermes_slot(sb, query, actor_model, actor_base, hermes_max_turns, slot_timeout)
+
+        # hermes must be configured once; sandbox FS persists across turns.
+        cfg = _write_hermes_config(sb, actor_model, actor_base)
+        if not cfg.ok:
+            t.error = f"hermes config write failed: {cfg.stderr[:200]}"
+            return t
+
+        multiturn = observer is not None and questioner is not None
+        persona = sample_persona(rng) if multiturn else None
+        if persona is not None:
+            t.persona_name = persona.name
+        k = rng.randint(1, max(1, max_turns)) if multiturn else 1
+
+        baseline = observer.snapshot(sb) if multiturn else None
+        turn = 0
+        ended_by = "k_budget"
+        cur_query: str | None = query
+
+        while cur_query is not None:
+            turn += 1
+            stdout, stderr, ok = _hermes_chat(sb, cur_query, actor_model, hermes_max_turns, slot_timeout)
+            all_messages.append({"role": "user", "content": cur_query})
+            all_messages.append({"role": "assistant", "content": stdout})
+            if stderr:
+                all_messages.append({"role": "system", "content": f"[stderr] {stderr[:300]}"})
+
+            # hard failure on turn 1 (no output at all) → mark error, stop.
+            if turn == 1 and not stdout and not ok:
+                t.error = stderr[:200] or "hermes produced no output"
+                ended_by = "agent_error"
+                break
+
+            if not multiturn or turn >= k:
+                ended_by = "k_budget"
+                break
+
+            # observer: diff-driven objective report (state only, no judge).
+            try:
+                post = observer.snapshot(sb)
+                report = observer.observe(sb, actor_trajectory=all_messages, baseline=baseline, post=post)
+                baseline = post
+            except Exception as exc:  # noqa: BLE001 — observer failure ends session, keeps data
+                ended_by = "agent_error"
+                all_messages.append({"role": "system", "content": f"[observer_error] {exc}"})
+                break
+
+            # questioner: persona-driven follow-up (or end).
+            nxt = questioner.next_query(persona, report, all_messages)
+            if nxt is None:
+                ended_by = "end_session"
+                break
+            cur_query = nxt
+
+        t.messages = all_messages
+        t.num_turns = turn
+        t.ended_by = ended_by
+        # answer = last non-empty line of the last assistant message.
+        last_asst = next((m["content"] for m in reversed(all_messages) if m["role"] == "assistant"), "")
+        t.answer = [l for l in last_asst.splitlines() if l.strip()][-1] if last_asst.strip() else ""
     except Exception as exc:  # noqa: BLE001
-        t = SlotTrajectory(query_index=qi, slot_idx=0, sandbox_id=sid,
-                           error=f"{type(exc).__name__}: {exc}")
+        t.error = (t.error + " | " if t.error else "") + f"{type(exc).__name__}: {exc}"
+        t.messages = all_messages
     finally:
         try:
             sb.kill()
         except Exception:  # noqa: BLE001
             pass
+
     t.query_index = qi
     t.slot_idx = 0
     t.sandbox_id = sid

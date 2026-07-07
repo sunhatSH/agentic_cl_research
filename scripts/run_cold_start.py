@@ -211,8 +211,13 @@ def _load_existing(out_file: Path) -> dict[int, dict]:
 
 def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
                    max_turns: int, hermes_max_turns: int, slot_timeout: int,
-                   mode: str = "overwrite") -> int:
-    """Run parallel sandbox collection — 1 slot per query.
+                   mode: str = "overwrite", multi_turn: bool = True,
+                   out_dir: Path | None = None) -> int:
+    """Run parallel sandbox collection — 1 sandbox per query.
+
+    Multi-turn (default): actor(hermes) + observer + questioner drive up to
+    K=randint(1,max_turns) turns per query. NO reward / NO winner (that's the
+    training stage). Set multi_turn=False for single-turn smoke.
 
     Modes (which query_index to (re)run; success rows are NEVER re-run except
     in overwrite):
@@ -226,11 +231,25 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
     """
     from scripts.sandbox_grpo_collect import _load_queries, _run_one_collect_query
 
+    # Observer + Questioner (session agents). Created once, shared across threads
+    # (each call is stateless per session; LLM clients are thread-safe HTTP).
+    observer = questioner = None
+    if multi_turn:
+        _ensure_sufy_key()          # observer/questioner resolve SUFY_API_KEY from agents.yaml
+        from agents.observer import Observer
+        from agents.questioner import Questioner
+        observer = Observer()       # use_llm defaults True; falls back to deterministic on error
+        questioner = Questioner()
+        print("  multi-turn: observer + questioner enabled (no reward/winner)")
+    else:
+        print("  single-turn: seed query only (smoke)")
+
     tasks = _load_queries(str(_QUERIES_PATH), num_queries)
     total = len(tasks)
 
-    _OUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_file = _OUT_DIR / "grpo_hermes.jsonl"
+    out_root = out_dir or _OUT_DIR
+    out_root.mkdir(parents=True, exist_ok=True)
+    out_file = out_root / "grpo_hermes.jsonl"
 
     # Existing state (for incremental / retry merge).
     existing = {} if mode == "overwrite" else _load_existing(out_file)
@@ -277,6 +296,7 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
                 actor="hermes", actor_model=actor_model, actor_base="",
                 max_turns=max_turns, hermes_max_turns=hermes_max_turns,
                 slot_timeout=slot_timeout, backend="e2b", template="agentic-cl-sandbox",
+                observer=observer, questioner=questioner, rng_seed=i,
             ): i
             for i in to_run
         }
@@ -295,7 +315,10 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
                     ok += 1
                     merged[traj.query_index] = row
                 done += 1
-                if done % 50 == 0:      # rewrite file every 50 completions
+                # Flush cadence: every completion for small runs (smoke / retry),
+                # every 25 for large runs (full rewrite is O(n), keep it bounded).
+                flush_every = 1 if len(to_run) <= 20 else 25
+                if done % flush_every == 0:
                     _flush()
                 pbar.set_postfix(ok=ok, err=err, refresh=False)
                 pbar.update(1)
@@ -313,7 +336,7 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
         "file_ok": total_ok, "file_err": total_err,
         "elapsed_s": elapsed, "out_file": str(out_file),
     }
-    (_OUT_DIR / "manifest.json").write_text(
+    (out_root / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(f"  → {out_file}")
@@ -340,6 +363,10 @@ def main() -> None:
                     help="overwrite=全跑覆盖; incremental=跳过已成功,跑缺失+失败; retry=只跑失败")
     ap.add_argument("--no-generate", action="store_true",
                     help="skip queries.jsonl regeneration (use existing file as-is)")
+    ap.add_argument("--single-turn", action="store_true",
+                    help="seed query only, no observer/questioner (smoke); default is multi-turn")
+    ap.add_argument("--out-dir", default=None,
+                    help="output dir (default rollouts/cold_start); use a temp dir for smoke")
     args = ap.parse_args()
 
     t0 = time.time()
@@ -361,6 +388,8 @@ def main() -> None:
             hermes_max_turns=args.hermes_max_turns,
             slot_timeout=args.slot_timeout,
             mode=args.collect_mode,
+            multi_turn=not args.single_turn,
+            out_dir=Path(args.out_dir) if args.out_dir else None,
         )
 
     print(f"\n{'='*60}")
