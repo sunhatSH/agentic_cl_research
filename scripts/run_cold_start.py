@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""Cold-start pipeline: classify → collect, with real-time progress.
+"""Cold-start pipeline: collect multi-turn trajectories from sandbox hermes.
 
-Assumes taskspecs are already at data/taskspecs/.  Runs two stages in sequence,
-each with a live tqdm progress bar.
+Default: use existing datasets/queries.jsonl (with bucket + persona) and
+run incremental multi-turn collection (actor + observer + questioner, no
+reward/winner). Queries generation is a one-time step via --generate.
 
 Usage:
+    # One-time: generate queries (classify bucket + assign persona)
     source scripts/load_tencent_env.sh
-    /tmp/sandbox_venv/bin/python scripts/run_cold_start.py \
-        --num-queries 3819 --max-concurrent 128
+    .venv/bin/python scripts/run_cold_start.py --generate --no-collect --classify-workers 32
+
+    # Collect (default: incremental, multi-turn, 32 concurrent)
+    .venv/bin/python scripts/run_cold_start.py --num-queries 2849 --max-concurrent 32
+
+    # Full pipeline in one shot
+    bash scripts/run_cold_pipeline.sh
 """
 
 from __future__ import annotations
@@ -421,32 +428,30 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--no-classify", action="store_true")
-    ap.add_argument("--classify-workers", type=int, default=16)
-    ap.add_argument("--no-collect", action="store_true")
+    # ── Stage 1: queries generation (only when --generate) ──
+    ap.add_argument("--generate", action="store_true",
+                    help="(re)generate queries.jsonl from taskspecs (classify + persona)")
+    ap.add_argument("--classify-workers", type=int, default=32)
+    # ── Stage 2: collect ──
+    ap.add_argument("--no-collect", action="store_true", help="skip collection")
     ap.add_argument("--num-queries", type=int, default=100)
-    ap.add_argument("--max-concurrent", type=int, default=128)
+    ap.add_argument("--max-concurrent", type=int, default=32)
     ap.add_argument("--actor-model", default="openai/gpt-5")
-    ap.add_argument("--max-turns", type=int, default=8, help="session turn cap")
-    ap.add_argument("--hermes-max-turns", type=int, default=50, help="hermes ReAct limit")
-    ap.add_argument("--slot-timeout", type=int, default=1200, help="per-sandbox timeout (s)")
+    ap.add_argument("--max-turns", type=int, default=3, help="session turn cap")
+    ap.add_argument("--hermes-max-turns", type=int, default=30, help="hermes ReAct limit")
+    ap.add_argument("--slot-timeout", type=int, default=900, help="per-sandbox timeout (s)")
     ap.add_argument("--collect-mode", choices=["overwrite", "incremental", "retry"],
-                    default="incremental",
-                    help="overwrite=全跑覆盖; incremental=跳过已成功,跑缺失+失败; retry=只跑失败")
-    ap.add_argument("--no-generate", action="store_true",
-                    help="skip queries.jsonl regeneration (use existing file as-is)")
+                    default="incremental")
     ap.add_argument("--single-turn", action="store_true",
-                    help="seed query only, no observer/questioner (smoke); default is multi-turn")
+                    help="seed query only, no observer/questioner")
     ap.add_argument("--out-dir", default=None,
-                    help="output dir (default rollouts/cold_start); use a temp dir for smoke")
+                    help="output dir (default rollouts/cold_start)")
     args = ap.parse_args()
 
     t0 = time.time()
 
-    # Only (re)generate queries.jsonl when explicitly asked. Regenerating with
-    # --no-classify would OVERWRITE an already-classified file with empty buckets.
-    if not args.no_generate:
-        stage_queries(classify=not args.no_classify, classify_workers=args.classify_workers)
+    if args.generate:
+        stage_queries(classify=True, classify_workers=args.classify_workers)
     else:
         n = sum(1 for _ in open(_QUERIES_PATH)) if _QUERIES_PATH.exists() else 0
         print(f"[skip] using existing queries.jsonl ({n} rows)")
