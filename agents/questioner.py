@@ -96,7 +96,7 @@ class PatienceTracker:
         P_k = P0 * r^k        (k = failed turns so far)
 
     Decision after the k-th failure:
-      - P ≤ 0.01  → always stop (exhausted)
+      - P ≤ 0.1   → always stop (exhausted)
       - P ≥ 1     → always continue
       - otherwise → continue with probability P (coin flip)
 
@@ -121,7 +121,7 @@ class PatienceTracker:
         """
         self.fail_count += 1
         pk = self.current_patience()
-        if pk <= 0.01:
+        if pk <= 0.1:
             return False
         if pk >= 1.0:
             return True
