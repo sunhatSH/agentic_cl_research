@@ -92,34 +92,36 @@ class Questioner:
 class PatienceTracker:
     """Per-session patience over FAILED winner turns (§3.6.5).
 
-    Patience decays with exponentially growing decrement:
+    Multiplicative decay: P_k = P0 * (1 - r)^k    (k = failed turns)
 
-        P_k = P_0 - d_0 * (1.5^k - 1) / 0.5   (cumulative after k failures)
+    Decision after the k-th failure:
+      - P ≤ 0.01  → always stop (exhausted)
+      - P ≥ 1     → always continue
+      - otherwise → continue with probability P (coin flip)
 
-    Decision after the k-th failure: redo with probability clip(P_k, 0, 1),
-    else end the session. P_k < 0 clips to 0 -> always stop. Successful turns
-    do not consume patience; redo turns do not count toward the K follow-up
-    budget (handled by the caller).
+    Successful turns do not consume patience.
     """
 
     def __init__(self, persona: Persona, rng: random.Random):
         self.p0 = float(persona.patience)
-        self.d0 = float(persona.patience_decay) if persona.patience_decay else DEFAULT_PATIENCE_DECAY
+        self.r = float(persona.patience_decay) if persona.patience_decay else DEFAULT_PATIENCE_DECAY
         self.rng = rng
         self.fail_count = 0
 
     def current_patience(self) -> float:
-        """P_k after the failures seen so far (k = fail_count)."""
-        k = self.fail_count
-        return self.p0 - self.d0 * (1.5**k - 1) / 0.5
+        """P_k after k failures: P0 * (1-r)^k."""
+        return self.p0 * (1 - self.r) ** self.fail_count
 
     def on_failure(self) -> bool:
         """Register a failed turn; return True to REDO, False to end session.
 
-        Returns the seeded probabilistic decision based on the post-decrement
-        patience P_k. After P_k goes negative, redo probability is 0 (stop).
+        P ≤ 0.01 → exhausted (stop).  P ≥ 1 → always continue.
+        Otherwise → continue with probability P.
         """
         self.fail_count += 1
         pk = self.current_patience()
-        redo_prob = max(0.0, min(1.0, pk))
-        return self.rng.random() < redo_prob
+        if pk <= 0.01:
+            return False
+        if pk >= 1.0:
+            return True
+        return self.rng.random() < pk

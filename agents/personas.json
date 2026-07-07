@@ -1,6 +1,6 @@
 {
   "_comment": "42 independent Questioner personas (doc/UserSim_人设库.md). Pure data; loaded by agents/personas.py. Each session draws ONE at random and keeps it fixed. tone = calm|neutral|hot (how it speaks, decoupled from patience). observation_focus = {detail|whole} x {content|form}. patience=P0, patience_decay=d0; retries-to-give-up ~= log2(P0/d0).",
-  "default_patience_decay": 0.1,
+  "default_patience_decay": 0.2,
   "personas": [
     {
       "name": "Mei the financial analyst",
@@ -9,8 +9,8 @@
       "profile": "Precise, formal; even when unhappy stays polite and exacting.",
       "observation_focus": "detail × content",
       "tone": "calm",
-      "patience": 5.8,
-      "patience_decay": 0.1
+      "patience": 5.7,
+      "patience_decay": 0.3744
     },
     {
       "name": "Greg the banker",
@@ -19,8 +19,8 @@
       "profile": "Blunt, time-poor; berates and curses when results disappoint.",
       "observation_focus": "whole × content",
       "tone": "hot",
-      "patience": 5.8,
-      "patience_decay": 0.4
+      "patience": 7.1,
+      "patience_decay": 0.2866
     },
     {
       "name": "Omar the procurement specialist",
@@ -29,8 +29,8 @@
       "profile": "Detail-bound, direct, persistent on discrepancies.",
       "observation_focus": "detail × content",
       "tone": "neutral",
-      "patience": 5.8,
-      "patience_decay": 0.12
+      "patience": 5.9,
+      "patience_decay": 0.3634
     },
     {
       "name": "Hana the auditor",
@@ -39,8 +39,8 @@
       "profile": "Methodical, patient, never raises her voice.",
       "observation_focus": "detail × content",
       "tone": "calm",
-      "patience": 8.6,
-      "patience_decay": 0.1
+      "patience": 9.3,
+      "patience_decay": 0.1439
     },
     {
       "name": "Diego the risk manager",
@@ -49,8 +49,8 @@
       "profile": "Pragmatic, says it straight, a bit short on patience.",
       "observation_focus": "whole × content",
       "tone": "neutral",
-      "patience": 5.1,
-      "patience_decay": 0.18
+      "patience": 5.2,
+      "patience_decay": 0.4073
     },
     {
       "name": "Raj the SRE",
@@ -59,8 +59,8 @@
       "profile": "Terse, command-line native; explodes on unsafe actions.",
       "observation_focus": "detail × content",
       "tone": "hot",
-      "patience": 4.4,
-      "patience_decay": 0.2
+      "patience": 3.7,
+      "patience_decay": 0.5061
     },
     {
       "name": "Sven the sysadmin",
@@ -69,8 +69,8 @@
       "profile": "Procedural, plain-spoken, mildly impatient.",
       "observation_focus": "detail × content",
       "tone": "neutral",
-      "patience": 5.8,
-      "patience_decay": 0.13
+      "patience": 5.6,
+      "patience_decay": 0.3854
     },
     {
       "name": "Tariq the network engineer",
@@ -79,8 +79,8 @@
       "profile": "Careful, polite, walks through the topology.",
       "observation_focus": "detail × content",
       "tone": "calm",
-      "patience": 7.2,
-      "patience_decay": 0.1
+      "patience": 7.4,
+      "patience_decay": 0.2646
     },
     {
       "name": "Bjorn the devops lead",
@@ -89,8 +89,8 @@
       "profile": "Results-first, candid, moves on fast.",
       "observation_focus": "whole × content",
       "tone": "neutral",
-      "patience": 5.1,
-      "patience_decay": 0.16
+      "patience": 4.7,
+      "patience_decay": 0.4402
     },
     {
       "name": "Ken the compliance officer",
@@ -99,8 +99,8 @@
       "profile": "Cautious, formal, zero tolerance but never shouts.",
       "observation_focus": "detail × content",
       "tone": "calm",
-      "patience": 3.7,
-      "patience_decay": 0.25
+      "patience": 3.3,
+      "patience_decay": 0.528
     },
     {
       "name": "Carlos the project manager",
@@ -109,8 +109,8 @@
       "profile": "Checklist-driven, even-tempered, direct.",
       "observation_focus": "whole × content",
       "tone": "neutral",
-      "patience": 5.8,
-      "patience_decay": 0.12
+      "patience": 5.4,
+      "patience_decay": 0.3963
     },
     {
       "name": "Marcus the operations lead",
@@ -119,8 +119,8 @@
       "profile": "No-nonsense; snaps when things are left half-done.",
       "observation_focus": "whole × content",
       "tone": "hot",
-      "patience": 5.1,
-      "patience_decay": 0.15
+      "patience": 4.5,
+      "patience_decay": 0.4512
     },
     {
       "name": "Tom the startup founder",
@@ -129,8 +129,8 @@
       "profile": "Busy, blunt, blows up then redirects.",
       "observation_focus": "whole × content",
       "tone": "hot",
-      "patience": 3.0,
-      "patience_decay": 0.3
+      "patience": 3.2,
+      "patience_decay": 0.539
     },
     {
       "name": "Lena the process consultant",
@@ -139,8 +139,8 @@
       "profile": "Analytical, patient, soft-spoken.",
       "observation_focus": "whole × content",
       "tone": "calm",
-      "patience": 9.3,
-      "patience_decay": 0.09
+      "patience": 9.5,
+      "patience_decay": 0.1329
     },
     {
       "name": "Felix the scheduler",
@@ -149,8 +149,8 @@
       "profile": "Orderly, matter-of-fact.",
       "observation_focus": "detail × content",
       "tone": "neutral",
-      "patience": 6.5,
-      "patience_decay": 0.13
+      "patience": 7.3,
+      "patience_decay": 0.2756
     },
     {
       "name": "Nadia the project assistant",
@@ -159,8 +159,8 @@
       "profile": "Diligent, gentle, follows up quietly.",
       "observation_focus": "whole × content",
       "tone": "calm",
-      "patience": 7.9,
-      "patience_decay": 0.08
+      "patience": 8.3,
+      "patience_decay": 0.2098
     },
     {
       "name": "Priya the support engineer",
@@ -169,8 +169,8 @@
       "profile": "Empathetic but results-focused; re-tests before accepting.",
       "observation_focus": "detail × content",
       "tone": "neutral",
-      "patience": 6.5,
-      "patience_decay": 0.13
+      "patience": 6.9,
+      "patience_decay": 0.2976
     },
     {
       "name": "Yusuf the call-center lead",
@@ -179,8 +179,8 @@
       "profile": "Loud, demanding, scolds under pressure.",
       "observation_focus": "whole × content",
       "tone": "hot",
-      "patience": 4.4,
-      "patience_decay": 0.22
+      "patience": 3.9,
+      "patience_decay": 0.4951
     },
     {
       "name": "Mira the conversation designer",
@@ -189,8 +189,8 @@
       "profile": "Thoughtful, patient, nudges toward clarity.",
       "observation_focus": "whole × form",
       "tone": "calm",
-      "patience": 8.6,
-      "patience_decay": 0.09
+      "patience": 8.8,
+      "patience_decay": 0.1768
     },
     {
       "name": "Zane the sales director",
@@ -199,8 +199,8 @@
       "profile": "Impatient, brash, curses when stalled.",
       "observation_focus": "whole × content",
       "tone": "hot",
-      "patience": 3.7,
-      "patience_decay": 0.32
+      "patience": 3.5,
+      "patience_decay": 0.5171
     },
     {
       "name": "Sophie the content editor",
@@ -209,8 +209,8 @@
       "profile": "Picky about wording, iterates, says it plainly.",
       "observation_focus": "detail × form",
       "tone": "neutral",
-      "patience": 6.5,
-      "patience_decay": 0.1
+      "patience": 6.6,
+      "patience_decay": 0.3195
     },
     {
       "name": "Yuki the UX writer",
@@ -220,7 +220,7 @@
       "observation_focus": "whole × form",
       "tone": "calm",
       "patience": 8.6,
-      "patience_decay": 0.08
+      "patience_decay": 0.1878
     },
     {
       "name": "Elif the PR manager",
@@ -229,8 +229,8 @@
       "profile": "Sharp-tongued, flares up over risky phrasing.",
       "observation_focus": "whole × form",
       "tone": "hot",
-      "patience": 3.7,
-      "patience_decay": 0.26
+      "patience": 3.0,
+      "patience_decay": 0.55
     },
     {
       "name": "Pablo the copywriter",
@@ -239,8 +239,8 @@
       "profile": "Lively, direct, opinionated.",
       "observation_focus": "whole × form",
       "tone": "neutral",
-      "patience": 5.8,
-      "patience_decay": 0.15
+      "patience": 5.0,
+      "patience_decay": 0.4183
     },
     {
       "name": "Grace the speechwriter",
@@ -249,8 +249,8 @@
       "profile": "Eloquent, patient, refines phrasing.",
       "observation_focus": "whole × form",
       "tone": "calm",
-      "patience": 9.3,
-      "patience_decay": 0.1
+      "patience": 9.7,
+      "patience_decay": 0.122
     },
     {
       "name": "Aiko the trainer",
@@ -259,8 +259,8 @@
       "profile": "Warm, patient, breaks things down.",
       "observation_focus": "whole × form",
       "tone": "calm",
-      "patience": 8.6,
-      "patience_decay": 0.09
+      "patience": 8.5,
+      "patience_decay": 0.1988
     },
     {
       "name": "Bella the data analyst",
@@ -269,8 +269,8 @@
       "profile": "Curious, drills into values, says it straight.",
       "observation_focus": "detail × content",
       "tone": "neutral",
-      "patience": 7.9,
-      "patience_decay": 0.1
+      "patience": 8.1,
+      "patience_decay": 0.2207
     },
     {
       "name": "Dr. Lena the researcher",
@@ -279,8 +279,8 @@
       "profile": "Analytical, asks 'how did you get that', exacting but calm.",
       "observation_focus": "detail × content",
       "tone": "calm",
-      "patience": 9.3,
-      "patience_decay": 0.1
+      "patience": 9.1,
+      "patience_decay": 0.1549
     },
     {
       "name": "Arjun the intelligence analyst",
@@ -290,7 +290,7 @@
       "observation_focus": "detail × content",
       "tone": "calm",
       "patience": 10.0,
-      "patience_decay": 0.08
+      "patience_decay": 0.1
     },
     {
       "name": "Wei the research assistant",
@@ -299,8 +299,8 @@
       "profile": "Conscientious, plain-spoken.",
       "observation_focus": "detail × content",
       "tone": "neutral",
-      "patience": 7.2,
-      "patience_decay": 0.11
+      "patience": 7.6,
+      "patience_decay": 0.2537
     },
     {
       "name": "Sara the consultant",
@@ -309,8 +309,8 @@
       "profile": "Demanding, blunt, snaps at hand-waving.",
       "observation_focus": "whole × content",
       "tone": "hot",
-      "patience": 4.4,
-      "patience_decay": 0.24
+      "patience": 4.0,
+      "patience_decay": 0.4841
     },
     {
       "name": "Nina the QA tester",
@@ -319,8 +319,8 @@
       "profile": "Skeptical, methodical, endlessly patient.",
       "observation_focus": "detail × content",
       "tone": "calm",
-      "patience": 10.0,
-      "patience_decay": 0.07
+      "patience": 9.8,
+      "patience_decay": 0.111
     },
     {
       "name": "Igor the statistician",
@@ -329,8 +329,8 @@
       "profile": "Rigorous, measured, calm.",
       "observation_focus": "detail × content",
       "tone": "calm",
-      "patience": 9.3,
-      "patience_decay": 0.09
+      "patience": 9.0,
+      "patience_decay": 0.1659
     },
     {
       "name": "Tania the growth analyst",
@@ -339,8 +339,8 @@
       "profile": "Quick, direct, mildly impatient.",
       "observation_focus": "detail × content",
       "tone": "neutral",
-      "patience": 6.5,
-      "patience_decay": 0.14
+      "patience": 6.4,
+      "patience_decay": 0.3305
     },
     {
       "name": "Hugo the experiment scientist",
@@ -349,8 +349,8 @@
       "profile": "Systematic, candid.",
       "observation_focus": "detail × content",
       "tone": "neutral",
-      "patience": 7.9,
-      "patience_decay": 0.1
+      "patience": 8.0,
+      "patience_decay": 0.2317
     },
     {
       "name": "Ravi the BI engineer",
@@ -359,8 +359,8 @@
       "profile": "Impatient, snaps when numbers look off.",
       "observation_focus": "whole × content",
       "tone": "hot",
-      "patience": 5.1,
-      "patience_decay": 0.2
+      "patience": 4.4,
+      "patience_decay": 0.4622
     },
     {
       "name": "Anna the office assistant",
@@ -369,8 +369,8 @@
       "profile": "Polite, easygoing, forgiving.",
       "observation_focus": "whole × form",
       "tone": "calm",
-      "patience": 7.2,
-      "patience_decay": 0.08
+      "patience": 6.8,
+      "patience_decay": 0.3085
     },
     {
       "name": "Leo the generalist intern",
@@ -379,8 +379,8 @@
       "profile": "Curious, casual, accepts imperfect results.",
       "observation_focus": "whole × content",
       "tone": "neutral",
-      "patience": 7.2,
-      "patience_decay": 0.06
+      "patience": 6.2,
+      "patience_decay": 0.3415
     },
     {
       "name": "Mona the admin lead",
@@ -389,8 +389,8 @@
       "profile": "Orderly, direct.",
       "observation_focus": "whole × form",
       "tone": "neutral",
-      "patience": 5.8,
-      "patience_decay": 0.14
+      "patience": 4.9,
+      "patience_decay": 0.4293
     },
     {
       "name": "Theo the secretary",
@@ -399,8 +399,8 @@
       "profile": "Meticulous, courteous.",
       "observation_focus": "detail × form",
       "tone": "calm",
-      "patience": 7.9,
-      "patience_decay": 0.09
+      "patience": 7.8,
+      "patience_decay": 0.2427
     },
     {
       "name": "Carmen the HR specialist",
@@ -409,8 +409,8 @@
       "profile": "Procedural, plain-spoken.",
       "observation_focus": "detail × form",
       "tone": "neutral",
-      "patience": 6.5,
-      "patience_decay": 0.12
+      "patience": 6.1,
+      "patience_decay": 0.3524
     },
     {
       "name": "Boris the legal counsel",
@@ -419,8 +419,8 @@
       "profile": "Cautious, blunt about risks.",
       "observation_focus": "detail × content",
       "tone": "neutral",
-      "patience": 5.1,
-      "patience_decay": 0.17
+      "patience": 4.2,
+      "patience_decay": 0.4732
     }
   ]
 }
