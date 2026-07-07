@@ -76,7 +76,7 @@ if $DO_COLLECT; then
   source scripts/load_tencent_env.sh
   .venv/bin/python scripts/run_cold_start.py \
       --num-queries "$N" --max-concurrent 32 \
-      --max-turns 3 --hermes-max-turns 30 --slot-timeout 900
+      --max-turns 5 --hermes-max-turns 30 --slot-timeout 900
   wc -l "$TRAJ" 2>/dev/null || echo "(collection may still be running)"
 fi
 
