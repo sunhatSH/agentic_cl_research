@@ -95,23 +95,36 @@ class SlotTrajectory:
 
 
 def _write_hermes_config(sb: Any, model: str, base: str) -> ExecResult:
-    """Write ~/.hermes/config.yaml + .env inside the sandbox.
+    """Write ~/.hermes/config.yaml + .env + AGENTS.md inside the sandbox.
 
     The model key is already injected into the sandbox as AGENT_MODEL_KEY
     (from runtime.env via E2BSandbox envs=).  We read it INSIDE the sandbox
     so the key never travels through the dev-machine process — it stays
     inside the sandbox where it belongs.
+
+    AGENTS.md bans the ``clarify`` tool (non-interactive sandbox has no human
+    to answer) and sets ``terminal.timeout`` to 60 s so hangs don't eat the
+    whole slot budget.
     """
     code = (
-        "import os, yaml\n"
+        "import os, yaml, subprocess\n"
         f"model = os.environ.get('AGENT_MODEL_NAME', {model!r})\n"
         f"base  = os.environ.get('AGENT_MODEL_BASE', {base!r})\n"
         "key   = os.environ['AGENT_MODEL_KEY']\n"  # MUST be injected, else fail loud
         "home  = os.path.expanduser('~')\n"
         "os.makedirs(home + '/.hermes', exist_ok=True)\n"
+        # hermes config
         "cfg = {'model': model, 'providers': {'agent': {'base_url': base, 'api_key': key, 'kind': 'openai'}}}\n"
         "open(home + '/.hermes/config.yaml', 'w').write(yaml.safe_dump(cfg, sort_keys=False))\n"
         "open(home + '/.hermes/.env', 'w').write('OPENAI_API_KEY=' + key + chr(10))\n"
+        # AGENTS.md: ban clarify in headless sandbox
+        "open(home + '/AGENTS.md', 'w').write("
+        "'## Rules\\n- NEVER call the clarify tool. You are running in a "
+        "non-interactive sandbox with no human feedback path. "
+        "If you need clarifications, make reasonable assumptions and proceed.\\n')\n"
+        # reduce internal command timeout so clarify/failures don't eat slot budget
+        "subprocess.run(['hermes', 'config', 'set', 'terminal.timeout', '60'], "
+        "capture_output=True)\n"
         f"print('hermes configured: model=' + repr(model))\n"
     )
     return sb.run_code(code)
@@ -327,7 +340,7 @@ def _run_one_collect_query(
     bucket = task.get("bucket", "")
     rng = _random.Random(rng_seed)
 
-    sb = make_sandbox(backend, template=template, timeout=slot_timeout)
+    sb = make_sandbox(backend, template=template, timeout=10800)  # 3h total; per-turn ctrl via commands.run timeout
     sid = getattr(sb, "_sandbox_id", "")
     t = SlotTrajectory(query_index=qi, slot_idx=0, sandbox_id=sid, bucket=bucket)
     all_messages: list[dict[str, Any]] = []
@@ -509,7 +522,7 @@ def run_session(
     sandbox_specs: list[Any] = []
 
     def _spawn(slot_idx: int) -> Any:
-        sb = make_sandbox(backend, template=template, timeout=slot_timeout)
+        sb = make_sandbox(backend, template=template, timeout=10800)   # 3h lifetime; per-cmd ctrl
         return sb
 
     with ThreadPoolExecutor(max_workers=min(slots, 8)) as ex:
