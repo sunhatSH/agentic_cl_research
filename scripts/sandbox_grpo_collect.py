@@ -367,38 +367,49 @@ def _run_one_collect_query(
             persona = sample_persona(rng) if multiturn else None
         if persona is not None:
             t.persona_name = persona.name
-        # K ~ U{1..K_max} — uniform random per-session, no persona influence on budget.
-        # (Patience P0/d0 is for failure redo, not turn count — doc §3.6.5.)
-        k = rng.randint(1, max(1, max_turns)) if multiturn else 1
+        # Patience-driven session control (§3.6.5): exponential decay every turn,
+        # replaces K=U{1,K_max} random sampling. P0 = willingness to engage;
+        # d0 = frustration speed. P ≤ 0 → definite end; else probabilistic.
+        p = float(persona.patience) if persona else 1.0
+        d0 = float(persona.patience_decay) if persona and persona.patience_decay else 0.1
+        patience_turns = 0
 
         baseline = observer.snapshot(sb) if multiturn else None
         turn = 0
         ended_by = "k_budget"
         cur_query: str | None = query
-        session_sid: str | None = None   # hermes session id, threaded across turns for --resume
+        session_sid: str | None = None
 
         while cur_query is not None:
             turn += 1
-            # Resume hermes' own conversation memory from turn 2 onward.
             stdout, stderr, ok, hsid = _hermes_chat(
                 sb, cur_query, actor_model, hermes_max_turns, slot_timeout,
                 resume_sid=session_sid,
             )
             if hsid:
-                session_sid = hsid   # carry forward for next turn's --resume
+                session_sid = hsid
             all_messages.append({"role": "user", "content": cur_query})
             all_messages.append({"role": "assistant", "content": stdout})
             if stderr:
                 all_messages.append({"role": "system", "content": f"[stderr] {stderr[:300]}"})
 
-            # hard failure on turn 1 (no output at all) → mark error, stop.
             if turn == 1 and not stdout and not ok:
                 t.error = stderr[:200] or "hermes produced no output"
                 ended_by = "agent_error"
                 break
 
-            if not multiturn or turn >= k:
+            if not multiturn:
                 ended_by = "k_budget"
+                break
+
+            # Patience decay: P_k = P_{k-1} - d0 * 2^(k-1), k=1-indexed.
+            p -= d0 * (2 ** (patience_turns))
+            patience_turns += 1
+            if p <= 0:
+                ended_by = "patience_exhausted"  # P ≤ 0 → definite end
+                break
+            if rng.random() > max(0.0, min(1.0, p)):
+                ended_by = "patience_prob"       # coin flip → end
                 break
 
             # observer: diff-driven objective report (state only, no judge).
@@ -406,7 +417,7 @@ def _run_one_collect_query(
                 post = observer.snapshot(sb)
                 report = observer.observe(sb, actor_trajectory=all_messages, baseline=baseline, post=post)
                 baseline = post
-            except Exception as exc:  # noqa: BLE001 — observer failure ends session, keeps data
+            except Exception as exc:  # noqa: BLE001
                 ended_by = "agent_error"
                 all_messages.append({"role": "system", "content": f"[observer_error] {exc}"})
                 break
