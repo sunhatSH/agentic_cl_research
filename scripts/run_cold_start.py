@@ -396,7 +396,7 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
                 done += 1
                 # Flush cadence: every completion for small runs (smoke / retry),
                 # every 25 for large runs (full rewrite is O(n), keep it bounded).
-                flush_every = 1 if len(to_run) <= 20 else 25
+                flush_every = 1 if len(to_run) <= 20 else 10
                 if done % flush_every == 0:
                     _flush()
                 pbar.set_postfix(ok=ok, err=err, refresh=False)
