@@ -244,7 +244,7 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
     )
     print(f"  → {out_file}")
 
-    return len(all_rows)
+    return ok + err
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
