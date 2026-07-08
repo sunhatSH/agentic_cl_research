@@ -34,23 +34,148 @@
 
 \subsection{Online Multi-Turn Query Construction via Simulated Users}
 \label{sec:usersim}
-% Premise drift; keep only seed q1; three agents (observer/questioner/reward);
-% 42 personas (anti mode-collapse); patience mechanism; adaptive curriculum;
-% questioner multi-model rotation (4 cross-vendor models) for output-style heterogeneity.
-%
-% Cognitive intuition (eye vs brain) — include when prose is written:
-%   Observer = the EYE: objective, unemotional, states only facts. Does not
-%     listen to the actor's narration; performs a deterministic sandbox diff and
-%     faithfully images "what actually happened" (files/content changes, system
-%     state, claim-vs-reality discrepancies). Like a retina: registers light,
-%     adds no preference. => anti-reward-hacking is STRUCTURAL (judgment anchored
-%     to ground truth, never to narration).
-%   Questioner = the BRAIN: subjective, persona-driven, emotional. Facing the same
-%     objective image, interprets through a persona's lens — persona sets the
-%     focus (detail vs whole), the standard (researcher wants the raw file, SRE
-%     asks whether the fix runs), and the emotional register (calm coaches, hot
-%     presses). => follow-ups are diverse and faithful to the real online
-%     distribution.
-%   "The eye guarantees what is seen is true; the brain guarantees the judgment
-%    behaves like a real person." One answers "what is", the other "how one sees it".
+
+The second source of signal corruption is multi-turn data. A follow-up query
+typically references the result of the previous turn (e.g., ``the figures on
+page 3 of that deck are wrong''). When such a follow-up is fixed at
+data-collection time but the realized state $e_k$ is a stochastic function of
+the policy, the follow-up's premise holds only with probability
+$\Pr[\phi(q_{k+1})(e_k)] < 1$, and this probability \emph{drifts} as the policy
+improves. A failed premise produces a corrupted signal: the model is either
+rewarded for hallucinating a fix to a non-existent problem, or penalized for
+honestly reporting that no problem exists.
+
+We eliminate premise drift by \textbf{constructing follow-ups online, after
+observing the realized state}. From each real session we retain only the first
+query as a seed (preserving the true distribution of user intents) and generate
+subsequent turns at the winner-synchronization boundary with three cooperating
+agents. The real sessions \emph{do} contain genuine follow-ups
+$q_2,\dots,q_K$, but these were written, at collection time, against the
+\emph{original} session's execution result; during training rollout our policy's
+response to $q_1$ differs from that original, so the premises of these real
+follow-ups fail just as much. Reusing them would re-introduce premise
+drift---\textbf{which is exactly why we discard $q_2,\dots,q_K$ and keep only the
+seed $q_1$}: the value of the real data lies in the genuine intent distribution
+carried by its first query, not in subsequent turns bound to one particular
+execution. The three agents are:
+
+\begin{itemize}
+  \item an \textbf{observer} (no persona) that compares the winner sandbox
+    \textbf{before vs.\ after} the turn and gathers a neutral, structured report
+    $R_t = \mathrm{Obs}(e_t^w)$ from the resulting environment \textbf{diff}
+    (files created/modified/removed with content, plus system-state changes;
+    read-only), capturing intermediate as well as final results. Crucially the
+    observer is grounded on the \textbf{real state only}: it does \textbf{not}
+    receive the actor's trajectory or claims at all. This makes anti
+    reward-hacking \emph{structural}---since the actor's narrative never enters
+    the observer's judgment, completion can only reflect the verified effect, so
+    a policy cannot earn reward by \emph{claiming} completion it did not deliver.
+    (The trajectory is still made available to the reward judge for
+    safety/robustness, carried pass-through and never shown to the observer
+    model.) The observer is also independent of the policy model (different
+    model/backend), decoupling observation from action;
+  \item a \textbf{questioner} that carries one of $42$ fixed personas
+    (profession, preference, user profile, and an \emph{observation focus}: whole
+    vs.\ detail, form vs.\ content). Exactly one persona is drawn at the start of
+    each session and held fixed throughout (one persona per session, $p$ constant
+    within a session); it produces the next query
+    $q_{t+1}\sim Q(\cdot\mid p, R_t, H_t)$, where $H_t$ is the winner-derived
+    session history; and
+  \item a \textbf{reward model} that scores the turn from the same report over
+    two channels: the observer's state diff (ground truth for \emph{completion})
+    and the actor trajectory carried pass-through on $R_t$ (for
+    \emph{safety/robustness}), $r_t = \mathrm{Reward}(R_t, \text{rubric})$. A turn
+    that changed nothing (empty diff) is short-circuited to zero without a judge
+    call.
+\end{itemize}
+
+The report $R_t$ serves both downstream consumers, guaranteeing that the facts
+used to score a turn and the facts used to pose the next question are identical,
+and decoupling objective evidence-gathering (observer) from subjective stance
+(questioner). Because the follow-up is written after the observer has inspected
+$e_t^w$, its premise is grounded by construction,
+$\Pr[\phi(q_{t+1})(e_t^w)]\approx 1$. Grounding the reward's \emph{completion} in
+the observed effect (whether a file was actually produced, whether its contents
+are correct) rather than any textual claim is what guards against reward
+hacking---and because the observer itself never reads the trajectory, that
+grounding is structural rather than a matter of the judge's diligence.
+
+\paragraph{Cognitive intuition: eyes and brain.}
+This division of labor mirrors the human \textbf{eye} and \textbf{brain}. The
+observer is the \textbf{eye}: objective, unemotional, stating only facts---it
+does not listen to the actor's narration but performs a deterministic diff of the
+sandbox environment, faithfully imaging \emph{what actually happened} (files
+added/modified with content, system-state changes, claim-vs-reality
+discrepancies), like a retina that registers light without adding preference. The
+questioner is the \textbf{brain}: facing the same objective image, it interprets
+subjectively through the lens of a persona---the persona sets the focus (a
+detail-oriented auditor fixates on a number, a big-picture manager reacts to the
+overall deliverable), the standard (a researcher demands the raw file, an SRE
+asks whether the fix actually runs), and the emotional register (calm personas
+coach, hot-tempered ones press). \textbf{The eye guarantees what is seen is true;
+the brain guarantees the judgment behaves like a real person}: the former makes
+anti-reward-hacking structural (judgment anchored to ground truth, not
+narration), the latter makes follow-ups diverse and faithful to the real online
+distribution. One answers ``what is,'' the other ``how one sees it.''
+
+\paragraph{Four-dimensional anti-collapse.}
+Self-dialogue is known to suffer from mode collapse---follow-ups converge to a few
+templated patterns, and entropy decays with turn count. We counter this with four
+orthogonal mechanisms:
+\begin{enumerate}
+  \item \textbf{Persona diversity}: 42 personas (differing in profession,
+    preference, and observation focus) are drawn one per session, causing the
+    same objective report to be queried from different angles;
+  \item \textbf{Turn budget}: session length is fully controlled by the
+    questioner---when satisfied with the observed output it issues
+    \texttt{<end\_session>} naturally; when unsatisfied it keeps asking. No fixed
+    $K$ budget, no random truncation: the persona decides, not a hard cap;
+  \item \textbf{State evolution}: each turn's winner state has been altered by the
+    previous follow-up, so even a fixed persona sees a different report each turn;
+  \item \textbf{Questioner multi-model rotation}: the questioner rotates across 4
+    cross-vendor models (\texttt{claude-4.6-sonnet}, \texttt{deepseek-v4-pro},
+    \texttt{qwen3-max}, \texttt{kimi-k2.6}), switching every 5 queries.
+\end{enumerate}
+The first three dimensions have precedent in the literature (persona
+diversity~\cite{A2}, turn truncation~\cite{B4}, input drift). The
+fourth---model-level heterogeneity---is our addition: a single LLM, even at
+temperature $0.9$, has a fixed output-distribution center and oscillates within
+one semantic space. Models from different vendors differ in training data,
+alignment, and language style, so rotating across them disperses the
+\emph{focus, tone, and angle} of follow-ups in a way temperature alone cannot.
+Personas determine \emph{what to ask}; models determine \emph{how to ask it}---the
+two inject diversity along orthogonal axes, and their joint effect exceeds either
+alone. The 5-query cadence balances coherence (one model's consecutive queries
+preserve local context) against heterogeneity (the periodic switch prevents any
+single model from dominating).
+
+\paragraph{Patience-governed handling of failed turns.}
+Rather than a fixed retry cap, we make the decision to retry or abandon a failed
+turn an attribute of the simulated user, governed by two per-persona quantities:
+initial patience $P_0(p) \in [3, 10]$ and a retention rate $r(p) \in
+(0.45, 0.90)$. Let $k=1,2,\dots$ index consecutive failed turns within a session.
+On the $k$-th failure, patience follows a multiplicative decay,
+\begin{equation}
+  P_k = P_0(p) \cdot r(p)^{\,k}.
+\end{equation}
+If $P_k \le 0.1$ the session terminates deterministically; if $P_k \ge 1$ the
+controller always retries; otherwise it retries with probability $P_k$, and the
+questioner generates a persona-voiced natural retry (an impatient persona snaps
+``又挂了？再来'' while a calm one says ``没关系，再试一次''). Making \emph{both}
+$P_0$ and $r$ persona-specific decouples two distinct traits---\emph{initial
+tolerance} (high $P_0$ grants more chances) and \emph{retention} ($r$ near $1$
+sustains patience, $r$ near $0.5$ exhausts it quickly). Multiplicative decay
+captures cumulative fatigue: each failure reduces the \emph{remaining} patience
+proportionally rather than subtracting a fixed amount, aligning with the
+``dwindling goodwill'' intuition and giving a clean closed form. Each session
+independently loads its $P_0$ from the persona; patience never carries over across
+sessions. Successful turns end the session via \texttt{<end\_session>} without
+touching the patience mechanism.
+
+A useful side effect is an \textbf{adaptive curriculum}: the questioner always
+critiques the \emph{current} policy's actual output, so as the policy strengthens
+and residual flaws become subtler, the follow-ups become correspondingly
+finer---tracking the capability frontier without a hand-designed difficulty
+schedule.
+
 
