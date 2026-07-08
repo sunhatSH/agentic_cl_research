@@ -66,6 +66,23 @@ def flatten_trajectory(messages: Sequence[dict[str, Any]] | str) -> str:
     return "\n".join(lines)
 
 
+def _last_assistant_reply(messages: Sequence[dict[str, Any]] | str, cap: int = 4000) -> str:
+    """Return the last assistant message's text (for QA/reasoning tasks whose
+    deliverable is the reply, not a file). Empty string if none / passed a str."""
+    if isinstance(messages, str) or not messages:
+        return ""
+    for m in reversed(messages):
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        content = m.get("content", "")
+        if isinstance(content, list):
+            content = " ".join((c.get("text", "") if isinstance(c, dict) else str(c)) for c in content)
+        text = str(content).strip()
+        if text:
+            return text[:cap] + (" …[truncated]" if len(text) > cap else "")
+    return ""
+
+
 # Rendering caps for the prompt / report (#4): bound size regardless of workspace.
 _MAX_RENDER_FILES = 50
 _MAX_RENDER_CHARS = 1200
@@ -89,7 +106,7 @@ class ReadOnlySandbox(Protocol):
 _SNAPSHOT_PROBE = (
     "import os, json, hashlib\n"
     "ROOT='.'; MAX_TEXT=2048; MAX_FILES=200\n"
-    "SKIP={'.git','__pycache__','node_modules','.cache','.ipynb_checkpoints','.venv'}\n"
+    "SKIP={'.git','__pycache__','node_modules','.cache','.ipynb_checkpoints','.venv','.hermes'}\n"
     "out={}\n"
     "for root, dirs, files in os.walk(ROOT):\n"
     "    if root.count(os.sep) > 5:\n"
@@ -158,6 +175,9 @@ _SYS_PROBE = (
     "                names.add(f.read().strip())\n"
     "        except OSError:\n"
     "            continue\n"
+    # Drop transient/probe processes so the diff isn't polluted by the probe
+    # itself (python3 running this probe, shells, ps) — these are not actor effects.
+    "    names-={'python3','python','sh','bash','ps','comm','cat','ls','env'}\n"
     "    out['procs']=sorted(names)\n"
     "except Exception:\n"
     "    pass\n"
@@ -759,11 +779,23 @@ class Observer:
             if changed:
                 _merge_extracted(diff, extract_binaries(sandbox, changed))
             if _fs_diff_empty(diff) and _sys_diff_empty(sys_diff):
-                # nothing changed on disk OR in system state this turn -> gate
+                # No file/system change this turn. Some tasks (QA / reasoning /
+                # role-play) deliver their result AS THE REPLY TEXT, not as a
+                # file — a pure diff observer is blind to them. Fall back to the
+                # actor's last reply so the questioner still has a deliverable to
+                # scrutinise. has_effect stays False (no environment mutation),
+                # but `final` now carries the textual answer.
+                last_reply = _last_assistant_reply(actor_trajectory)
                 return ObservationReport(
                     file_tree=file_tree,
                     actor_trajectory=traj_text,
-                    state_diff="mode: before/after diff -- (no filesystem or system changes this turn)",
+                    final=[last_reply] if last_reply else [],
+                    state_diff=(
+                        "mode: no file/system change this turn; deliverable is the "
+                        "assistant's reply text (below)\n\n" + last_reply
+                        if last_reply
+                        else "mode: before/after diff -- (no filesystem or system changes this turn)"
+                    ),
                     has_effect=False,
                 )
             state_diff = _format_changes(diff, sys_diff)

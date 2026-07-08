@@ -84,6 +84,7 @@ class SlotTrajectory:
     persona_name: str = ""       # session persona (multi-turn collect)
     num_turns: int = 0           # actual turns run (multi-turn collect)
     ended_by: str = ""           # k_budget | end_session | agent_error (multi-turn)
+    observer_reports: list[dict[str, Any]] = field(default_factory=list)  # per-turn debug
 
     def to_jsonl(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -407,6 +408,7 @@ def _run_one_collect_query(
             turn_failed = (not ok and not stdout)
 
             # observer: diff-driven objective report (state only, no judge).
+            report = None
             try:
                 post = observer.snapshot(sb)
                 report = observer.observe(sb, actor_trajectory=all_messages, baseline=baseline, post=post)
@@ -415,11 +417,26 @@ def _run_one_collect_query(
                 turn_failed = True
                 all_messages.append({"role": "system", "content": f"[observer_error] {exc}"})
 
+            # Record observer report for debugging (smoke + real collection).
+            if report is not None:
+                t.observer_reports.append({
+                    "turn": turn,
+                    "query": cur_query,
+                    "has_effect": getattr(report, "has_effect", None),
+                    "final": getattr(report, "final", None),
+                    "intermediate": getattr(report, "intermediate", None),
+                    "file_tree": getattr(report, "file_tree", ""),
+                    "state_diff": getattr(report, "state_diff", ""),
+                    "discrepancies": getattr(report, "discrepancies", ""),
+                })
+            else:
+                t.observer_reports.append({"turn": turn, "query": cur_query, "observer_error": True})
+
             if turn_failed and patience_tracker is not None:
                 # Persona-driven redo: observer → questioner → natural retry query.
                 if patience_tracker.on_failure():
                     try:
-                        nxt = questioner.next_query(persona, report, all_messages)
+                        nxt = questioner.next_query(persona, report, all_messages) if report else None
                     except Exception:  # noqa: BLE001
                         nxt = None
                     if nxt is None:
@@ -432,9 +449,9 @@ def _run_one_collect_query(
 
             # Only Questioner controls the loop: follow-up → continue; None → stop.
             # Satisfied persona stops; unsatisfied asks more. No budget / patience / randomness.
-            nxt = questioner.next_query(persona, report, all_messages)
+            nxt = questioner.next_query(persona, report, all_messages) if report else None
             if nxt is None:
-                ended_by = "end_session"
+                ended_by = "end_session" if not questioner.last_query_was_error else "questioner_error"
                 break
             cur_query = nxt
 

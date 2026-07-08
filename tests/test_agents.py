@@ -171,39 +171,39 @@ def test_questioner_truncation_is_error_not_end_session():
 
 
 def test_patience_decays_exponentially():
-    # §3.6.5: P_k = P_0 - d_0*(2^k - 1). P0=1.0, d0=0.1
-    # cumulative decrement 2^k-1 = 1,3,7,15 -> P1=0.9, P2=0.7, P3=0.3, P4=-0.5
-    persona = Persona("t", "", "", "", "detail × content", patience=1.0, patience_decay=0.1)
+    # §3.6.5: P_k = P0 * r^k (r = retention rate close to 1). P0=10, r=0.7
+    # P1=7, P2=4.9, P3=3.43, P4=2.401
+    persona = Persona("t", "", "", "", "detail × content", patience=10.0, patience_decay=0.7)
     pt = PatienceTracker(persona, random.Random(0))
     pt.fail_count = 1
-    assert pt.current_patience() == pytest.approx(0.9)
+    assert pt.current_patience() == pytest.approx(7.0)
     pt.fail_count = 2
-    assert pt.current_patience() == pytest.approx(0.7)
+    assert pt.current_patience() == pytest.approx(4.9)
     pt.fail_count = 3
-    assert pt.current_patience() == pytest.approx(0.3)
+    assert pt.current_patience() == pytest.approx(3.43)
     pt.fail_count = 4
-    assert pt.current_patience() == pytest.approx(-0.5)
+    assert pt.current_patience() == pytest.approx(2.401)
 
 
 def test_patience_self_caps_around_three_failures():
-    # With P0~1, d0=0.1, patience goes negative by the 4th failure (P4=-0.5)
-    # -> forced stop, reproducing the original "≤3 hard cap" as emergent (§3.6.5).
-    persona = Persona("t", "", "", "", "x", patience=1.0, patience_decay=0.1)
+    # Low patience P0=3, r=0.45: P_k drops below the 0.1 kill threshold quickly
+    # -> forced stop after a few failures (§3.6.5 kill threshold = 0.1).
+    persona = Persona("t", "", "", "", "x", patience=3.0, patience_decay=0.45)
     pt = PatienceTracker(persona, random.Random(0))
     redos = sum(1 for _ in range(20) if pt.on_failure())
-    # never more than a handful of redos before patience is exhausted
-    assert redos <= 4
-    assert pt.current_patience() < 0
+    # never more than a handful of redos before patience falls below 0.1
+    assert redos <= 5
+    assert pt.current_patience() <= 0.1
 
 
 def test_patience_high_tolerance_persona_redos_more():
-    patient = Persona("p", "", "", "", "x", patience=1.6, patience_decay=0.07)
-    impatient = Persona("i", "", "", "", "x", patience=0.6, patience_decay=0.4)
+    patient = Persona("p", "", "", "", "x", patience=10.0, patience_decay=0.9)
+    impatient = Persona("i", "", "", "", "x", patience=3.0, patience_decay=0.45)
     # deterministic seed; patient persona should survive more failures
     pp = PatienceTracker(patient, random.Random(1))
     ip = PatienceTracker(impatient, random.Random(1))
-    pp_redos = sum(1 for _ in range(10) if pp.on_failure())
-    ip_redos = sum(1 for _ in range(10) if ip.on_failure())
+    pp_redos = sum(1 for _ in range(20) if pp.on_failure())
+    ip_redos = sum(1 for _ in range(20) if ip.on_failure())
     assert pp_redos >= ip_redos
 
 
@@ -571,7 +571,7 @@ def test_config_resolve_observer_from_yaml():
     try:
         ep = resolve_observer()
         assert ep.base_url == "https://openai.sufy.com/v1"
-        assert ep.model == "openai/gpt-5-mini"
+        assert ep.model == "openai/gpt-5.4-mini"
         assert ep.temperature == 0.0
     finally:
         _reload_config(None)
@@ -599,7 +599,7 @@ def test_config_resolve_questioner_from_yaml():
     try:
         q_cfg = resolve_questioner()
         assert len(q_cfg.rotation) == 4
-        assert q_cfg.rotation[0].model == "anthropic/claude-sonnet-5"
+        assert q_cfg.rotation[0].model == "claude-4.6-sonnet"
         assert q_cfg.rotation[1].model == "deepseek/deepseek-v4-pro"
         assert q_cfg.rotation[2].model == "qwen/qwen3.7-max"
         assert q_cfg.rotation[3].model == "moonshotai/kimi-k2.6"
