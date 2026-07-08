@@ -92,3 +92,4 @@ master-thesis/**/*.ind
 master-thesis/**/*.synctex.gz
 master-thesis/**/*.xdv
 master-thesis/*xelatex*
+*.pdf

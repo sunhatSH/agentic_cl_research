@@ -1,11 +1,19 @@
 % Agentic Continual Learning -- paper main file.
 % Sections live in sections/; figures in ../assets/; bib in ../refs/references.bib.
 % Prose source of truth (while drafting) is ../drafts/Paper_*_EN.md; this LaTeX
-% skeleton is for assembling the submission. Build: pdflatex main; bibtex main; pdflatex x2.
+% skeleton is for assembling the submission.
+% Build (CJK examples in the text require XeLaTeX): xelatex main; bibtex main; xelatex x2.
 
 \documentclass[11pt]{article}
 
-\usepackage[utf8]{inputenc}
+% Engine-agnostic input handling: XeLaTeX/LuaLaTeX are UTF-8 native and add CJK
+% via xeCJK; pdfLaTeX needs inputenc. \ifxetex/\ifluatex from the iftex package.
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[utf8]{inputenc}
+\else
+  \usepackage{xeCJK}  % CJK glyphs for the in-text persona examples (XeLaTeX)
+\fi
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
 \usepackage{booktabs}
@@ -20,7 +28,7 @@
 
 \title{Continual Reinforcement Learning of Multi-Turn Agentic LLMs\\
        \large Producing a Clean Learning Signal Before Consolidating It}
-\author{Sun Hao \and others}
+\author{Sun Hao}
 \date{}
 
 \begin{document}
