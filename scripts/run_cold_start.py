@@ -132,48 +132,56 @@ def _load_persona_catalog() -> list[dict]:
     return catalog
 
 
-def _pick_persona(query: str, catalog: list[dict], client: Any) -> str:
-    """LLM picks the best-matching persona; returns 'random' as fallback."""
-    options_text = "\n".join(
-        f'- {p["name"]} ({p["profession"]}, focus={p["focus"]}, tone={p["tone"]})'
-        for p in catalog
-    )
-    msgs = [
-        {"role": "system", "content": (
-            "你是一个任务-人设匹配器。给定一条给 AI agent 的用户任务，从候选人设列表里"
-            "选最匹配的那个。匹配原则：人设的职业和关注点应该最能'审阅'这个任务的产出"
-            "（比如财务任务选会计/银行家，安全任务选律师/合规，工程任务选运维/架构师，"
-            "写作任务选编辑/撰稿人）。只输出人设的 name 字段，不要其他文字。"
-        )},
-        {"role": "user", "content": f"任务：{query}\n\n候选人设：\n{options_text}\n\n输出人设 name："},
-    ]
-    try:
-        raw = client.chat(msgs, max_tokens=60)
-        name = raw.strip().strip('"').strip("'")
-        valid = {p["name"] for p in catalog}
-        if name in valid:
-            return name
-        for vn in valid:
-            if vn in raw:
-                return vn
-        return "random"
-    except Exception:  # noqa: BLE001
-        return "random"
-
-
 def _classify_one(rec: dict, client: Any) -> dict:
-    """Classify one seed_query: static mapping (free) > LLM."""
+    """Classify one seed_query: bucket + persona in a single LLM call."""
     tf = rec["task_family"]
     static = _STATIC_MAP.get(tf, "")
     if static:
         rec["bucket"] = static
         rec["classify_source"] = "static"
+        rec["persona_name"] = "random"   # static-mapped: persona picked randomly at collection
         return rec
-    from data_pipeline.classify import classify_query
 
-    verdict = classify_query(rec["seed_query"], client)
-    rec["bucket"] = verdict.get("bucket", "unknown")
+    from data_pipeline.classify import build_classify_prompt, parse_classify_output
+
+    # Build prompt with bucket options + persona catalog + output format
+    persona_options = "\n".join(
+        f'- {p["name"]} ({p["profession"]}, focus={p["focus"]}, tone={p["tone"]})'
+        for p in _load_persona_catalog()
+    )
+    bucket_msgs = build_classify_prompt(rec["seed_query"])
+    combined_user = (
+        bucket_msgs[1]["content"]
+        + "\n\n此外，从以下 42 个人设中选出最适合审阅这个任务的 1 个：\n"
+        + persona_options
+        + "\n\n输出一个 JSON，同时给出 bucket 和 persona：\n"
+        + '{"bucket": "九桶之一", "sub_bucket": null, "rationale": "...", '
+        + '"persona_name": "某个人设的 name"}'
+    )
+    msgs = [bucket_msgs[0], {"role": "user", "content": combined_user}]
+    try:
+        raw = client.chat(msgs, max_tokens=300)
+    except Exception:  # noqa: BLE001
+        rec["bucket"] = "unknown"; rec["classify_source"] = "llm"; return rec
+
+    # Parse: extract JSON then validate
+    import re as _re
+    m = _re.search(r"\{.*\}", raw, _re.S)
+    if not m:
+        rec["bucket"] = "unknown"; rec["classify_source"] = "llm"; return rec
+    try:
+        obj = json.loads(m.group(0))
+    except (json.JSONDecodeError, ValueError):
+        rec["bucket"] = "unknown"; rec["classify_source"] = "llm"; return rec
+
+    parsed = parse_classify_output(json.dumps(obj))  # reuse existing bucket validator
+    rec["bucket"] = parsed.get("bucket", "unknown")
     rec["classify_source"] = "llm"
+
+    # Persona from same response
+    pn = obj.get("persona_name", "").strip()
+    valid_personas = {p["name"] for p in _load_persona_catalog()}
+    rec["persona_name"] = pn if pn in valid_personas else "random"
     return rec
 
 
@@ -225,29 +233,6 @@ def stage_queries(*, classify: bool, classify_workers: int = 16) -> int:
 
         records = classified
         print(f"  classify done: static={static_count}  LLM_ok={llm_ok}  LLM_unknown={llm_unknown}")
-
-        # 1b2 — persona assignment (parallel, same workers)
-        catalog = _load_persona_catalog()
-        persona_fixed = 0
-        persona_random = 0
-
-        def _assign_persona(rec: dict) -> dict:
-            nonlocal persona_fixed, persona_random
-            name = _pick_persona(rec["seed_query"], catalog, client)
-            rec["persona_name"] = name
-            if name != "random":
-                persona_fixed += 1
-            else:
-                persona_random += 1
-            return rec
-
-        with ThreadPoolExecutor(max_workers=classify_workers) as ex:
-            futures = {ex.submit(_assign_persona, rec): rec for rec in records}
-            with tqdm(total=len(records), desc="Picking personas", unit="q", smoothing=0.01) as pbar:
-                for fut in as_completed(futures):
-                    fut.result()
-                    pbar.update(1)
-        print(f"  persona: assigned={persona_fixed}  fallback_random={persona_random}")
 
     # 1c — write queries.jsonl
     _QUERIES_PATH.parent.mkdir(parents=True, exist_ok=True)
