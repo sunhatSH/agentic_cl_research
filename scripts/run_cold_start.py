@@ -90,6 +90,9 @@ def _load_one_taskspec(subdir: Path) -> dict[str, Any] | None:
     seed = ts.get("seed_query", "")
     if not isinstance(seed, str) or not seed.strip():
         return None
+    # Front cleaning: strip zero-width chars from source
+    from data.cleaning import strip_zw
+    seed = strip_zw(seed)
     follow_ups = []
     profile = ts.get("user_profile") or {}
     fu = profile.get("follow_ups") if isinstance(profile, dict) else None
@@ -307,8 +310,12 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
 
     In every mode the file is written by merging on query_index: a successful
     new result replaces whatever was there; existing successes are preserved.
+
+    Post-cleaning: all trajectory messages are stripped of zero-width chars
+    before writing. (Front cleaning on seed_queries happens in _load_one_taskspec.)
     """
     from scripts.sandbox_grpo_collect import _load_queries, _run_one_collect_query
+    from data.cleaning import strip_zw
 
     # Observer + Questioner (session agents). Created once, shared across threads
     # (each call is stateless per session; LLM clients are thread-safe HTTP).
@@ -384,6 +391,10 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
             for fut in as_completed(futures):
                 traj = fut.result()
                 row = json.loads(traj.to_jsonl())
+                # Post-cleaning: strip zero-width chars from all message content
+                for m in row.get("messages", []):
+                    if isinstance(m.get("content"), str):
+                        m["content"] = strip_zw(m["content"])
                 if traj and traj.error:
                     err += 1
                     # In incremental/retry: only overwrite if there was no prior
