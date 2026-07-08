@@ -56,7 +56,7 @@ def parse_args():
 
 
 # --------------------------------------------------------------------------- #
-# ClawEval task manifest interface (frozen ahead of the @杨益博 data drop)      #
+# ClawEval task manifest interface (frozen ahead of the eval data drop)         #
 # --------------------------------------------------------------------------- #
 # A manifest is a JSON list of task records. Required / optional fields:
 #
@@ -93,7 +93,7 @@ def load_tasks(tasks_file: str | None, text_only: bool = True) -> list[dict]:
 
     Args:
         tasks_file: path to the JSON manifest. ``None`` raises (no bundled
-            manifest yet -- pending the @杨益博 data drop).
+            manifest yet -- pending the eval data drop).
         text_only: keep only ``modality == "text"`` records (the 195-task
             text subset the project currently trains/evaluates on).
 

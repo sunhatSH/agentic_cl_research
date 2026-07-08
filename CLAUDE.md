@@ -362,22 +362,17 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 
 ## 分工
 
-| 模块 | 负责人 |
-|------|--------|
-| CL 更新策略 / 调研 | @孙豪 |
-| 用户数据获取（query 种子 + 会话镜像） | @吴健 |
-| 工具环境（Agent Framework） | @郑乃榕 |
-| 评测 | @杨益博 |
+本项目由 @孙豪 独立完成：CL 更新策略/调研、用户数据获取与清洗、工具环境（Agent Framework）、评测全链路。
 
 ## TODO（下次上集群后处理）
 
 > 这些阻断了正式训练，需要回到集群环境执行。
 
-1. ~~**项目迁移：把泽寰的 AFS 路径全部改成自己的**~~ ✅ 已完成（2026-06-22）
+1. ~~**项目迁移：把旧 AFS 路径全部改成自己的**~~ ✅ 已完成（2026-06-22）
    - `run_phases.sh:19-21`：已改为 `sunhao4/Documents/verl` 和 `sunhao4/Documents/LightLLM`
    - `start_train.sh:19-21`：同上
    - `configs/run/b1.yaml` 和 `configs/run/r4.yaml`：已改为 `../_generated_ppo_trainer`
-   - verl 从 GitHub clone `release/v0.8.0`，手动合入泽寰增量（lightllm_rollout + recipe_custom + agent gateway 等，见 `sunhao4/Documents/verl` 的 `sunhao4/v0.8.0-lightllm-agent` 分支）
+   - verl 从 GitHub clone `release/v0.8.0`，手动合入 lightllm-agent 增量（lightllm_rollout + recipe_custom + agent gateway 等，见 `sunhao4/Documents/verl` 的 `sunhao4/v0.8.0-lightllm-agent` 分支）
    - LightLLM 从 GitHub clone `rl_verl_rebase_main` 分支
 
 2. ~~**拷贝 `_generated_ppo_trainer.yaml` 并更新 run/*.yaml**~~ ✅ 已完成（2026-06-22）

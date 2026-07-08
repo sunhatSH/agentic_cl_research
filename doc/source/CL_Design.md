@@ -157,7 +157,7 @@ $$q_i = q_{min} + (C - B \cdot q_{min}) \cdot \frac{n_i^{\alpha}}{\sum_j n_j^{\a
 
 ### 冷启动数据需求
 
-> **受众**：数据制造（@吴健）、沙箱 rollout（@郑乃榕）。RL 训练开始前向 buffer 预灌冷数据，避免 `L_replay = 0`、空桶 starvation。
+> RL 训练开始前向 buffer 预灌冷数据，避免 `L_replay = 0`、空桶 starvation。
 
 **数量**：硬下限每桶 `q_min = 2000`，9 桶合计 **18,000 轨迹**；推荐 **20,000**。每 query 8 轨迹（标准）或 1（经济版，仅救火）。约需会话：下限 ~281、推荐 ~312（假设平均每会话 8 query）。
 

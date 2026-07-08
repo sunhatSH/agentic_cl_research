@@ -9,14 +9,14 @@
 
 ## 0. 贡献边界（务必明确）
 
-本系统及其产出的 **rollout 数据结构由本工作（@孙豪）定义与产出**。模块分工：
+本系统及其产出的 **rollout 数据结构由本工作（@孙豪）定义与产出**。本项目由 @孙豪 独立完成。
 
-| 模块 | 负责人 | 边界 |
-|------|--------|------|
-| **query / 种子 + 镜像** | @吴健 | 提供每会话首条 query 作种子，**以及该会话对应的沙箱镜像文件**（即会话的初始环境快照）。**只给 query+镜像，不碰 rollout。** |
-| **冷启动 + 后续 rollout 全链路** | **@孙豪（本工作）** | observer/questioner agent、沙箱 rollout、采集脚本、**最终 rollout 数据结构**、入桶与训练衔接 |
+| 模块 | 边界 |
+|------|------|
+| **query / 种子 + 镜像** | 上游 taskspec 提供每会话首条 query 作种子，以及该会话对应的沙箱镜像文件（会话的初始环境快照），作为本系统输入。 |
+| **冷启动 + 后续 rollout 全链路** | observer/questioner agent、沙箱 rollout、采集脚本、**最终 rollout 数据结构**、入桶与训练衔接 |
 
-即：**query + 镜像是输入（吴健提供），rollout 轨迹及其数据结构是本系统的产出**。下游训练（replay buffer 预热 / verl）消费的是本系统定义的数据结构（§3），而非吴健的 query 原始格式。
+即：**query + 镜像是输入（上游 taskspec），rollout 轨迹及其数据结构是本系统的产出**。下游训练（replay buffer 预热 / verl）消费的是本系统定义的数据结构（§3），而非原始 query 格式。
 
 ## 1. 系统形态（冷启动阶段）
 
@@ -54,8 +54,8 @@ actor（被采集策略）有两套并跑，**数据严格分目录**：
 ```
 session = {
   record_id:          str          # 来自种子数据的 join key
-  seed_query:         str          # q1，真实回流种子（吴健 query 的首条）
-  sandbox_image:      str          # 会话对应的沙箱镜像标识（吴健提供，用于初始化环境）
+  seed_query:         str          # q1，真实回流种子（上游 taskspec 的首条）
+  sandbox_image:      str          # 会话对应的沙箱镜像标识（上游 taskspec 提供，用于初始化环境）
   persona:            str          # 会话级随机人设（42 选 1）
   num_turns:          int
   ended_by:           str          # k_budget | end_session | agent_error
@@ -72,7 +72,7 @@ Traj = {
 Report(observer) = { intermediate, final, actor_claims, discrepancies, file_tree }
 ```
 
-**关键点**：`query` 来自吴健（seed）+ 本系统在线生成（generated_queries）；`trajectories`/`reports`/`bucket`/token 级字段**全部由本系统产出**。这套结构对接 `rollout/collect.py::ingest_trajectories` 入 7 桶 buffer，及 verl 训练。
+**关键点**：`query` 来自上游 taskspec（seed）+ 本系统在线生成（generated_queries）；`trajectories`/`reports`/`bucket`/token 级字段**全部由本系统产出**。这套结构对接 `rollout/collect.py::ingest_trajectories` 入 7 桶 buffer，及 verl 训练。
 
 ## 4. 实现（本次新增代码）
 
@@ -91,7 +91,7 @@ Report(observer) = { intermediate, final, actor_claims, discrepancies, file_tree
 | **远程 actor + 真沙箱 + 多轮** | ✅ `limit=3 done=3 failed=0`，observer 探到真实 file_tree，questioner 生成带人设的追问 |
 | **本地 27B actor + 真沙箱 + 多轮** | ✅ `limit=2 done=2 failed=0` |
 
-**已知局限（如实记录）**：当前种子来自验证用 queries JSONL（非吴健正式 query），多为闲聊开场，actor 常不触发 `<toolcall>` → `bucket=None`、无沙箱执行动作。这是**种子质量**问题（吴健正式 query 到位后改善），非链路缺陷——沙箱/observer/questioner 经验证均正常工作。
+**已知局限（如实记录）**：当前种子来自验证用 queries JSONL（非正式 query），多为闲聊开场，actor 常不触发 `<toolcall>` → `bucket=None`、无沙箱执行动作。这是**种子质量**问题（正式 query 到位后改善），非链路缺陷——沙箱/observer/questioner 经验证均正常工作。
 
 ## 6. 数据隔离
 

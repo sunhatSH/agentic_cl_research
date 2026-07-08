@@ -6,7 +6,7 @@
 #   source scripts/dev_env.sh
 #
 # 为何需要：
-#   - verl 走 AFS 源码（Documents/verl，带泽寰增量 lightllm_rollout / agent_loop /
+#   - verl 走 AFS 源码（Documents/verl，带 lightllm-agent 增量 lightllm_rollout / agent_loop /
 #     fully_async_policy，pip 装的原版 verl==0.8.0 没有这些）。
 #   - 代码里 import verl 都是 lazy（函数内 import），本机单测不触发，所以本机
 #     不装 ray 也能跑单测（47+ passed）。

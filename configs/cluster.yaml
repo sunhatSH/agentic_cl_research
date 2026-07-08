@@ -37,7 +37,7 @@ actor_rollout_ref:
 
   rollout:
     name: lightllm                 # 用拷到本项目侧的 verl（含 lightllm_rollout）跑 lightllm
-    mode: async                    # 泽寰版 verl 已移除 sync；agent-loop + lightllm 也走 async server
+    mode: async                    # 定制版 verl 已移除 sync；agent-loop + lightllm 也走 async server
     tensor_model_parallel_size: ${oc.env:ROLLOUT_TP_SIZE,4}   # rollout TP; 换卡数按需覆盖
     gpu_memory_utilization: 0.75
     n: 8

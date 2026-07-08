@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """taskspec.yaml -> queries.jsonl (data pipeline Stage A).
 
-把吴健给的 taskspec（data/taskspecs/s_<id>/taskspec.yaml）转成 queries JSONL，
+把上游 taskspec（data/taskspecs/s_<id>/taskspec.yaml）转成 queries JSONL，
 每行含 record_id + queries + bucket（--classify 时 LLM 打桶）。
 
 Input  : data/taskspecs/s_<id>/taskspec.yaml

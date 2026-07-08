@@ -80,12 +80,12 @@ ruff check . && black --check .
 
 ## 5. 外部依赖
 
-| 依赖 | 负责人 | 没有它会怎样 |
-|------|--------|-------------|
-| Qwen3.6-27B 权重 | @孙豪 | 无法加载 actor |
-| 训练数据 | @吴健 / @郑乃榕 | buffer 入桶 & priority 缺失 |
-| 沙箱 rollout 环境 | @郑乃榕 | 无真实 trajectory |
-| ClawEval 195 manifest | @杨益博 | 无法评测遗忘度 |
+| 依赖 | 没有它会怎样 |
+|------|-------------|
+| Qwen3.6-27B 权重 | 无法加载 actor |
+| 训练数据（taskspecs → 冷采集 → parquet） | buffer 入桶 & priority 缺失 |
+| 沙箱 rollout 环境 | 无真实 trajectory |
+| ClawEval 195 manifest | 无法评测遗忘度 |
 | verl Hydra defaults | @孙豪 | `validate_config` 报缺字段 |
 
 依赖未齐仍可做形态 smoke（dummy 模型 + 假数据），验证 §3 的三个 GPU-only 点。

@@ -20,7 +20,7 @@
 set -uo pipefail
 
 # 全部走 AFS 共享挂载（集群各节点都能访问）。verl/LightLLM 已拷至自己 AFS 目录
-# （含 lightllm_rollout + recipe_custom），与泽寰目录解耦。
+# （含 lightllm_rollout + recipe_custom），与外部目录解耦。
 PROJECT_DIR=/mnt/afs_toolcall/sunhao4/agentic_cl_research
 LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/Documents/LightLLM
 VERL_DIR=/mnt/afs_toolcall/sunhao4/Documents/verl

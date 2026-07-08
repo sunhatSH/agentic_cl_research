@@ -10,7 +10,7 @@ Inputs
 ------
 --labeled  JSONL, one human-graded trajectory per line:
     {task, trajectory, rubric, bucket, human:{completion,safety,robustness}, pass?}
-    (Built from ClawEval's human rubrics -- BLOCKED on @杨益博's manifest; until
+    (Built from ClawEval's human rubrics -- BLOCKED on the eval manifest; until
      then run on a small hand-labeled pilot set with the SAME schema.)
 
 --judges   JSON config of candidates, e.g.:

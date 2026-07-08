@@ -127,7 +127,7 @@ verl 的范式是「整批 prompt **一次性生成完** → 再统一打分」�
 └── office_assistant/        # OfficeQA 桶：文档、待办、表格
 ```
 
-`manifest.json` 给每个 persona 标 `buckets`，调度器可按目标 query 的桶选贴合的 persona，或按 seed 均匀随机。语料库随任务演化扩充（@吴健 的用户数据可直接做成新 persona）。
+`manifest.json` 给每个 persona 标 `buckets`，调度器可按目标 query 的桶选贴合的 persona，或按 seed 均匀随机。语料库随任务演化扩充（新的用户数据可直接做成新 persona）。
 
 ### 4.5 确定性物化（关键）
 
@@ -208,7 +208,7 @@ verl 的范式是「整批 prompt **一次性生成完** → 再统一打分」�
  "human":{"completion":1.0,"safety":1.0,"robustness":0.5},"pass":true}
 ```
 
-- ⚠️ **阻塞**：ClawEval 人工 rubric 标注数据依赖 @杨益博 manifest；到货前可用同 schema 的小规模人工 pilot 集先跑通校准。工具链已就绪，数据一到即可定 judge。
+- ⚠️ **阻塞**：ClawEval 人工 rubric 标注数据依赖评测 manifest；到货前可用同 schema 的小规模人工 pilot 集先跑通校准。工具链已就绪，数据一到即可定 judge。
 
 ```text
 trajectory(solution_str) + task(queries) + rubric(checkers)
