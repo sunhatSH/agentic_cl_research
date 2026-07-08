@@ -41,16 +41,6 @@ _OUT_DIR = _REPO / "rollouts" / "cold_start"
 
 # ── task_family → bucket static mapping (6 types, zero LLM cost) ────────
 
-_STATIC_MAP: dict[str, str] = {
-    "file_organize": "ops",
-    "file_move_rename": "ops",
-    "data_merge": "ops",
-    "table_process": "office",
-    "risky_op": "safety",
-    "process_design": "workflow",
-}
-
-
 # ── Stage 1: queries generation + LLM classify ──────────────────────────
 
 
@@ -134,13 +124,6 @@ def _load_persona_catalog() -> list[dict]:
 
 def _classify_one(rec: dict, client: Any) -> dict:
     """Classify one seed_query: bucket + persona in a single LLM call."""
-    tf = rec["task_family"]
-    static = _STATIC_MAP.get(tf, "")
-    if static:
-        rec["bucket"] = static
-        rec["classify_source"] = "static"
-        rec["persona_name"] = "random"   # static-mapped: persona picked randomly at collection
-        return rec
 
     from data_pipeline.classify import build_classify_prompt, parse_classify_output
 
@@ -205,25 +188,13 @@ def stage_queries(*, classify: bool, classify_workers: int = 16) -> int:
         client = make_default_client()
         print(f"  LLM classifier: {client.model} ({classify_workers} workers)")
 
-        static_recs = []
-        llm_recs = []
-        for rec in records:
-            if _STATIC_MAP.get(rec["task_family"], ""):
-                _classify_one(rec, client)
-                static_recs.append(rec)
-            else:
-                llm_recs.append(rec)
-
-        classified = list(static_recs)
-        static_count = len(static_recs)
         llm_ok = llm_unknown = 0
 
         with ThreadPoolExecutor(max_workers=classify_workers) as ex:
-            futures = {ex.submit(_classify_one, rec, client): rec for rec in llm_recs}
-            with tqdm(total=len(llm_recs), desc="LLM classifying", unit="q", smoothing=0.01) as pbar:
+            futures = {ex.submit(_classify_one, rec, client): rec for rec in records}
+            with tqdm(total=len(records), desc="LLM classifying", unit="q", smoothing=0.01) as pbar:
                 for fut in as_completed(futures):
                     rec = fut.result()
-                    classified.append(rec)
                     if rec.get("bucket") != "unknown":
                         llm_ok += 1
                     else:
@@ -231,8 +202,7 @@ def stage_queries(*, classify: bool, classify_workers: int = 16) -> int:
                     pbar.set_postfix(ok=llm_ok, unk=llm_unknown, refresh=False)
                     pbar.update(1)
 
-        records = classified
-        print(f"  classify done: static={static_count}  LLM_ok={llm_ok}  LLM_unknown={llm_unknown}")
+        print(f"  classify done: LLM_ok={llm_ok}  LLM_unknown={llm_unknown}")
 
     # 1c — write queries.jsonl
     _QUERIES_PATH.parent.mkdir(parents=True, exist_ok=True)
