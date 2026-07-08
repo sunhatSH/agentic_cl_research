@@ -80,6 +80,132 @@ class ResolvedQuestionerConfig:
     rotate_every: int
 
 
+@dataclass(frozen=True)
+class ResolvedProvider:
+    """One vendor and its ordered list of same-vendor model endpoints (inner loop)."""
+
+    name: str
+    endpoints: list[ResolvedEndpoint]
+
+
+@dataclass(frozen=True)
+class ResolvedRole:
+    """A role's full failover pool: ordered providers (outer loop), each with
+    ordered models (inner loop), plus rotate_every for anti-collapse rotation.
+
+    The two-level failover loop walks providers in order; within a provider it
+    walks endpoints in order. ``rotate_every`` (>0) additionally rotates through
+    *available* endpoints every N calls for anti mode-collapse (questioner only;
+    0 disables rotation).
+    """
+
+    role: str
+    providers: list[ResolvedProvider]
+    rotate_every: int
+
+    def flat_endpoints(self) -> list[ResolvedEndpoint]:
+        """All endpoints in failover order (provider-major, model-minor)."""
+        return [ep for p in self.providers for ep in p.endpoints]
+
+
+def _resolve_providers(role_cfg: dict, temperature: float) -> list[ResolvedProvider]:
+    """Parse a role's ``providers:`` list into ResolvedProvider objects.
+
+    Each provider: {name, api_base, key_env, models:[...]}. Falls back to the
+    legacy single ``api_base``/``model`` or ``rotation:`` shapes when ``providers``
+    is absent, so old configs keep working.
+    """
+    providers_cfg = role_cfg.get("providers")
+    out: list[ResolvedProvider] = []
+
+    if providers_cfg:
+        for p in providers_cfg:
+            base = p.get("api_base", "")
+            key_env = p.get("key_env", "SUFY_API_KEY")
+            api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
+            eps = [
+                ResolvedEndpoint(base_url=base, model=m, api_key=api_key, temperature=temperature)
+                for m in (p.get("models") or [])
+                if base and m
+            ]
+            if eps:
+                out.append(ResolvedProvider(name=p.get("name", base), endpoints=eps))
+        return out
+
+    # Legacy: single api_base/model (observer/reward old shape)
+    base = role_cfg.get("api_base", "")
+    model = role_cfg.get("model", "")
+    if base and model:
+        key_env = role_cfg.get("key_env", "SUFY_API_KEY")
+        api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
+        ep = ResolvedEndpoint(base_url=base, model=model, api_key=api_key, temperature=temperature)
+        out.append(ResolvedProvider(name=base, endpoints=[ep]))
+        return out
+
+    # Legacy: questioner rotation pool (each entry its own single-model provider)
+    for entry in role_cfg.get("rotation", []) or []:
+        base = entry.get("api_base", "")
+        model = entry.get("model", "")
+        if not (base and model):
+            continue
+        key_env = entry.get("key_env", "SUFY_API_KEY")
+        api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
+        ep = ResolvedEndpoint(base_url=base, model=model, api_key=api_key, temperature=temperature)
+        out.append(ResolvedProvider(name=entry.get("name", model), endpoints=[ep]))
+    return out
+
+
+def resolve_role(role: str, config_path: Path | str | None = None) -> ResolvedRole:
+    """Resolve any role (observer/questioner/reward) into a two-level failover pool.
+
+    Env-var overrides take priority and produce a single-provider pool:
+      - OBSERVER_API_BASE/OBSERVER_MODEL, REWARD_API_BASE/REWARD_MODEL
+      - USERSIM_ENDPOINTS (JSON list) or USERSIM_API_BASE/USERSIM_MODEL (questioner)
+    Otherwise the ``providers:`` (or legacy) section of agents.yaml is used.
+    """
+    cfg = _load_yaml(config_path)
+    role_cfg = cfg.get(role, {}) or {}
+
+    # role-specific env prefix + temperature
+    prefix = {"observer": "OBSERVER", "reward": "REWARD", "questioner": "USERSIM"}.get(role, role.upper())
+    default_temp = {"observer": 0.0, "reward": 0.0, "questioner": 0.9}.get(role, 0.0)
+    temperature = float(os.environ.get(f"{prefix}_TEMPERATURE", "") or role_cfg.get("temperature", default_temp))
+    rotate_every = int(os.environ.get("USERSIM_ROTATE_EVERY", "") or role_cfg.get("rotate_every", 0)) if role == "questioner" else 0
+
+    # ── env overrides → single-provider pool ────────────────────────────────
+    if role == "questioner":
+        endpoints_raw = os.environ.get("USERSIM_ENDPOINTS", "").strip()
+        if endpoints_raw:
+            from agents.base import _parse_endpoints
+
+            eps = [
+                ResolvedEndpoint(base_url=e["base_url"], model=e["model"], api_key=e["api_key"], temperature=temperature)
+                for e in _parse_endpoints(endpoints_raw)
+            ]
+            if eps:
+                return ResolvedRole(role, [ResolvedProvider("env", eps)], rotate_every)
+        env_base = os.environ.get("USERSIM_API_BASE", "").strip()
+        env_model = os.environ.get("USERSIM_MODEL", "").strip()
+        if env_base and env_model:
+            ep = ResolvedEndpoint(env_base, env_model, os.environ.get("SUFY_API_KEY", "").strip() or "sk-local", temperature)
+            return ResolvedRole(role, [ResolvedProvider("env", [ep])], rotate_every)
+    else:
+        env_base = os.environ.get(f"{prefix}_API_BASE", "").strip()
+        env_model = os.environ.get(f"{prefix}_MODEL", "").strip()
+        if env_base and env_model:
+            ep = ResolvedEndpoint(env_base, env_model, _resolve_key("SUFY_API_KEY", prefix_env="SUFY_API_KEY"), temperature)
+            return ResolvedRole(role, [ResolvedProvider("env", [ep])], rotate_every)
+
+    # ── config-file providers ───────────────────────────────────────────────
+    providers = _resolve_providers(role_cfg, temperature)
+    if not providers:
+        raise RuntimeError(
+            f"{role} not configured: set {prefix}_API_BASE + {prefix}_MODEL env vars, "
+            f"or configure the {role} section (providers:) in configs/agents.yaml."
+        )
+    return ResolvedRole(role, providers, rotate_every)
+
+
 # --------------------------------------------------------------------------- #
 # Resolution helpers                                                           #
 # --------------------------------------------------------------------------- #
@@ -98,155 +224,36 @@ def _resolve_key(key_env: str, *, prefix_env: str | None = None) -> str:
 
 
 def resolve_observer(config_path: Path | str | None = None) -> ResolvedEndpoint:
-    """Resolve the Observer endpoint (config-first, env-override).
+    """Resolve the Observer's primary endpoint (first provider, first model).
 
-    Priority:
-      1. OBSERVER_API_BASE / OBSERVER_MODEL / SUFY_API_KEY env vars (override)
-      2. configs/agents.yaml observer section (key_env for the key)
+    Kept for backward compatibility. New code should prefer ``resolve_role`` to
+    get the full failover pool.
     """
-    cfg = _load_yaml(config_path)
-    obs_cfg = cfg.get("observer", {})
-
-    base = os.environ.get("OBSERVER_API_BASE", "").strip() or obs_cfg.get("api_base", "")
-    model = os.environ.get("OBSERVER_MODEL", "").strip() or obs_cfg.get("model", "")
-    key_env = obs_cfg.get("key_env", "SUFY_API_KEY")
-    api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
-    temperature = float(os.environ.get("OBSERVER_TEMPERATURE", "") or obs_cfg.get("temperature", 0.0))
-
-    if not base or not model:
-        raise RuntimeError(
-            "Observer not configured: set OBSERVER_API_BASE + OBSERVER_MODEL env vars, "
-            "or configure the observer section in configs/agents.yaml."
-        )
-    return ResolvedEndpoint(base_url=base, model=model, api_key=api_key, temperature=temperature)
+    return resolve_role("observer", config_path).flat_endpoints()[0]
 
 
 def resolve_questioner(config_path: Path | str | None = None) -> ResolvedQuestionerConfig:
-    """Resolve the Questioner config (config-first, env-override).
+    """Resolve the Questioner config (backward-compatible view).
 
-    Priority:
-      1. USERSIM_ENDPOINTS env var (rotation) or USERSIM_API_BASE/MODEL/KEY (single)
-      2. configs/agents.yaml questioner section (rotation pool + fallback)
+    Returns the flattened failover pool as ``rotation`` (all endpoints in
+    failover order) with ``fallback=None``. New code should prefer
+    ``resolve_role("questioner")`` for the provider-grouped structure.
     """
-    cfg = _load_yaml(config_path)
-    q_cfg = cfg.get("questioner", {})
-    rotation_cfg = q_cfg.get("rotation", [])
-    fallback_cfg = q_cfg.get("fallback", {})
-    rotate_every = int(os.environ.get("USERSIM_ROTATE_EVERY", "") or q_cfg.get("rotate_every", 5))
-    temperature = float(os.environ.get("USERSIM_TEMPERATURE", "") or q_cfg.get("temperature", 0.9))
-
-    # Check for env-var rotation (USERSIM_ENDPOINTS) -- overrides yaml rotation
-    endpoints_raw = os.environ.get("USERSIM_ENDPOINTS", "").strip()
-    if endpoints_raw:
-        from agents.base import _parse_endpoints
-
-        entries = _parse_endpoints(endpoints_raw)
-        rotation = [
-            ResolvedEndpoint(
-                base_url=e["base_url"],
-                model=e["model"],
-                api_key=e["api_key"],
-                temperature=temperature,
-            )
-            for e in entries
-        ]
-        return ResolvedQuestionerConfig(rotation=rotation, fallback=None, rotate_every=rotate_every)
-
-    # Env-var single-model override (USERSIM_API_BASE / USERSIM_MODEL)
-    env_base = os.environ.get("USERSIM_API_BASE", "").strip()
-    env_model = os.environ.get("USERSIM_MODEL", "").strip()
-    env_key = os.environ.get("SUFY_API_KEY", "").strip()
-
-    if env_base and env_model:
-        # Single-model env override -> no rotation
-        fallback = ResolvedEndpoint(
-            base_url=env_base,
-            model=env_model,
-            api_key=env_key or "sk-local",
-            temperature=temperature,
-        )
-        return ResolvedQuestionerConfig(rotation=[], fallback=fallback, rotate_every=rotate_every)
-
-    # Config-file rotation pool
-    if rotation_cfg:
-        rotation: list[ResolvedEndpoint] = []
-        for entry in rotation_cfg:
-            base = entry.get("api_base", "")
-            model = entry.get("model", "")
-            key_env = entry.get("key_env", "SUFY_API_KEY")
-            api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
-            if base and model:
-                rotation.append(
-                    ResolvedEndpoint(
-                        base_url=base,
-                        model=model,
-                        api_key=api_key,
-                        temperature=temperature,
-                    )
-                )
-        if rotation:
-            fallback = None
-            if fallback_cfg:
-                fb_key_env = fallback_cfg.get("key_env", "SUFY_API_KEY")
-                fb_base_env = fallback_cfg.get("api_base_env", "")
-                fb_model_env = fallback_cfg.get("model_env", "")
-                fb_base = os.environ.get(fb_base_env, "").strip()
-                fb_model = os.environ.get(fb_model_env, "").strip()
-                fb_key = _resolve_key(fb_key_env, prefix_env="SUFY_API_KEY")
-                if fb_base and fb_model:
-                    fallback = ResolvedEndpoint(
-                        base_url=fb_base,
-                        model=fb_model,
-                        api_key=fb_key,
-                        temperature=temperature,
-                    )
-            return ResolvedQuestionerConfig(rotation=rotation, fallback=fallback, rotate_every=rotate_every)
-
-    # Fallback: try the fallback section from yaml
-    if fallback_cfg:
-        fb_base_env = fallback_cfg.get("api_base_env", "")
-        fb_model_env = fallback_cfg.get("model_env", "")
-        fb_key_env = fallback_cfg.get("key_env", "SUFY_API_KEY")
-        fb_base = os.environ.get(fb_base_env, "").strip()
-        fb_model = os.environ.get(fb_model_env, "").strip()
-        fb_key = _resolve_key(fb_key_env, prefix_env="SUFY_API_KEY")
-        if fb_base and fb_model:
-            fallback = ResolvedEndpoint(
-                base_url=fb_base,
-                model=fb_model,
-                api_key=fb_key,
-                temperature=temperature,
-            )
-            return ResolvedQuestionerConfig(rotation=[], fallback=fallback, rotate_every=rotate_every)
-
-    raise RuntimeError(
-        "Questioner not configured: set USERSIM_ENDPOINTS or USERSIM_API_BASE + USERSIM_MODEL "
-        "env vars, or configure the questioner section in configs/agents.yaml."
+    role = resolve_role("questioner", config_path)
+    return ResolvedQuestionerConfig(
+        rotation=role.flat_endpoints(),
+        fallback=None,
+        rotate_every=role.rotate_every,
     )
 
 
 def resolve_judge(config_path: Path | str | None = None) -> ResolvedEndpoint:
-    """Resolve the Reward/Judge endpoint (config-first, env-override).
+    """Resolve the Reward/Judge primary endpoint (first provider, first model).
 
-    Priority:
-      1. REWARD_API_BASE / REWARD_MODEL / SUFY_API_KEY env vars (override)
-      2. configs/agents.yaml reward section (key_env for the key)
+    Kept for backward compatibility. New code should prefer ``resolve_role`` to
+    get the full failover pool.
     """
-    cfg = _load_yaml(config_path)
-    reward_cfg = cfg.get("reward", {})
-
-    base = os.environ.get("REWARD_API_BASE", "").strip() or reward_cfg.get("api_base", "")
-    model = os.environ.get("REWARD_MODEL", "").strip() or reward_cfg.get("model", "")
-    key_env = reward_cfg.get("key_env", "SUFY_API_KEY")
-    api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
-    temperature = float(os.environ.get("REWARD_TEMPERATURE", "") or reward_cfg.get("temperature", 0.0))
-
-    if not base or not model:
-        raise RuntimeError(
-            "Reward not configured: set REWARD_API_BASE + REWARD_MODEL env vars, "
-            "or configure the reward section in configs/agents.yaml."
-        )
-    return ResolvedEndpoint(base_url=base, model=model, api_key=api_key, temperature=temperature)
+    return resolve_role("reward", config_path).flat_endpoints()[0]
 
 
 # --------------------------------------------------------------------------- #

@@ -450,16 +450,17 @@ def test_resolve_questioner_client_fallback_no_endpoints(monkeypatch):
     monkeypatch.setenv("USERSIM_API_BASE", "http://localhost:8100/v1")
     monkeypatch.setenv("USERSIM_MODEL", "test-model")
     monkeypatch.setenv("USERSIM_API_KEY", "sk-test")
-    # Force re-resolve by importing fresh
     from agents.base import resolve_questioner_client
+    from agents.failover import FailoverChatClient
 
     client = resolve_questioner_client()
-    assert isinstance(client, OpenAIChatClient)
+    # Now a FailoverChatClient (single-endpoint pool from the env override).
+    assert isinstance(client, FailoverChatClient)
     assert client.model == "test-model"
 
 
 def test_resolve_questioner_client_rotation(monkeypatch):
-    """When USERSIM_ENDPOINTS is set, returns RotatingChatClient."""
+    """When USERSIM_ENDPOINTS is set, returns a FailoverChatClient over the pool."""
     monkeypatch.setenv(
         "USERSIM_ENDPOINTS",
         '[{"base_url":"http://a/v1","model":"model-a","api_key":"key-a"},'
@@ -467,11 +468,13 @@ def test_resolve_questioner_client_rotation(monkeypatch):
     )
     monkeypatch.setenv("USERSIM_ROTATE_EVERY", "3")
     from agents.base import resolve_questioner_client
+    from agents.failover import FailoverChatClient
 
     client = resolve_questioner_client()
-    assert isinstance(client, RotatingChatClient)
+    assert isinstance(client, FailoverChatClient)
     assert client._rotate_every == 3
-    assert len(client._clients) == 2
+    # env override -> one "env" provider holding both endpoints
+    assert sum(len(p) for p in client._clients) == 2
 
 
 # --- Persona tone injection ---------------------------------------------------
@@ -601,7 +604,7 @@ def test_config_resolve_questioner_from_yaml():
         assert len(q_cfg.rotation) == 4
         assert q_cfg.rotation[0].model == "claude-4.6-sonnet"
         assert q_cfg.rotation[1].model == "deepseek/deepseek-v4-pro"
-        assert q_cfg.rotation[2].model == "qwen/qwen3.7-max"
+        assert q_cfg.rotation[2].model == "qwen3-max"
         assert q_cfg.rotation[3].model == "moonshotai/kimi-k2.6"
         assert q_cfg.rotate_every == 5
     finally:

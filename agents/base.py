@@ -198,21 +198,20 @@ def validate_endpoints_distinct() -> list[str]:
     return validate_model_distinctness()
 
 
-def resolve_observer_client() -> OpenAIChatClient:
+def resolve_observer_client():
     """Observer is objective -> temperature 0 (deterministic evidence).
 
-    Reads configs/agents.yaml first; falls back to OBSERVER_* env vars.
+    Returns a FailoverChatClient over the observer provider pool (agents.yaml
+    ``observer.providers``); falls back to OBSERVER_* env vars. rotate_every=0
+    means it sticks to the current-good model and only switches on failure.
     """
-    from agents.config import resolve_observer as _resolve_from_config
+    from agents.config import resolve_role
 
     try:
-        ep = _resolve_from_config()
-        return OpenAIChatClient(
-            base_url=ep.base_url,
-            model=ep.model,
-            api_key=ep.api_key,
-            temperature=ep.temperature,
-        )
+        role = resolve_role("observer")
+        from agents.failover import FailoverChatClient
+
+        return FailoverChatClient(role)
     except RuntimeError:
         pass  # fall through to env-only legacy path
     return _resolve("OBSERVER", temperature=0.0)
@@ -335,41 +334,45 @@ def _parse_endpoints(raw: str) -> list[dict[str, str]]:
     return entries
 
 
-def resolve_questioner_client() -> OpenAIChatClient | RotatingChatClient:
+def resolve_questioner_client():
     """Questioner needs diversity -> higher temperature (anti mode-collapse, §3.5).
 
-    Reads configs/agents.yaml first; falls back to USERSIM_* env vars.
-    Rotation pool is built from the config file's ``questioner.rotation`` section
-    (or USERSIM_ENDPOINTS env override).
+    Returns a FailoverChatClient over the questioner provider pool
+    (agents.yaml ``questioner.providers``). Failover handles a dead model
+    (e.g. a 502'd rotation member); rotate_every>0 additionally rotates through
+    *available* models for style diversity. Falls back to USERSIM_* env vars.
     """
-    from agents.config import resolve_questioner as _resolve_from_config
+    from agents.config import resolve_role
 
     try:
-        q_cfg = _resolve_from_config()
-        if q_cfg.rotation:
-            clients = [
-                OpenAIChatClient(
-                    base_url=ep.base_url,
-                    model=ep.model,
-                    api_key=ep.api_key,
-                    temperature=ep.temperature,
-                )
-                for ep in q_cfg.rotation
-            ]
-            logger.info(
-                "Questioner rotation: %d models, rotate every %d calls: %s",
-                len(clients),
-                q_cfg.rotate_every,
-                [c.model for c in clients],
-            )
-            return RotatingChatClient(clients, rotate_every=q_cfg.rotate_every)
-        if q_cfg.fallback:
-            return OpenAIChatClient(
-                base_url=q_cfg.fallback.base_url,
-                model=q_cfg.fallback.model,
-                api_key=q_cfg.fallback.api_key,
-                temperature=q_cfg.fallback.temperature,
-            )
+        role = resolve_role("questioner")
+        from agents.failover import FailoverChatClient
+
+        logger.info(
+            "Questioner failover pool: %s (rotate_every=%d)",
+            [ep.model for ep in role.flat_endpoints()],
+            role.rotate_every,
+        )
+        return FailoverChatClient(role)
     except RuntimeError:
         pass  # fall through to env-only legacy path
     return _resolve("USERSIM", temperature=0.9)
+
+
+def resolve_reward_client():
+    """Reward/judge over the ChatClient interface, with failover.
+
+    (The verl custom_reward path uses ``OpenAIJudgeClient`` in
+    trainer/model_reward.py, which has its own scoring HTTP shape; this resolver
+    serves ChatClient-based reward callers.) Falls back to REWARD_* env vars.
+    """
+    from agents.config import resolve_role
+
+    try:
+        role = resolve_role("reward")
+        from agents.failover import FailoverChatClient
+
+        return FailoverChatClient(role)
+    except RuntimeError:
+        pass
+    return _resolve("REWARD", temperature=0.0)
