@@ -193,31 +193,30 @@ def stage_queries(*, taskspecs_dir: Path | None = None, queries_path: Path | Non
             records.append(rec)
     print(f"  loaded {len(records)} taskspecs with seed_query")
 
-    # 1b — classify
-    if classify:
-        _ensure_sufy_key()
-        from data_pipeline.classify import make_default_client
+    # 1b — classify bucket + persona + runnability (single LLM call per query)
+    _ensure_sufy_key()
+    from data_pipeline.classify import make_default_client
 
-        client = make_default_client()
-        print(f"  LLM classifier: {client.model} ({classify_workers} workers)")
+    client = make_default_client()
+    print(f"  LLM classifier: {client.model} ({classify_workers} workers)")
 
-        llm_ok = llm_unknown = 0
+    llm_ok = llm_unknown = 0
 
-        with ThreadPoolExecutor(max_workers=classify_workers) as ex:
-            futures = {ex.submit(_classify_one, rec, client): rec for rec in records}
-            with tqdm(total=len(records), desc="LLM classifying", unit="q", smoothing=0.01) as pbar:
-                for fut in as_completed(futures):
-                    rec = fut.result()
-                    if rec.get("bucket") != "unknown":
-                        llm_ok += 1
-                    else:
-                        llm_unknown += 1
-                    pbar.set_postfix(ok=llm_ok, unk=llm_unknown, refresh=False)
-                    pbar.update(1)
+    with ThreadPoolExecutor(max_workers=classify_workers) as ex:
+        futures = {ex.submit(_classify_one, rec, client): rec for rec in records}
+        with tqdm(total=len(records), desc="LLM classifying", unit="q", smoothing=0.01) as pbar:
+            for fut in as_completed(futures):
+                rec = fut.result()
+                if rec.get("bucket") != "unknown":
+                    llm_ok += 1
+                else:
+                    llm_unknown += 1
+                pbar.set_postfix(ok=llm_ok, unk=llm_unknown, refresh=False)
+                pbar.update(1)
 
-        print(f"  classify done: LLM_ok={llm_ok}  LLM_unknown={llm_unknown}")
+    print(f"  classify done: LLM_ok={llm_ok}  LLM_unknown={llm_unknown}")
 
-    # 1c — write queries.jsonl (skip unrunnable)
+    # 1c — write queries.jsonl (skip unrunnable; only seed query, no follow-ups)
     q_path.parent.mkdir(parents=True, exist_ok=True)
     skipped_unrunnable = 0
     with open(q_path, "w", encoding="utf-8") as fh:
@@ -227,17 +226,19 @@ def stage_queries(*, taskspecs_dir: Path | None = None, queries_path: Path | Non
                 continue
             row = {
                 "record_id": rec["record_id"],
-                "queries": [rec["seed_query"]] + rec.get("follow_ups", []),
+                "queries": [rec["seed_query"]],
                 "bucket": rec.get("bucket", ""),
                 "sub_bucket": rec.get("sub_bucket"),
                 "persona_name": rec.get("persona_name", "random"),
             }
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-            c = Counter(r.get("bucket", "unknown") for r in records if r.get("runnable", True))
+    kept = [r for r in records if r.get("runnable", True)]
+    c = Counter(r.get("bucket", "unknown") for r in kept)
     print("  bucket distribution:")
+    _mx = max(c.values()) if c else 1
     for b, n in c.most_common():
-        bar = "█" * (n * 50 // max(c.values()))
+        bar = "█" * (n * 50 // _mx)
         print(f"    {b:15s} {n:5d}  {bar}")
 
     written = len(records) - skipped_unrunnable
