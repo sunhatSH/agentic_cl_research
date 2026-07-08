@@ -1,42 +1,35 @@
 #!/usr/bin/env bash
-# Full cold-start pipeline: taskspec → queries → trajectories → parquet → buffer.
+# Full cold-start pipeline + data cleaning.
 # Each stage is incremental — safe to resume if interrupted.
 #
-# Stages (skip anything already done by commenting out the line):
+# Stages:
 #   S1  --generate            (re)generate queries.jsonl (classify + persona)
-#   S1b filter_unrunnable     LLM 剔除沙箱不可跑任务
-#   S2  (default)             multi-turn collection (actor+observer+questioner)
-#   S3  trajectory_to_parquet trajectories → train.parquet + val.parquet
-#   S4  warmup_buffer         trajectories → buffer.sqlite (训练前预填)
+#   S1b --filter              LLM 剔除沙箱不可跑任务
+#   S2  --collect             multi-turn collection (actor+observer+questioner)
+#   S2b                       garble-character filter (drops bad trajectories)
+#   S3  --parquet             trajectories → train.parquet + val.parquet
+#   S4  --warmup              trajectories → buffer.sqlite (训练前预填)
 #
-# Usage:
-#   # Everything from scratch
-#   bash scripts/run_cold_pipeline.sh --full
-#
-#   # Just collect (queries already ready)
-#   bash scripts/run_cold_pipeline.sh
-#
-#   # Collect + parquet + warmup
-#   bash scripts/run_cold_pipeline.sh --collect --parquet --warmup
+#   --all-collect             S1 + S1b + S2 + S3 + S4
+#   --full                    same as --all-collect
 
 set -e
 cd "$(git rev-parse --show-toplevel)"
 
 DO_GENERATE=false
 DO_FILTER=false
-DO_COLLECT=true
+DO_COLLECT=false
 DO_PARQUET=false
 DO_WARMUP=false
 
 for arg in "$@"; do
   case "$arg" in
-    --full) DO_GENERATE=true; DO_FILTER=true; DO_COLLECT=true; DO_PARQUET=true; DO_WARMUP=true ;;
+    --full|--all-collect) DO_GENERATE=true; DO_FILTER=true; DO_COLLECT=true; DO_PARQUET=true; DO_WARMUP=true ;;
     --generate) DO_GENERATE=true ;;
     --filter) DO_FILTER=true ;;
     --collect) DO_COLLECT=true ;;
     --parquet) DO_PARQUET=true ;;
     --warmup) DO_WARMUP=true ;;
-    --all-collect) DO_GENERATE=true; DO_FILTER=true; DO_COLLECT=true; DO_PARQUET=true; DO_WARMUP=true ;;
     *) echo "unknown: $arg"; exit 2 ;;
   esac
 done
@@ -68,7 +61,7 @@ if $DO_FILTER; then
   wc -l "$QUERIES"
 fi
 
-# ── S2: collection ──────────────────────────────────────────────────────
+# ── S2: collection (incl. ZW strip + garble filter) ─────────────────────
 if $DO_COLLECT; then
   echo ""
   N=$(wc -l < "$QUERIES")
@@ -77,7 +70,15 @@ if $DO_COLLECT; then
   .venv/bin/python scripts/run_cold_start.py \
       --num-queries "$N" --max-concurrent 32 \
       --max-turns 20 --hermes-max-turns 30 --slot-timeout 900
-  wc -l "$TRAJ" 2>/dev/null || echo "(collection may still be running)"
+
+  # S2b: drop trajectories with garbled chars > threshold
+  CLEANED="${TRAJ%.jsonl}_clean.jsonl"
+  echo ""
+  echo "========== S2b: 脏字符过滤 =========="
+  .venv/bin/python scripts/clean_trajectories.py \
+      --input "$TRAJ" --output "$CLEANED" --garble-threshold 0.05
+  mv "$CLEANED" "$TRAJ"
+  wc -l "$TRAJ"
 fi
 
 # ── S3: parquet ─────────────────────────────────────────────────────────
@@ -104,3 +105,5 @@ echo "  queries      → $QUERIES"
 echo "  trajectories → $TRAJ"
 echo "  parquet      → $PARQUET_DIR/{train,val}.parquet"
 echo "  buffer       → $BUFFER"
+echo ""
+echo "  dropped log  → ${TRAJ%.jsonl}.dropped.jsonl"
