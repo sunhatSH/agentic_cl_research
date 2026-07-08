@@ -320,6 +320,7 @@ def _run_one_collect_query(
     questioner: Any = None,
     rng_seed: int = 0,
     workspace_dir: str | None = None,
+    observer_log: Path | None = None,
 ) -> SlotTrajectory:
     """Full lifecycle for ONE query in collect mode (multi-turn, no reward/winner).
 
@@ -418,8 +419,9 @@ def _run_one_collect_query(
                 all_messages.append({"role": "system", "content": f"[observer_error] {exc}"})
 
             # Record observer report for debugging (smoke + real collection).
+            _rep_row = None
             if report is not None:
-                t.observer_reports.append({
+                _rep_row = {
                     "turn": turn,
                     "query": cur_query,
                     "has_effect": getattr(report, "has_effect", None),
@@ -428,9 +430,24 @@ def _run_one_collect_query(
                     "file_tree": getattr(report, "file_tree", ""),
                     "state_diff": getattr(report, "state_diff", ""),
                     "discrepancies": getattr(report, "discrepancies", ""),
-                })
+                }
+                t.observer_reports.append(_rep_row)
             else:
-                t.observer_reports.append({"turn": turn, "query": cur_query, "observer_error": True})
+                _rep_row = {"turn": turn, "query": cur_query, "observer_error": True}
+                t.observer_reports.append(_rep_row)
+
+            # Persist observer report to a SEPARATE debug file, indexed by
+            # session_id (sandbox_id) + turn, so the report can be located
+            # by "which session, which turn was asked". Appended per turn so
+            # it survives even if the session later crashes.
+            if observer_log is not None:
+                try:
+                    line = {"session_id": sid, "record_id": record_id,
+                            "persona": t.persona_name, "bucket": bucket, **_rep_row}
+                    with open(observer_log, "a", encoding="utf-8") as _f:
+                        _f.write(json.dumps(line, ensure_ascii=False) + "\n")
+                except Exception:  # noqa: BLE001 -- logging must never break collection
+                    pass
 
             if turn_failed and patience_tracker is not None:
                 # Persona-driven redo: observer → questioner → natural retry query.

@@ -313,6 +313,7 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
     out_root = out_dir or _OUT_DIR
     out_root.mkdir(parents=True, exist_ok=True)
     out_file = out_root / "grpo_hermes.jsonl"
+    observer_log = out_root / "observer_reports.jsonl"  # separate debug file (session_id + turn indexed)
 
     # Existing state (for incremental / retry merge).
     existing = {} if mode == "overwrite" else _load_existing(out_file)
@@ -360,7 +361,7 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
                 max_turns=max_turns, hermes_max_turns=hermes_max_turns,
                 slot_timeout=slot_timeout, backend=backend, template=template_name,
                 observer=observer, questioner=questioner, rng_seed=i,
-                workspace_dir=workspace_dir,
+                workspace_dir=workspace_dir, observer_log=observer_log,
             ): i
             for i in to_run
         }
