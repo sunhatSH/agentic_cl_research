@@ -24,7 +24,7 @@ questioner:
       model: "deepseek/deepseek-v4-pro"
       key_env: "SUFY_API_KEY"
     - api_base: "https://openai.sufy.com/v1"
-      model: "qwen/qwen3.7-max"
+      model: "qwen3-max"                # was qwen/qwen3.7-max (persistent 502 on sufy 2026-07-08)
       key_env: "SUFY_API_KEY"
     - api_base: "https://openai.sufy.com/v1"
       model: "moonshotai/kimi-k2.6"
