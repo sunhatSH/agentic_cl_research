@@ -168,11 +168,15 @@ def _classify_one(rec: dict, client: Any) -> dict:
     return rec
 
 
-def stage_queries(*, classify: bool, classify_workers: int = 16) -> int:
+def stage_queries(*, taskspecs_dir: Path | None = None, queries_path: Path | None = None,
+                   classify_workers: int = 32) -> int:
     """Generate queries.jsonl.  Returns number of rows written."""
 
+    ts_dir = taskspecs_dir or _TASKSPECS_DIR
+    q_path = queries_path or _QUERIES_PATH
+
     # 1a — load taskspecs
-    subdirs = sorted(d for d in _TASKSPECS_DIR.iterdir() if d.is_dir())
+    subdirs = sorted(d for d in ts_dir.iterdir() if d.is_dir())
     records = []
     for d in tqdm(subdirs, desc="Loading taskspecs", unit="file"):
         rec = _load_one_taskspec(d)
@@ -205,8 +209,8 @@ def stage_queries(*, classify: bool, classify_workers: int = 16) -> int:
         print(f"  classify done: LLM_ok={llm_ok}  LLM_unknown={llm_unknown}")
 
     # 1c — write queries.jsonl
-    _QUERIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(_QUERIES_PATH, "w", encoding="utf-8") as fh:
+    q_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(q_path, "w", encoding="utf-8") as fh:
         for rec in records:
             row = {
                 "record_id": rec["record_id"],
@@ -223,7 +227,7 @@ def stage_queries(*, classify: bool, classify_workers: int = 16) -> int:
         bar = "█" * (n * 50 // max(c.values()))
         print(f"    {b:15s} {n:5d}  {bar}")
 
-    print(f"  → {_QUERIES_PATH} ({len(records)} rows)")
+    print(f"  → {q_path} ({len(records)} rows)")
     return len(records)
 
 
@@ -250,10 +254,11 @@ def _load_existing(out_file: Path) -> dict[int, dict]:
     return rows
 
 
-def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
-                   max_turns: int, hermes_max_turns: int, slot_timeout: int,
-                   mode: str = "overwrite", multi_turn: bool = True,
-                   out_dir: Path | None = None) -> int:
+def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
+                   actor_model: str, max_turns: int, hermes_max_turns: int,
+                   slot_timeout: int, mode: str = "overwrite",
+                   multi_turn: bool = True, out_dir: Path | None = None,
+                   backend: str = "e2b", template_name: str = "agentic-cl-sandbox") -> int:
     """Run parallel sandbox collection — 1 sandbox per query.
 
     Multi-turn (default): actor(hermes) + observer + questioner drive up to
@@ -286,7 +291,7 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
     else:
         print("  single-turn: seed query only (smoke)")
 
-    tasks = _load_queries(str(_QUERIES_PATH), num_queries)
+    tasks = _load_queries(str(queries_path), num_queries)
     total = len(tasks)
 
     out_root = out_dir or _OUT_DIR
@@ -337,7 +342,7 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
                 tasks[i], i,
                 actor="hermes", actor_model=actor_model, actor_base="",
                 max_turns=max_turns, hermes_max_turns=hermes_max_turns,
-                slot_timeout=slot_timeout, backend="e2b", template="agentic-cl-sandbox",
+                slot_timeout=slot_timeout, backend=backend, template=template_name,
                 observer=observer, questioner=questioner, rng_seed=i,
             ): i
             for i in to_run
@@ -404,11 +409,17 @@ def main() -> None:
     # ── Stage 1: queries generation (only when --generate) ──
     ap.add_argument("--generate", action="store_true",
                     help="(re)generate queries.jsonl from taskspecs (classify + persona)")
+    ap.add_argument("--taskspecs-dir", default=None,
+                    help="taskspecs root (default data/taskspecs)")
+    ap.add_argument("--queries", default=None,
+                    help="queries JSONL path (default datasets/queries.jsonl)")
     ap.add_argument("--classify-workers", type=int, default=32)
     # ── Stage 2: collect ──
     ap.add_argument("--no-collect", action="store_true", help="skip collection")
     ap.add_argument("--num-queries", type=int, default=100)
     ap.add_argument("--max-concurrent", type=int, default=32)
+    ap.add_argument("--backend", default="e2b", help="sandbox backend (e2b|local)")
+    ap.add_argument("--template", default="agentic-cl-sandbox", help="sandbox template name")
     ap.add_argument("--actor-model", default="openai/gpt-5")
     ap.add_argument("--max-turns", type=int, default=20, help="K_max: follow-up upper bound (§3.5 U{1..K_max})")
     ap.add_argument("--hermes-max-turns", type=int, default=30, help="hermes ReAct limit")
@@ -423,17 +434,24 @@ def main() -> None:
 
     t0 = time.time()
 
+    queries_path = Path(args.queries) if args.queries else _QUERIES_PATH
+
     if args.generate:
-        stage_queries(classify=True, classify_workers=args.classify_workers)
+        taskspecs_dir = Path(args.taskspecs_dir) if args.taskspecs_dir else _TASKSPECS_DIR
+        stage_queries(taskspecs_dir=taskspecs_dir, queries_path=queries_path,
+                      classify_workers=args.classify_workers)
     else:
-        n = sum(1 for _ in open(_QUERIES_PATH)) if _QUERIES_PATH.exists() else 0
-        print(f"[skip] using existing queries.jsonl ({n} rows)")
+        n = sum(1 for _ in open(queries_path)) if queries_path.exists() else 0
+        print(f"[skip] using existing {queries_path} ({n} rows)")
 
     if not args.no_collect:
         stage_collect(
+            queries_path=queries_path,
             num_queries=args.num_queries,
             max_concurrent=args.max_concurrent,
             actor_model=args.actor_model,
+            backend=args.backend,
+            template_name=args.template,
             max_turns=args.max_turns,
             hermes_max_turns=args.hermes_max_turns,
             slot_timeout=args.slot_timeout,
@@ -444,7 +462,7 @@ def main() -> None:
 
     print(f"\n{'='*60}")
     print(f"ALL DONE in {time.time()-t0:.0f}s")
-    print(f"  queries      → {_QUERIES_PATH}")
+    print(f"  queries      → {queries_path}")
     print(f"  trajectories → {_OUT_DIR}/grpo_hermes.jsonl")
 
 
