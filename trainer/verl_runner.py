@@ -60,6 +60,52 @@ def inject_cl_loss(trainer: Any, cfg: Any, buffer: Any | None = None) -> None:
     trainer.actor_rollout_wg.set_loss_fn(make_cl_loss_from_cfg(cfg))
 
 
+def _persist_winners(rows: list, exp_name: str, step: int) -> None:
+    """Save winner trajectories (highest reward per task_id) as JSONL.
+
+    GRPO produces 8 trajectories per query; only the winner is kept for
+    offline analysis and reproducibility.  Grouped by task_id (or falls
+    back to hash of messages if task_id is unavailable).
+    """
+    if not rows:
+        return
+    import hashlib, json, os
+    from pathlib import Path
+
+    # Group by task_id → list of (trajectory, bucket, meta)
+    groups: dict[str, list] = {}
+    for traj, bucket, meta in rows:
+        tid = meta.get("task_id")
+        if not tid:
+            # Fallback: hash the first user message
+            msgs = traj.get("messages", [])
+            first = msgs[0]["content"] if msgs else ""
+            tid = hashlib.md5(first.encode()).hexdigest()[:8]
+        groups.setdefault(tid, []).append((traj, bucket, meta))
+
+    out_dir = Path(f"rollouts/training/{exp_name}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"step-{step}.jsonl"
+
+    saved = 0
+    with open(out_file, "w", encoding="utf-8") as f:
+        for tid, candidates in groups.items():
+            # Winner = max reward
+            best = max(candidates, key=lambda x: float(x[2].get("reward", 0) or 0))
+            traj, bucket, meta = best
+            row = {
+                "task_id": tid,
+                "bucket": bucket,
+                "reward": meta.get("reward"),
+                "messages": traj.get("messages", []),
+                "step": step,
+            }
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            saved += 1
+
+    print(f"[persist] {saved} winners → {out_file} (from {len(rows)} trajectories)", flush=True)
+
+
 def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
     """Patch RayPPOTrainer to feed trajectories into buffer and pre-stage replay.
 
@@ -138,13 +184,22 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
                 backfill_forgetting(buffer, tids, means)
 
         # 3. Post: ingest the step's new trajectories into the buffer.
-        #    Use rl_batch (pre-append) so replay rows are not re-ingested.
-        #    valid_buckets lets the adapter recover LLM-emitted <task_domain>
-        #    labels when no explicit bucket field is present (domain_tagging).
+        #    Strip zero-width chars from messages before buffer insertion
+        #    (training actor + judge produce text via sufy, may introduce ZW).
+        from data.cleaning import strip_zw
+
+        all_rows: list[tuple[Any, str, dict]] = []
         for trajectory, bucket, meta in extract_trajectories_from_batch(
             rl_batch, valid_buckets=getattr(buffer, "bucket_names", None)
         ):
+            for msg in trajectory.get("messages", []):
+                if isinstance(msg.get("content"), str):
+                    msg["content"] = strip_zw(msg["content"])
             buffer.add_trajectory(trajectory, bucket, meta)
+            all_rows.append((trajectory, bucket, meta))
+
+        # 3b. Persist winner trajectories (highest reward per task_id).
+        _persist_winners(all_rows, exp_name, step)
 
         # 4. Post: buffer-dynamics evidence (wandb metrics + sidecar JSONL).
         if stats_log_freq > 0 and step % stats_log_freq == 0:
