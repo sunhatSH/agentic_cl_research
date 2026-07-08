@@ -3,8 +3,7 @@
 # Each stage is incremental — safe to resume if interrupted.
 #
 # Stages:
-#   S1  --generate            (re)generate queries.jsonl (classify + persona)
-#   S1b --filter              LLM 剔除沙箱不可跑任务
+#   S1  --generate            (re)generate queries.jsonl (classify + persona + runnability)
 #   S2  --collect             multi-turn collection (actor+observer+questioner)
 #   S2b                       garble-character filter (drops bad trajectories)
 #   S3  --parquet             trajectories → train.parquet + val.parquet
@@ -46,18 +45,10 @@ echo "  parquet=$DO_PARQUET  warmup=$DO_WARMUP"
 echo "============================================"
 echo ""
 
-# ── S1: queries generation ──────────────────────────────────────────────
+# ── S1: queries generation (classify + persona + runnability) ────────
 if $DO_GENERATE; then
-  echo "========== S1: 打桶 + 人设 =========="
+  echo "========== S1: 打桶 + 人设 + 可跑性 =========="
   .venv/bin/python scripts/run_cold_start.py --generate --no-collect --classify-workers 32
-  wc -l "$QUERIES"
-fi
-
-# ── S1b: filter unrunnable ──────────────────────────────────────────────
-if $DO_FILTER; then
-  echo ""
-  echo "========== S1b: 剔除沙箱不可跑任务 =========="
-  .venv/bin/python scripts/filter_unrunnable.py --workers 32
   wc -l "$QUERIES"
 fi
 

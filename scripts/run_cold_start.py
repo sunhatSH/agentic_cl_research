@@ -137,9 +137,16 @@ def _classify_one(rec: dict, client: Any) -> dict:
         bucket_msgs[1]["content"]
         + "\n\n此外，从以下 42 个人设中选出最适合审阅这个任务的 1 个：\n"
         + persona_options
-        + "\n\n输出一个 JSON，同时给出 bucket 和 persona：\n"
+        + "\n\n最后，判断这个任务在一个**纯 Linux 沙箱容器**（有预置工作区文件、"
+        + "能读写文件、能运行代码和命令，但**没有**用户本机磁盘如 Windows E:\\/C:\\ 盘、"
+        + "没有真实飞书/微信/钉钉消息通道，没有真实 webhook/公众号/外部 API 凭证）"
+        + "里能否产出有意义的结果。\n"
+        + "规则：如果任务的核心必须依赖上述沙箱不具备的资源（如必须读取用户本机 "
+        + "E:\\盘的具体文件，必须真实发送飞书/微信消息），则 runnable=false；"
+        + "如果任务主要是读写沙箱内预置文件、写代码、处理数据、回答问题，则 runnable=true。\n"
+        + "\n输出一个 JSON，同时给出 bucket、persona 和 runnable：\n"
         + '{"bucket": "九桶之一", "sub_bucket": null, "rationale": "...", '
-        + '"persona_name": "某个人设的 name"}'
+        + '"persona_name": "某个人设的 name", "runnable": true/false}'
     )
     msgs = [bucket_msgs[0], {"role": "user", "content": combined_user}]
     try:
@@ -165,6 +172,8 @@ def _classify_one(rec: dict, client: Any) -> dict:
     pn = obj.get("persona_name", "").strip()
     valid_personas = {p["name"] for p in _load_persona_catalog()}
     rec["persona_name"] = pn if pn in valid_personas else "random"
+    # Runnability from same response (default True - keep on parse error)
+    rec["runnable"] = obj.get("runnable", True)
     return rec
 
 
@@ -208,10 +217,14 @@ def stage_queries(*, taskspecs_dir: Path | None = None, queries_path: Path | Non
 
         print(f"  classify done: LLM_ok={llm_ok}  LLM_unknown={llm_unknown}")
 
-    # 1c — write queries.jsonl
+    # 1c — write queries.jsonl (skip unrunnable)
     q_path.parent.mkdir(parents=True, exist_ok=True)
+    skipped_unrunnable = 0
     with open(q_path, "w", encoding="utf-8") as fh:
         for rec in records:
+            if not rec.get("runnable", True):
+                skipped_unrunnable += 1
+                continue
             row = {
                 "record_id": rec["record_id"],
                 "queries": [rec["seed_query"]] + rec.get("follow_ups", []),
@@ -221,14 +234,15 @@ def stage_queries(*, taskspecs_dir: Path | None = None, queries_path: Path | Non
             }
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    c = Counter(r.get("bucket", "unknown") for r in records)
+            c = Counter(r.get("bucket", "unknown") for r in records if r.get("runnable", True))
     print("  bucket distribution:")
     for b, n in c.most_common():
         bar = "█" * (n * 50 // max(c.values()))
         print(f"    {b:15s} {n:5d}  {bar}")
 
-    print(f"  → {q_path} ({len(records)} rows)")
-    return len(records)
+    written = len(records) - skipped_unrunnable
+    print(f"  → {q_path} ({written} rows, skipped {skipped_unrunnable} unrunnable)")
+    return written
 
 
 # ── Stage 2: sandbox collection ──────────────────────────────────────────
