@@ -114,6 +114,11 @@ _SNAPSHOT_PROBE = (
     "    dirs[:]=[d for d in dirs if d not in SKIP]\n"
     "    for fn in files:\n"
     "        p=os.path.join(root, fn)\n"
+    # Belt-and-suspenders: skip any path whose components hit a runtime dir.
+    # (os.walk pruning can miss when a SKIP dir is created between snapshots or
+    # when ROOT resolution differs; this guarantees .hermes/etc never leak in.)
+    "        if any(seg in SKIP for seg in p.split(os.sep)):\n"
+    "            continue\n"
     "        try:\n"
     "            st=os.stat(p)\n"
     "        except OSError:\n"
