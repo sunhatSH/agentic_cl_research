@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -308,14 +309,11 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
                       successes untouched. Safe to resume an interrupted run.
       - retry       : run ONLY existing FAILED rows; keep everything else.
 
-    In every mode the file is written by merging on query_index: a successful
-    new result replaces whatever was there; existing successes are preserved.
-
-    Post-cleaning: all trajectory messages are stripped of zero-width chars
-    before writing. (Front cleaning on seed_queries happens in _load_one_taskspec.)
+    Post-cleaning: after all queries complete, the output JSONL is piped through
+    the C++ ``strip_zw`` binary to strip zero-width chars. Front cleaning on
+    seed_queries happens in _load_one_taskspec.
     """
     from scripts.sandbox_grpo_collect import _load_queries, _run_one_collect_query
-    from data.cleaning import strip_zw
 
     # Observer + Questioner (session agents). Created once, shared across threads
     # (each call is stateless per session; LLM clients are thread-safe HTTP).
@@ -391,10 +389,6 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
             for fut in as_completed(futures):
                 traj = fut.result()
                 row = json.loads(traj.to_jsonl())
-                # Post-cleaning: strip zero-width chars from all message content
-                for m in row.get("messages", []):
-                    if isinstance(m.get("content"), str):
-                        m["content"] = strip_zw(m["content"])
                 if traj and traj.error:
                     err += 1
                     # In incremental/retry: only overwrite if there was no prior
@@ -414,6 +408,16 @@ def stage_collect(*, num_queries: int, max_concurrent: int, actor_model: str,
                 pbar.update(1)
 
     _flush()
+    # Post-cleaning: pipe through C++ strip_zw to remove zero-width chars
+    _strip_bin = _REPO / "bin" / "strip_zw"
+    if _strip_bin.is_file():
+        import tempfile
+        tmp = out_file.with_suffix(".jsonl.tmp")
+        with open(out_file, "rb") as src, open(tmp, "wb") as dst:
+            subprocess.run([str(_strip_bin)], stdin=src, stdout=dst, check=True)
+        tmp.replace(out_file)
+        print("  [strip_zw] post-cleaned with C++ binary")
+
     elapsed = time.time() - t0
     total_ok = sum(1 for t in merged.values() if not t.get("error"))
     total_err = sum(1 for t in merged.values() if t.get("error"))
