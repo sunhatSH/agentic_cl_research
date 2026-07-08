@@ -258,7 +258,8 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
                    actor_model: str, max_turns: int, hermes_max_turns: int,
                    slot_timeout: int, mode: str = "overwrite",
                    multi_turn: bool = True, out_dir: Path | None = None,
-                   backend: str = "e2b", template_name: str = "agentic-cl-sandbox") -> int:
+                   backend: str = "e2b", template_name: str = "agentic-cl-sandbox",
+                   workspace_dir: str | None = None) -> int:
     """Run parallel sandbox collection — 1 sandbox per query.
 
     Multi-turn (default): actor(hermes) + observer + questioner drive up to
@@ -344,6 +345,7 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
                 max_turns=max_turns, hermes_max_turns=hermes_max_turns,
                 slot_timeout=slot_timeout, backend=backend, template=template_name,
                 observer=observer, questioner=questioner, rng_seed=i,
+                workspace_dir=workspace_dir,
             ): i
             for i in to_run
         }
@@ -430,6 +432,8 @@ def main() -> None:
                     help="seed query only, no observer/questioner")
     ap.add_argument("--out-dir", default=None,
                     help="output dir (default rollouts/cold_start)")
+    ap.add_argument("--workspace-dir", default=None,
+                    help="workspace files root (default data/taskspecs)")
     args = ap.parse_args()
 
     t0 = time.time()
@@ -458,6 +462,7 @@ def main() -> None:
             mode=args.collect_mode,
             multi_turn=not args.single_turn,
             out_dir=Path(args.out_dir) if args.out_dir else None,
+            workspace_dir=args.workspace_dir,
         )
 
     print(f"\n{'='*60}")

@@ -243,14 +243,16 @@ _TASKSPECS_DIR = Path(__file__).resolve().parent.parent / "data" / "taskspecs"
 _SKIP_NAMES = frozenset({".DS_Store", "Thumbs.db"})
 
 
-def _upload_workspace(sb: Any, record_id: str) -> int:
-    """Upload ``data/taskspecs/<record_id>/files/`` into the sandbox.
+def _upload_workspace(sb: Any, record_id: str, workspace_dir: str | None = None) -> int:
+    """Upload workspace files into the sandbox from ``<workspace_dir>/<record_id>/files/``.
 
+    When ``workspace_dir`` is None, falls back to ``data/taskspecs/``.
     Preserves the directory structure (relative paths).  Junk files
     (.DS_Store, Thumbs.db, ~$* lock files) are skipped.  Returns the
     number of files uploaded (0 if the taskspec has no files/ dir).
     """
-    src = _TASKSPECS_DIR / record_id / "files"
+    base = Path(workspace_dir) if workspace_dir else _TASKSPECS_DIR
+    src = base / record_id / "files"
     if not src.is_dir():
         return 0
 
@@ -316,6 +318,7 @@ def _run_one_collect_query(
     observer: Any = None,
     questioner: Any = None,
     rng_seed: int = 0,
+    workspace_dir: str | None = None,
 ) -> SlotTrajectory:
     """Full lifecycle for ONE query in collect mode (multi-turn, no reward/winner).
 
@@ -348,7 +351,7 @@ def _run_one_collect_query(
 
     try:
         if record_id:
-            n = _upload_workspace(sb, record_id)
+            n = _upload_workspace(sb, record_id, workspace_dir)
             if n:
                 print(f"  q{qi}: uploaded {n} ws files ({record_id})", flush=True)
 
