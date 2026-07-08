@@ -71,13 +71,13 @@ if $DO_COLLECT; then
       --num-queries "$N" --max-concurrent 32 \
       --max-turns 20 --hermes-max-turns 30 --slot-timeout 900
 
-  # S2b: drop trajectories with garbled chars > threshold
+  # S2b: ZW strip + garbled filter (C++)
   CLEANED="${TRAJ%.jsonl}_clean.jsonl"
   echo ""
-  echo "========== S2b: 脏字符过滤 =========="
-  .venv/bin/python scripts/clean_trajectories.py \
-      --input "$TRAJ" --output "$CLEANED" --garble-threshold 0.05
+  echo "========== S2b: ZW-清洗 + 脏字符过滤 (C++) =========="
+  bin/strip_zw < "$TRAJ" | bin/filter_garbled --garble-threshold 0.05 > "$CLEANED" 2> "${TRAJ%.jsonl}_dropped.log"
   mv "$CLEANED" "$TRAJ"
+  grep -c "^# total" "${TRAJ%.jsonl}_dropped.log" || true
   wc -l "$TRAJ"
 fi
 

@@ -91,9 +91,12 @@ def _load_one_taskspec(subdir: Path) -> dict[str, Any] | None:
     seed = ts.get("seed_query", "")
     if not isinstance(seed, str) or not seed.strip():
         return None
-    # Front cleaning: strip zero-width chars from source
-    from data.cleaning import strip_zw
+    # Front cleaning: strip ZW + drop if any garbled char remains (threshold=0)
+    from data.cleaning import analyze_text, strip_zw
     seed = strip_zw(seed)
+    a = analyze_text(seed)
+    if a.garble_chars > 0:
+        return None   # dirty seed → discard entirely
     follow_ups = []
     profile = ts.get("user_profile") or {}
     fu = profile.get("follow_ups") if isinstance(profile, dict) else None
