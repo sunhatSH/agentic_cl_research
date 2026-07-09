@@ -106,7 +106,7 @@ class ReadOnlySandbox(Protocol):
 _SNAPSHOT_PROBE = (
     "import os, json, hashlib\n"
     "ROOT='.'; MAX_TEXT=2048; MAX_FILES=200\n"
-    "SKIP={'.git','__pycache__','node_modules','.cache','.ipynb_checkpoints','.venv','.hermes'}\n"
+    "SKIP={'.git','__pycache__','node_modules','.cache','.ipynb_checkpoints','.venv','.hermes','.npm','.local','.config','.cache','.gradle','.m2'}\n"
     "out={}\n"
     "for root, dirs, files in os.walk(ROOT):\n"
     "    if root.count(os.sep) > 5:\n"
@@ -165,7 +165,13 @@ _SYS_PROBE = (
     "        for line in f:\n"
     "            parts=line.split()\n"
     "            if len(parts)>3 and parts[3]=='0A':\n"  # 0A = LISTEN
-    "                ports.add(int(parts[1].split(':')[1], 16))\n"
+    "                port=int(parts[1].split(':')[1], 16)\n"
+    # Ephemeral ports (>=32768) are OS-assigned random binds (uvicorn/vllm
+    # default workers, httpx connection pools, etc.) — not meaningful actor
+    # effects, and they flood the diff. Only keep privileged + registered
+    # range ports that an actor would explicitly bind to.
+    "                if port < 32768:\n"
+    "                    ports.add(port)\n"
     "    out['ports']=sorted(ports)\n"
     "except Exception:\n"
     "    pass\n"
@@ -201,35 +207,138 @@ def _extract_probe(paths: list[str]) -> str:
         "import os, json\n"
         "PATHS=" + json.dumps(paths) + "\n"
         "CAP=2000\n"
+        "def _c(font):\n"
+        "    try:\n"
+        "        c=font.color\n"
+        "        if c is None or c.type is None: return None\n"
+        "        rgb=getattr(c, 'rgb', None)\n"
+        "        if rgb is None: return None\n"
+        "        s=str(rgb)\n"
+        "        if s and s!='00000000' and 'Values must be' not in s: return s\n"
+        "    except Exception: pass\n"
+        "    return None\n"
+        "def _fill(cell):\n"
+        "    try:\n"
+        "        f=cell.fill\n"
+        "        if f is not None and f.fgColor is not None and f.fgColor.rgb is not None:\n"
+        "            s=str(f.fgColor.rgb)\n"
+        "            if s and s!='00000000': return s\n"
+        "    except Exception: pass\n"
+        "    return None\n"
         "def x_xlsx(p):\n"
         "    import openpyxl\n"
-        "    wb=openpyxl.load_workbook(p, read_only=True, data_only=True)\n"
+        "    wb=openpyxl.load_workbook(p, data_only=True)\n"
         "    o=[]\n"
         "    for ws in wb.worksheets:\n"
-        "        o.append('# sheet %s' % ws.title)\n"
-        "        for i,row in enumerate(ws.iter_rows(values_only=True)):\n"
-        "            if i>=30: o.append('  …'); break\n"
-        "            o.append('  '+', '.join('' if c is None else str(c) for c in row))\n"
+        "        o.append('# sheet: %s' % ws.title)\n"
+        "        merged=[str(m) for m in ws.merged_cells.ranges]\n"
+        "        if merged: o.append('  merged: '+', '.join(merged[:5]))\n"
+        "        for i,row in enumerate(ws.iter_rows()):\n"
+        "            if i>=30: o.append('  ...'); break\n"
+        "            cells=[]\n"
+        "            for c in row:\n"
+        "                if c.value is None: continue\n"
+        "                tags=[]\n"
+        "                if c.font is not None and c.font.bold: tags.append('bold')\n"
+        "                col=_c(c.font) if c.font is not None else None\n"
+        "                if col: tags.append('fg#'+col)\n"
+        "                fl=_fill(c)\n"
+        "                if fl: tags.append('bg#'+fl)\n"
+        "                tag='['+','.join(tags)+']' if tags else ''\n"
+        "                cells.append(tag+str(c.value))\n"
+        "            if cells: o.append('  '+' | '.join(cells))\n"
         "    return '\\n'.join(o)\n"
         "def x_docx(p):\n"
         "    import docx\n"
-        "    return '\\n'.join(par.text for par in docx.Document(p).paragraphs if par.text)\n"
+        "    from docx.oxml.ns import qn\n"
+        "    from docx.text.paragraph import Paragraph\n"
+        "    from docx.table import Table\n"
+        "    d=docx.Document(p)\n"
+        "    o=[]\n"
+        "    for child in d.element.body.iterchildren():\n"
+        "        if child.tag==qn('w:p'):\n"
+        "            para=Paragraph(child, d)\n"
+        "            text=para.text\n"
+        "            if not text.strip(): continue\n"
+        "            tags=[]\n"
+        "            style=para.style.name if para.style is not None else ''\n"
+        "            if style and style!='Normal': tags.append(style)\n"
+        "            for r in para.runs:\n"
+        "                if r.bold: tags.append('bold'); break\n"
+        "            for r in para.runs:\n"
+        "                if r.italic: tags.append('italic'); break\n"
+        "            for r in para.runs:\n"
+        "                col=_c(r.font)\n"
+        "                if col: tags.append('fg#'+col); break\n"
+        "            tag='['+','.join(tags)+']' if tags else ''\n"
+        "            o.append('  '+tag+text)\n"
+        "        elif child.tag==qn('w:tbl'):\n"
+        "            tbl=Table(child, d)\n"
+        "            o.append('  [table]')\n"
+        "            for r,row in enumerate(tbl.rows):\n"
+        "                cells=[cell.text for cell in row.cells]\n"
+        "                o.append('    r%d: %s' % (r, ' | '.join(cells)))\n"
+        "    return '\\n'.join(o)\n"
         "def x_pptx(p):\n"
         "    from pptx import Presentation\n"
+        "    prs=Presentation(p)\n"
         "    o=[]\n"
-        "    for i,s in enumerate(Presentation(p).slides, 1):\n"
+        "    for i,slide in enumerate(prs.slides, 1):\n"
         "        o.append('# slide %d' % i)\n"
-        "        for sh in s.shapes:\n"
-        "            if getattr(sh,'has_text_frame',False) and sh.text_frame.text.strip():\n"
-        "                o.append('  '+sh.text_frame.text.strip())\n"
+        "        for sh in slide.shapes:\n"
+        "            ph=None\n"
+        "            try: ph=sh.placeholder_format\n"
+        "            except Exception: pass\n"
+        "            if getattr(sh,'has_table',False):\n"
+        "                o.append('  [table]')\n"
+        "                for r,row in enumerate(sh.table.rows):\n"
+        "                    cells=[cell.text for cell in row.cells]\n"
+        "                    o.append('    r%d: %s' % (r, ' | '.join(cells)))\n"
+        "            elif getattr(sh,'has_text_frame',False):\n"
+        "                role=''\n"
+        "                if ph is not None:\n"
+        "                    role={0:'title',1:'body',5:'title-only'}.get(ph.idx, 'ph%d' % ph.idx)\n"
+        "                for para in sh.text_frame.paragraphs:\n"
+        "                    if not para.text.strip(): continue\n"
+        "                    tags=[]\n"
+        "                    if role: tags.append(role)\n"
+        "                    if para.font.bold: tags.append('bold')\n"
+        "                    if para.font.italic: tags.append('italic')\n"
+        "                    col=_c(para.font)\n"
+        "                    if col: tags.append('fg#'+col)\n"
+        "                    if para.level: tags.append('L%d' % para.level)\n"
+        "                    tag='['+','.join(tags)+']' if tags else ''\n"
+        "                    o.append('  '+tag+para.text)\n"
         "    return '\\n'.join(o)\n"
         "def x_pdf(p):\n"
         "    import pdfplumber\n"
         "    o=[]\n"
         "    with pdfplumber.open(p) as pdf:\n"
         "        for i,pg in enumerate(pdf.pages):\n"
-        "            if i>=3: o.append('…'); break\n"
-        "            o.append(pg.extract_text() or '')\n"
+        "            if i>=3: o.append('...'); break\n"
+        "            o.append('# page %d' % (i+1))\n"
+        "            for t in pg.extract_tables():\n"
+        "                o.append('  [table]')\n"
+        "                for r,row in enumerate(t):\n"
+        "                    o.append('    r%d: %s' % (r, ' | '.join(c or '' for c in row)))\n"
+        "            chars=pg.chars\n"
+        "            if chars:\n"
+        "                lines={}\n"
+        "                for ch in chars:\n"
+        "                    lines.setdefault(round(ch['top']), []).append(ch)\n"
+        "                for top in sorted(lines):\n"
+        "                    chs=sorted(lines[top], key=lambda c: c['x0'])\n"
+        "                    text=''.join(c['text'] for c in chs)\n"
+        "                    if not text.strip(): continue\n"
+        "                    tags=[]\n"
+        "                    c0=chs[0]; sz=c0.get('size',0)\n"
+        "                    if sz>14: tags.append('big(title)')\n"
+        "                    elif sz>11: tags.append('mid')\n"
+        "                    color=c0.get('non_stroking_color')\n"
+        "                    if color is not None and tuple(color)!=(0,0,0):\n"
+        "                        tags.append('fg'+str(tuple(round(x,2) for x in color)))\n"
+        "                    tag='['+','.join(tags)+']' if tags else ''\n"
+        "                    o.append('  '+tag+text)\n"
         "    return '\\n'.join(o)\n"
         "DISP={'.xlsx':x_xlsx,'.xlsm':x_xlsx,'.docx':x_docx,'.pptx':x_pptx,'.pdf':x_pdf}\n"
         "out={}\n"
@@ -869,6 +978,19 @@ class Observer:
                     )
                     report.file_tree = file_tree
                     report.state_diff = state_diff
+                    # P0: if the LLM returned an empty final/intermediate, backfill
+                    # from the deterministic report (which always extracts them from
+                    # the diff). The LLM is an *enhancement*; deterministic is the
+                    # floor — never let the questioner see an empty deliverable list
+                    # when the diff actually contains realized artifacts.
+                    if not report.final and not report.intermediate and diff is not None:
+                        det = build_deterministic_report(
+                            diff=diff, file_tree=file_tree, state_diff=state_diff
+                        )
+                        report.final = det.final
+                        report.intermediate = det.intermediate
+                        if not report.discrepancies:
+                            report.discrepancies = det.discrepancies
                     return report
 
                 # Process tool calls
@@ -915,6 +1037,15 @@ class Observer:
             report = parse_observation_report(content, fallback_tree=file_tree, fallback_diff=state_diff)
             report.file_tree = file_tree
             report.state_diff = state_diff
+            # P0: backfill deterministic final/intermediate if LLM left them empty.
+            if not report.final and not report.intermediate and diff is not None:
+                det = build_deterministic_report(
+                    diff=diff, file_tree=file_tree, state_diff=state_diff
+                )
+                report.final = det.final
+                report.intermediate = det.intermediate
+                if not report.discrepancies:
+                    report.discrepancies = det.discrepancies
             return report
 
         except TruncatedOutputError:

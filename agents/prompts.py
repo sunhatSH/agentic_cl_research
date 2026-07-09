@@ -174,9 +174,13 @@ def _persona_block(p: Persona) -> str:
 def _report_block(r: ObservationReport) -> str:
     # State findings only -- the questioner/reward see what was produced, NOT the
     # raw actor trajectory (that is the reward-only pass-through ``actor_trajectory``).
+    # P1: include state_diff (capped) so the questioner can see file CONTENT
+    # excerpts, not just the final/intermediate summaries — gives it a concrete
+    # handle to critique ("cell B2 says X", "slide 3 has no conclusion").
     payload = {
-        "intermediate": r.intermediate,
         "final": r.final,
+        "state_diff": (r.state_diff or "")[:5000],
+        "intermediate": r.intermediate,
         "discrepancies": r.discrepancies,
         "file_tree": r.file_tree,
     }
