@@ -93,3 +93,11 @@ master-thesis/**/*.synctex.gz
 master-thesis/**/*.xdv
 master-thesis/*xelatex*
 *.pdf
+
+# LaTeX build artifacts
+paper/latex/main.aux
+paper/latex/main.bbl
+paper/latex/main.blg
+paper/latex/main.out
+paper/latex/main.log
+paper/latex/main.pdf

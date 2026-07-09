@@ -37,7 +37,26 @@ sys.path.insert(0, str(_REPO))
 
 _TASKSPECS_DIR = _REPO / "data" / "taskspecs"
 _QUERIES_PATH = _REPO / "datasets" / "queries.jsonl"
-_OUT_DIR = _REPO / "rollouts" / "cold_start"
+# Rollout data lives OUTSIDE the repo (gitignored by location), organized as:
+#   <ROOT>/{real,smoke}/trajectory/<model>/grpo_hermes.jsonl + manifest.json
+#   <ROOT>/{real,smoke}/debug/observer_report/<model>/observer_reports.jsonl
+_ROLLOUTS_ROOT = Path("/mnt/afs_toolcall/sunhao4/agentic_cl_rollouts")
+_OUT_DIR = _ROLLOUTS_ROOT / "real"   # default collection target (real/, not smoke/)
+
+
+def _model_tag(actor_model: str) -> str:
+    """Short folder tag inferred from the actor model id (gpt5 / qwen27b / ...)."""
+    m = actor_model.lower()
+    if "gpt-5" in m or "gpt5" in m:
+        return "gpt5"
+    if "qwen3.6-27b" in m or "qwen27b" in m:
+        return "qwen27b"
+    if "qwen" in m:
+        return "qwen"
+    # fallback: last path segment, sanitized
+    tail = actor_model.rsplit("/", 1)[-1]
+    return "".join(c if c.isalnum() else "-" for c in tail).strip("-") or "model"
+
 
 # ── task_family → bucket static mapping (6 types, zero LLM cost) ────────
 
@@ -274,7 +293,8 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
                    slot_timeout: int, mode: str = "overwrite",
                    multi_turn: bool = True, out_dir: Path | None = None,
                    backend: str = "e2b", template_name: str = "agentic-cl-sandbox",
-                   workspace_dir: str | None = None) -> int:
+                   workspace_dir: str | None = None,
+                   model_tag: str | None = None, smoke: bool = False) -> int:
     """Run parallel sandbox collection — 1 sandbox per query.
 
     Multi-turn (default): actor(hermes) + observer + questioner drive up to
@@ -310,10 +330,20 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
     tasks = _load_queries(str(queries_path), num_queries)
     total = len(tasks)
 
-    out_root = out_dir or _OUT_DIR
-    out_root.mkdir(parents=True, exist_ok=True)
-    out_file = out_root / "grpo_hermes.jsonl"
-    observer_log = out_root / "observer_reports.jsonl"  # separate debug file (session_id + turn indexed)
+    # Output layout: <base>/trajectory/<model>/  +  <base>/debug/observer_report/<model>/
+    # where <base> defaults to <ROLLOUTS_ROOT>/{real|smoke}. --out-dir overrides <base>.
+    base = out_dir or (_ROLLOUTS_ROOT / ("smoke" if smoke else "real"))
+    tag = model_tag or _model_tag(actor_model)
+    traj_dir = base / "trajectory" / tag
+    debug_dir = base / "debug" / "observer_report" / tag
+    traj_dir.mkdir(parents=True, exist_ok=True)
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    out_root = traj_dir  # manifest + trajectory colocated
+    out_file = traj_dir / "grpo_hermes.jsonl"
+    observer_log = debug_dir / "observer_reports.jsonl"  # session_id + turn indexed
+    print(f"  output: {out_file}")
+    print(f"  observer reports: {observer_log}")
+
 
     # Existing state (for incremental / retry merge).
     existing = {} if mode == "overwrite" else _load_existing(out_file)
@@ -447,7 +477,12 @@ def main() -> None:
     ap.add_argument("--single-turn", action="store_true",
                     help="seed query only, no observer/questioner")
     ap.add_argument("--out-dir", default=None,
-                    help="output dir (default rollouts/cold_start)")
+                    help="override output BASE dir (default <ROLLOUTS_ROOT>/{real|smoke}); "
+                         "trajectory/<model>/ and debug/observer_report/<model>/ are created under it")
+    ap.add_argument("--model-tag", default=None,
+                    help="model folder tag (default inferred from --actor-model: gpt5/qwen27b/...)")
+    ap.add_argument("--smoke", action="store_true",
+                    help="write under <ROLLOUTS_ROOT>/smoke instead of real/")
     ap.add_argument("--workspace-dir", default=None,
                     help="workspace files root (default data/taskspecs)")
     args = ap.parse_args()
@@ -479,12 +514,17 @@ def main() -> None:
             multi_turn=not args.single_turn,
             out_dir=Path(args.out_dir) if args.out_dir else None,
             workspace_dir=args.workspace_dir,
+            model_tag=args.model_tag,
+            smoke=args.smoke,
         )
 
     print(f"\n{'='*60}")
     print(f"ALL DONE in {time.time()-t0:.0f}s")
     print(f"  queries      → {queries_path}")
-    print(f"  trajectories → {_OUT_DIR}/grpo_hermes.jsonl")
+    _tag = args.model_tag or _model_tag(args.actor_model)
+    _base = Path(args.out_dir) if args.out_dir else (_ROLLOUTS_ROOT / ("smoke" if args.smoke else "real"))
+    print(f"  trajectories → {_base}/trajectory/{_tag}/grpo_hermes.jsonl")
+    print(f"  observer     → {_base}/debug/observer_report/{_tag}/observer_reports.jsonl")
 
 
 if __name__ == "__main__":
