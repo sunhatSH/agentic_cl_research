@@ -376,6 +376,9 @@ def _run_one_collect_query(
 
         patience_tracker = PatienceTracker(persona, rng) if (multiturn and persona) else None
 
+        # Baseline AFTER workspace upload + hermes config write, so seed files
+        # and hermes runtime files are in the baseline and don't show up as
+        # "added" on turn 1. Only actor's own changes during the session count.
         baseline = observer.snapshot(sb) if multiturn else None
         turn = 0
         ended_by = "k_budget"
