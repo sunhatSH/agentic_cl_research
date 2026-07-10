@@ -601,14 +601,13 @@ def test_config_resolve_questioner_from_yaml():
     _reload_config(None)
     try:
         q_cfg = resolve_questioner()
-        assert len(q_cfg.rotation) == 4
-        # Order = failover priority. Reliable non-thinking models first
-        # (sonnet / qwen3-max), thinking models last (deepseek / kimi) — the
-        # latter over-truncate at low max_tokens (2026-07-10 Iter3).
+        assert len(q_cfg.rotation) == 3
+        # All reliable NON-thinking models — the thinking models (deepseek/kimi)
+        # were removed after iter9 showed they over-truncate on long prompts and
+        # cause questioner_error via chained failover (2026-07-10 Iter10).
         assert q_cfg.rotation[0].model == "claude-4.6-sonnet"
         assert q_cfg.rotation[1].model == "qwen3-max"
-        assert q_cfg.rotation[2].model == "deepseek/deepseek-v4-pro"
-        assert q_cfg.rotation[3].model == "moonshotai/kimi-k2.6"
+        assert q_cfg.rotation[2].model == "openai/gpt-5.4-mini"
         assert q_cfg.rotate_every == 5
     finally:
         _reload_config(None)

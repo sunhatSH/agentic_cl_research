@@ -541,3 +541,15 @@
   2. `build_questioner_prompt` 顶部固定加「# Your original task」块；新增 `_first_user_task`（取 session_history 第一条 user，**不受 12 条滑窗影响**）——修复长会话里原始任务被挤出窗口、questioner 无法核对完整性的问题。
 - **验证（本机）**：`pytest tests/test_agents.py` **65 passed**（+2：长会话仍暴露原始任务、_first_user_task 提取）；prompts.py ruff 干净。
 - **注意**：iter8 采集进程早于 Iter9 改动，故 iter8 数据只反映 Iter8 去噪、不含 Iter9。追问率改善需含 Iter9 的新采集验证。
+
+### 2026-07-10 Iter9 采集自检 + Iter10 修 questioner_error（thinking 模型移除）
+
+- **iter9（32q，含 Iter8 去噪 + Iter9 questioner 对照任务）自检**：
+  - 观察质量达标：端口/进程噪声 0、file_tree 运行时文件 0、final 全 dict、24 有文件报告内容充实、三分类格式正确。
+  - **表面单轮率 46.9%（15/32）看似恶化**，但拆解后是假象：5 个 agent_error（沙箱 TimeoutException，重任务，基础设施）+ 4 个 questioner_error（新问题）= 9 条 error 假单轮；真·满意单轮 9 个，**带红旗却结束 = 0**（无漏追问）；桶分布 qa(4)/communication(2)/workflow(3)——多为天然单轮（QA/roleplay/一次性）。
+  - **误判纠正**：q7/q11 之前疑似"漏追问"，核对交付物后确认 q7 明确交付了 query 要的全部 4 类测试点、questioner 判满意结束是**正确**的。
+  - 排除 error 后：有效多轮率 61%（14/23）、mean 2.35 turns、红旗跟进率 85.7%。
+- **真问题 = questioner_error（Iter9 引入的回归）**：Iter9 加长 questioner prompt（+原始任务块+更长规则）→ thinking 模型（kimi/deepseek）截断激增（iter9 日志 kimi 15 次 + deepseek 7 次）；questioner 不做截断退避（退避只给 reward）→ 一轮内多模型连环截断 → AllEndpointsFailed → questioner_error（4 条）。
+- **Iter10 修**：`configs/agents.yaml` questioner 池**移除两个 thinking 模型**，改为 3 个可靠非 thinking：claude-4.6-sonnet + qwen3-max + openai/gpt-5.4-mini。questioner 的活不需深推理，多样性靠 3 家 + rotate + 人设 + 每轮报告变化。`tests/test_agents.py` 断言更新（4→3 模型）。
+- **验证（本机）**：`pytest tests/test_agents.py tests/test_failover.py` 全绿；ruff 干净。
+- **决策**：暂不上 128——先跑含 Iter10 的验证 smoke 确认 questioner_error 归零、agent_error 仅剩沙箱超时（基础设施）。达标再上 128。
