@@ -108,7 +108,7 @@ def _write_hermes_config(sb: Any, model: str, base: str) -> ExecResult:
     whole slot budget.
     """
     code = (
-        "import os, yaml, subprocess\n"
+        "import os, yaml, subprocess, stat\n"
         f"model = os.environ.get('AGENT_MODEL_NAME', {model!r})\n"
         f"base  = os.environ.get('AGENT_MODEL_BASE', {base!r})\n"
         "key   = os.environ['AGENT_MODEL_KEY']\n"  # MUST be injected, else fail loud
@@ -118,11 +118,32 @@ def _write_hermes_config(sb: Any, model: str, base: str) -> ExecResult:
         "cfg = {'model': model, 'providers': {'agent': {'base_url': base, 'api_key': key, 'kind': 'openai'}}}\n"
         "open(home + '/.hermes/config.yaml', 'w').write(yaml.safe_dump(cfg, sort_keys=False))\n"
         "open(home + '/.hermes/.env', 'w').write('OPENAI_API_KEY=' + key + chr(10))\n"
-        # AGENTS.md: ban clarify in headless sandbox
+        # Serper search CLI — hermes doesn't natively support Serper, so we
+        # build a tiny script from a list of lines (avoids shell-escaping hell).
+        "sk = os.environ.get('SERPER_API_KEY', '').strip()\n"
+        "if sk:\n"
+        "    os.makedirs(home + '/.local/bin', exist_ok=True)\n"
+        "    lines = ['#!/usr/bin/env python3',\n"
+        "        'import json,os,sys,urllib.request as u',\n"
+        "        'sk=os.environ[\"SERPER_API_KEY\"]',\n"
+        "        'q=sys.argv[1]if len(sys.argv)>1 else sys.stdin.read().strip()',\n"
+        "        \"r=u.Request('https://google.serper.dev/search',\"\n"
+        "        \"    data=json.dumps({'q':q,'num':10}).encode(),\"\n"
+        "        \"    headers={'X-API-KEY':sk,'Content-Type':'application/json'})\",\n"
+        "        'd=json.loads(u.urlopen(r,timeout=15).read())',\n"
+        "        'for i,o in enumerate(d.get(\"organic\",[])[:10],1):',\n"
+        "        \"    t=o['title'];l=o['link'];s=o.get('snippet','')[:200]\",\n"
+        "        \"    print(f'{i}. {t}\\\\n   {l}\\\\n   {s}\\\\n')\",\n"
+        "    ]\n"
+        "    open(home + '/.local/bin/serper-search', 'w').write(chr(10).join(lines) + chr(10))\n"
+        "    os.chmod(home + '/.local/bin/serper-search', 0o755)\n"
+        # AGENTS.md: ban clarify + teach serper-search
         "open(home + '/AGENTS.md', 'w').write("
-        "'## Rules\\n- NEVER call the clarify tool. You are running in a "
-        "non-interactive sandbox with no human feedback path. "
-        "If you need clarifications, make reasonable assumptions and proceed.\\n')\n"
+        "'## Rules\\n'"
+        "'- NEVER call the clarify tool. You are running in a non-interactive '"
+        "'sandbox with no human feedback path. If you need clarifications, make '"
+        "'reasonable assumptions and proceed.\\n'"
+        "'- **Web search**: use `serper-search` CLI. e.g. `serper-search \"query\"`.\\n')\n"
         # reduce internal command timeout so clarify/failures don't eat slot budget
         "subprocess.run(['hermes', 'config', 'set', 'terminal.timeout', '60'], "
         "capture_output=True)\n"
