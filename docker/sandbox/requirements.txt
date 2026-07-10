@@ -35,3 +35,7 @@ python-docx>=1.1
 pdfplumber>=0.11
 tabulate>=0.9
 python-pptx>=0.6
+
+# --- search / retrieval (called via requests/httpx, no dedicated pip deps) ---
+# Serper:  https://serper.dev  — Google Search API
+# Jina:    https://jina.ai    — Reader / Embeddings API
