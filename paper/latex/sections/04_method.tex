@@ -266,9 +266,13 @@ execution. The three agents are:
 \begin{itemize}
   \item an \textbf{observer} (no persona) that compares the winner sandbox
     \textbf{before vs.\ after} the turn and gathers a neutral, structured report
-    $R_t = \mathrm{Obs}(e_t^w)$ from the resulting environment \textbf{diff}
-    (files created/modified/removed with content, plus system-state changes;
-    read-only), capturing intermediate as well as final results. Crucially the
+    $R_t = \mathrm{Obs}(e_t^w)$ from the resulting environment \textbf{diff},
+    organised into three categories---files \emph{added} (full new content),
+    \emph{modified} (before/after content), and \emph{removed} (prior content)---%
+    with rich-document deliverables (spreadsheets, slides, PDFs) extracted to text
+    in-sandbox, and transient system noise (open ports, spawned processes) stripped
+    so only genuine deliverables remain; read-only, capturing intermediate as well
+    as final results. Crucially the
     observer is grounded on the \textbf{real state only}: it does \textbf{not}
     receive the actor's trajectory or claims at all. This makes anti
     reward-hacking \emph{structural}---since the actor's narrative never enters
@@ -284,7 +288,12 @@ execution. The three agents are:
     each session and held fixed throughout (one persona per session, $p$ constant
     within a session); it produces the next query
     $q_{t+1}\sim Q(\cdot\mid p, R_t, H_t)$, where $H_t$ is the winner-derived
-    session history; and
+    session history. The questioner also \textbf{checks the observed deliverable
+    against the original task}---the seed query $q_1$ is always kept in view---so
+    that a request enumerating several sub-tasks or a specific count is only
+    considered satisfied when the report's evidence shows all of them were
+    delivered; a partial or off-target result draws a follow-up rather than an
+    early close; and
   \item a \textbf{reward model} that scores the turn from the same report over
     two channels: the observer's state diff (ground truth for \emph{completion})
     and the actor trajectory carried pass-through on $R_t$ (for
