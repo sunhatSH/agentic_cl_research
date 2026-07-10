@@ -85,6 +85,10 @@ COPY openclaw.config.template.json /opt/agentic-cl/openclaw.config.template.json
 COPY fs-seeds/ /opt/agentic-cl/fs-seeds/
 RUN chmod +x /opt/agentic-cl/bin/*.sh
 
+# 5b. Search tools (Serper + Jina) — callable scripts for hermes web search.
+COPY tools/ /opt/tools/
+RUN chmod +x /opt/tools/*.py
+
 # 6. (OPTIONAL) Browser tool for ClawEval web tasks. The text-only 195-task
 #    subset does NOT need this; it is heavy (~Chromium). Uncomment if needed.
 # RUN npx -y playwright install --with-deps chromium
