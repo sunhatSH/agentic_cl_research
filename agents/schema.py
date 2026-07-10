@@ -37,6 +37,17 @@ class ObservationReport:
     discrepancies: str = ""
     """Internal red flags in the produced state (empty/corrupt/contradictory); may be empty."""
 
+    has_red_flag: bool = False
+    """Structured verdict: does THIS report carry a genuine, unresolved red flag?
+
+    Set authoritatively by the observer (deterministic checks always know; the LLM
+    path sets it explicitly). Consumers (questioner banner / block-end, analyzer)
+    key off THIS boolean, NOT keyword-matching ``discrepancies`` free text -- the
+    observer routinely opens with a reassuring boilerplate sentence ("No empty
+    deliverables detected.") and THEN states a real concern ("One discrepancy is
+    present: ..."), which a substring filter would wrongly suppress.
+    """
+
     file_tree: str = ""
     """Winner workspace file tree (depth-truncated; fallback evidence)."""
 

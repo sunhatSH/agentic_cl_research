@@ -32,9 +32,11 @@ class _ScriptedClient:
         self.model = model
         self._outcomes = list(outcomes)
         self.calls = 0
+        self.max_tokens_seen: list[int] = []  # budget received per call (escalation)
 
     def chat(self, messages, *, max_tokens=512):
         self.calls += 1
+        self.max_tokens_seen.append(max_tokens)
         out = self._outcomes.pop(0) if self._outcomes else "ok:" + self.model
         if isinstance(out, Exception):
             raise out
@@ -42,13 +44,21 @@ class _ScriptedClient:
 
 
 def _patch_clients(monkeypatch, mapping):
-    """Make FailoverChatClient build _ScriptedClient(model, outcomes) per model."""
+    """Make FailoverChatClient build _ScriptedClient(model, outcomes) per model.
+
+    Returns a dict {model: _ScriptedClient} so tests can inspect calls / budgets.
+    """
     import agents.failover as fo
 
+    created: dict[str, _ScriptedClient] = {}
+
     def _factory(*, base_url, model, api_key, temperature):
-        return _ScriptedClient(model, mapping.get(model, []))
+        c = _ScriptedClient(model, mapping.get(model, []))
+        created[model] = c
+        return c
 
     monkeypatch.setattr(fo, "OpenAIChatClient", _factory)
+    return created
 
 
 def test_first_model_502_switches_to_same_provider_next(monkeypatch):
@@ -123,3 +133,64 @@ def test_rotation_orthogonal_to_failover(monkeypatch):
     r1 = c.chat([])  # rotate: mi 0->1 (B), B ok
     r2 = c.chat([])  # rotate: mi 1->0 (A), A ok
     assert {r1, r2} == {"b1", "a1"}
+
+
+# --- truncation escalation: retry SAME model with doubled max_tokens ---------
+# (2026-07-10) A TruncatedOutputError means the model ran out of output budget,
+# not that the endpoint is down. For the REWARD judge (escalate_on_truncation=
+# True) we retry the same model at 512->1024->2048->4096 before failing over.
+# questioner/observer keep escalation OFF -> truncation fails over immediately.
+
+from agents.base import TruncatedOutputError  # noqa: E402
+
+
+def _trunc() -> TruncatedOutputError:
+    return TruncatedOutputError("cut off by max_tokens")
+
+
+def test_truncation_retries_same_model_with_doubled_budget(monkeypatch):
+    # reward judge (escalate=True): A truncates twice then succeeds -> stays on A,
+    # budgets 512,1024,2048.
+    created = _patch_clients(monkeypatch, {"A": [_trunc(), _trunc(), "ok:A"]})
+    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    c = FailoverChatClient(role, escalate_on_truncation=True)
+    assert c.chat([], max_tokens=512) == "ok:A"
+    assert c.model == "A"  # never failed over
+    assert created["A"].max_tokens_seen == [512, 1024, 2048]
+    assert created["B"].calls == 0  # B never touched
+
+
+def test_truncation_exhausts_escalation_then_next_model(monkeypatch):
+    # escalate=True: A truncates 4x (512,1024,2048,4096) -> give up on A, B succeeds.
+    created = _patch_clients(
+        monkeypatch,
+        {"A": [_trunc(), _trunc(), _trunc(), _trunc()], "B": ["ok:B"]},
+    )
+    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    c = FailoverChatClient(role, escalate_on_truncation=True)
+    assert c.chat([], max_tokens=512) == "ok:B"
+    assert created["A"].max_tokens_seen == [512, 1024, 2048, 4096]  # 4 escalations
+    assert created["A"].calls == 4
+    assert c.model == "B"  # promoted
+
+
+def test_non_truncation_error_does_not_escalate(monkeypatch):
+    # A 502 -> immediately next model, NO budget doubling on A (even with escalate).
+    created = _patch_clients(monkeypatch, {"A": [_http_error(502)], "B": ["ok:B"]})
+    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    c = FailoverChatClient(role, escalate_on_truncation=True)
+    assert c.chat([], max_tokens=512) == "ok:B"
+    assert created["A"].calls == 1  # tried once, no retry
+    assert created["A"].max_tokens_seen == [512]
+
+
+def test_truncation_without_escalation_fails_over_immediately(monkeypatch):
+    # Default (questioner/observer, escalate=False): A truncates ONCE -> straight
+    # to B, no budget doubling on A.
+    created = _patch_clients(monkeypatch, {"A": [_trunc()], "B": ["ok:B"]})
+    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    c = FailoverChatClient(role)  # escalate_on_truncation defaults False
+    assert c.chat([], max_tokens=512) == "ok:B"
+    assert created["A"].calls == 1  # single attempt, no escalation
+    assert created["A"].max_tokens_seen == [512]
+    assert c.model == "B"

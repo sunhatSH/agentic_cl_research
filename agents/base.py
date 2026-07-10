@@ -372,7 +372,9 @@ def resolve_reward_client():
         role = resolve_role("reward")
         from agents.failover import FailoverChatClient
 
-        return FailoverChatClient(role)
+        # Reward judge emits long rubric-scored output -> enable truncation
+        # escalation (retry same model at 2x budget before failing over).
+        return FailoverChatClient(role, escalate_on_truncation=True)
     except RuntimeError:
         pass
     return _resolve("REWARD", temperature=0.0)

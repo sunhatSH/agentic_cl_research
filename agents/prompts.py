@@ -61,6 +61,11 @@ OBSERVER_SYSTEM = (
     "   - `intermediate` (list of {desc, source, value_excerpt})\n"
     "   - `final` (list of {path, kind, content_excerpt})\n"
     "   - `discrepancies` (string — describe all red flags found)\n"
+    "   - `has_red_flag` (boolean — set TRUE if `discrepancies` names ANY concrete "
+    "unresolved problem: missing/empty/corrupt deliverable, conflicting values, "
+    "truncated output, count mismatch. Set FALSE only when you found NOTHING wrong. "
+    "If you open with a reassuring sentence but then state a real concern, "
+    "`has_red_flag` is TRUE.)\n"
     "   - `file_tree` (string — workspace file listing)\n\n"
     "## Rules\n\n"
     "- Report ONLY what the evidence supports. Never invent files, values, or "
@@ -130,17 +135,33 @@ QUESTIONER_SYSTEM = (
     "the fix actually works. Let your persona's standards — not a fixed threshold — "
     "decide when you are satisfied.\n\n"
     "Hard rules:\n"
+    "- CHECK THE DELIVERABLE AGAINST YOUR ORIGINAL TASK. Your first message (the "
+    "'# Your original task' block) is what you asked for. Compare what the report "
+    "shows was produced against what you asked. If your task listed multiple items, "
+    "sub-tasks, or a specific count (e.g. 'add these 4 kinds of test cases', "
+    "'produce 9 files', 'cover A, B and C'), verify the deliverable actually covers "
+    "ALL of them. If something you asked for is missing, only partially done, or "
+    "off-topic, do NOT end the session — ask for the missing part in your voice. "
+    "Judge only from the report's evidence, not assumptions.\n"
     "- Ground every follow-up in the report. Only reference results, files, or "
     "values that the report says exist. Never invent a problem that is not there "
     "(that would be unfair to the assistant).\n"
+    "- UNRESOLVED RED FLAGS OVERRIDE SATISFACTION. If the report's "
+    "'discrepancies' field names a concrete problem the objective evidence found "
+    "(a missing deliverable, an empty/corrupt file, a contradictory value, a "
+    "count/spec mismatch), you must NOT end the session on this turn — press the "
+    "assistant on that specific flaw first, in your persona's voice. Only after "
+    "the flag is addressed (or the report clears it) may you consider ending. "
+    "A note that says 'no discrepancy / nothing found / no content available' is "
+    "NOT a red flag and does not block ending.\n"
     "- Write like a real busy human: short, direct, sometimes terse. Do NOT sound "
     "like an AI. No 'Certainly!', no meta-commentary, no numbered checklists "
     "unless your persona would actually write one.\n"
     "- A follow-up can be: point out a real flaw in the result, ask to extend/refine "
     "it, ask a clarifying question about a specific value, or start a related next "
     "step that builds on the current artifacts.\n"
-    "- If you are satisfied after careful scrutiny, reply with EXACTLY "
-    "'<end_session>' and nothing else.\n"
+    "- If there are no unresolved red flags AND you are satisfied after careful "
+    "scrutiny, reply with EXACTLY '<end_session>' and nothing else.\n"
     "Output ONLY your message text (or '<end_session>'). No quotes, no role labels."
 )
 
@@ -158,6 +179,107 @@ _TONE_GUIDANCE = {
         "frustration clearly and press for a fix. You do not mince words."
     ),
 }
+
+
+# Substrings the observer emits in `discrepancies` when it found NO real problem
+# ("no discrepancy detected", "no content available", ...). These must NOT trigger
+# the red-flag banner / block session end — otherwise every clean turn would look
+# like an unresolved problem. Kept in sync with scripts/analyze_observer_health.py.
+_NON_RED_FLAG_MARKERS = (
+    "no clear internal contradiction",
+    "no clear discrepanc",
+    "no clear content",
+    "no concrete red flag",
+    "no concrete unresolved problem",
+    "no explicit discrepanc",
+    "no empty or corrupt",
+    "no empty deliverable",
+    "no empty output",
+    "no content-level discrepanc",
+    "no file content was available",
+    "no file contents were available",
+    "no file-level content",
+    "no file-content diff",
+    "no filesystem changes",
+    "no content-based discrepanc",
+    "no direct file-content discrepanc",
+    "no discrepanc",
+    "none detected",
+    "no red flag",
+)
+
+# Phrases the observer uses to ANNOUNCE a genuine problem, even AFTER a reassuring
+# boilerplate opener ("No empty deliverables detected. One discrepancy is present: ...").
+# When any appears, the text carries a real red flag regardless of the leading
+# "nothing found" clause — a pure negative-marker filter would wrongly drop it.
+# This is the single source of truth; observer.py and analyze_observer_health.py
+# reuse the same lists.
+_RED_FLAG_PHRASES = (
+    "discrepancy is present",
+    "one potential red flag",
+    "one red flag",
+    "the only red flag",
+    "potential red flag",
+    "one potential",
+    "one internal",
+    "internal inconsistenc",
+    "internal content discrepanc",
+    "conflicting value",
+    "mismatch",
+    "empty file",
+    "empty deliverable is",
+    "zero-size",
+    "corrupt",
+    "placeholder",
+)
+
+# "truncated" is a red flag ONLY when it describes the DELIVERABLE, not the
+# observer's own evidence view ("the diff excerpt is truncated" is not a problem
+# with the produced artifact). Handled separately from _RED_FLAG_PHRASES.
+_TRUNCATION_EVIDENCE_CONTEXTS = ("diff excerpt", "diff is truncated", "excerpt shown", "read_file")
+
+
+def _is_real_red_flag(disc: str) -> bool:
+    """True when ``disc`` describes an ACTUAL problem, not a 'nothing found' note.
+
+    A concrete-problem phrase wins over a reassuring opener, so
+    "No empty deliverables detected. One discrepancy is present: ..." is flagged.
+    Only a pure negative note (marker present, no positive phrase) counts as clean.
+
+    This is a best-effort TEXT heuristic for legacy reports; going forward the
+    observer emits a structured ``has_red_flag`` boolean that consumers prefer.
+    Guard against negated positives ("no empty deliverables OR conflicting values
+    were found") by requiring the positive phrase to NOT sit inside a negation.
+    """
+    d = (disc or "").strip().lower()
+    if not d:
+        return False
+    for p in _RED_FLAG_PHRASES:
+        idx = d.find(p)
+        if idx == -1:
+            continue
+        # Skip if this positive phrase sits inside a NEGATED clause, e.g.
+        # "no empty files, conflicting values, or placeholder text were visible".
+        # Look back to the start of the sentence for a leading "no ", and forward
+        # to sentence end for a negating verb.
+        sent_start = max(d.rfind(".", 0, idx), d.rfind(";", 0, idx)) + 1
+        sent_end = min(
+            (x for x in (d.find(".", idx), d.find(";", idx)) if x != -1),
+            default=len(d),
+        )
+        before = d[sent_start:idx]
+        after = d[idx:sent_end]
+        negated = (before.lstrip().startswith("no ") or " no " in before) and any(
+            v in after for v in ("were visible", "were found", "were detected", "were evident",
+                                  "were observed", "not visible", "cannot be", "could not")
+        )
+        if negated:
+            continue
+        return True
+    # "truncated" deliverable (not a truncated evidence view) is a red flag.
+    if "truncat" in d and not any(c in d for c in _TRUNCATION_EVIDENCE_CONTEXTS):
+        return True
+    return not any(m in d for m in _NON_RED_FLAG_MARKERS)
 
 
 def _persona_block(p: Persona) -> str:
@@ -187,6 +309,23 @@ def _report_block(r: ObservationReport) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def _first_user_task(session_history: list[dict[str, Any]]) -> str:
+    """The original task = first 'user' message in the session (never dropped).
+
+    Kept separate from the sliding history window so completeness checking works
+    even in long sessions where the window no longer includes turn 1.
+    """
+    for m in session_history:
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    (c.get("text", "") if isinstance(c, dict) else str(c)) for c in content
+                )
+            return str(content).strip()
+    return ""
+
+
 def _history_block(session_history: list[dict[str, Any]], max_msgs: int = 12) -> str:
     msgs = session_history[-max_msgs:]
     lines = []
@@ -210,8 +349,36 @@ def build_questioner_prompt(
     """
     tone_guidance = _TONE_GUIDANCE.get(persona.tone, _TONE_GUIDANCE["neutral"])
     system = QUESTIONER_SYSTEM + "\n\n" + tone_guidance
+
+    # Surface a genuine red flag at the TOP of the user turn so it is impossible
+    # to miss — the baseline failure mode was the questioner ending the session
+    # while the observer had flagged an unresolved problem buried in the report
+    # JSON. Key off the observer's STRUCTURED verdict (has_red_flag); fall back to
+    # the text filter only for legacy reports that predate the boolean. This avoids
+    # the "boilerplate opener suppresses a real flag" bug that a pure substring
+    # filter has (observer often writes "No X detected. One discrepancy is present: ...").
+    disc = (report.discrepancies or "").strip()
+    is_flag = report.has_red_flag or (bool(disc) and _is_real_red_flag(disc))
+    red_flag_banner = ""
+    if disc and is_flag:
+        red_flag_banner = (
+            "# ⚠ UNRESOLVED RED FLAG (objective evidence found a problem)\n"
+            + disc
+            + "\n\nDo NOT end the session this turn. Press the assistant on this "
+            "specific problem, in your own voice.\n\n"
+        )
+
+    # The ORIGINAL task (first user message) must ALWAYS be visible so the
+    # questioner can check completeness — the sliding history window would
+    # otherwise drop it in long sessions, and then it cannot tell whether the
+    # deliverable covers everything it asked for.
+    original_task = _first_user_task(session_history)
+    task_block = ("# Your original task (check the deliverable against THIS)\n" + original_task + "\n\n") if original_task else ""
+
     user = (
-        "# Your persona\n" + _persona_block(persona) + "\n\n"
+        red_flag_banner
+        + task_block
+        + "# Your persona\n" + _persona_block(persona) + "\n\n"
         "# What the assistant actually produced (objective report)\n" + _report_block(report) + "\n\n"
         "# Conversation so far (your prior turns are the 'user' lines)\n"
         + _history_block(session_history)

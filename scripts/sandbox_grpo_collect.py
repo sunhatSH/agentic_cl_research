@@ -454,6 +454,7 @@ def _run_one_collect_query(
                     "file_tree": getattr(report, "file_tree", ""),
                     "state_diff": getattr(report, "state_diff", ""),
                     "discrepancies": getattr(report, "discrepancies", ""),
+                    "has_red_flag": getattr(report, "has_red_flag", False),
                 }
                 t.observer_reports.append(_rep_row)
             else:

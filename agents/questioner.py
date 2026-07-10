@@ -22,11 +22,14 @@ END_SESSION = "<end_session>"
 class Questioner:
     """Persona user-agent that generates the next follow-up query (§7.4)."""
 
-    def __init__(self, client: ChatClient | None = None, *, max_tokens: int = 512):
-        # 512 (was 256): thinking models in the rotation pool (sonnet-4-6 /
-        # deepseek-v4-pro / qwen3.7-max / kimi-k2.6) can spend a large share of
-        # the budget on hidden reasoning before emitting the query. 256 risked an
-        # empty reply, which was indistinguishable from "<end_session>".
+    def __init__(self, client: ChatClient | None = None, *, max_tokens: int = 1024):
+        # 1024 (was 512, orig 256): thinking models in the rotation pool
+        # (deepseek-v4-pro / kimi-k2.6 / qwen3-max) spend a large share of the
+        # budget on hidden reasoning before emitting the query. 512 still left
+        # the content truncated for those two (observed TruncatedOutputError
+        # flooding in the Jul-9/10 smoke runs), so the questioner kept failing
+        # over to the non-thinking models and wasting calls. 1024 gives the
+        # thinking models room to reason AND emit a short follow-up.
         self._client = client
         self._max_tokens = max_tokens
 

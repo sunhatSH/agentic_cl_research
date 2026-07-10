@@ -43,7 +43,7 @@ from collections.abc import Sequence
 from typing import Any, Protocol
 
 from agents.base import ChatClient, TruncatedOutputError, resolve_observer_client
-from agents.prompts import build_observer_prompt
+from agents.prompts import _is_real_red_flag, build_observer_prompt
 from agents.schema import ObservationReport
 
 
@@ -77,15 +77,47 @@ def _last_assistant_reply(messages: Sequence[dict[str, Any]] | str, cap: int = 4
         content = m.get("content", "")
         if isinstance(content, list):
             content = " ".join((c.get("text", "") if isinstance(c, dict) else str(c)) for c in content)
-        text = str(content).strip()
+        text = _strip_actor_noise(str(content)).strip()
         if text:
             return text[:cap] + (" …[truncated]" if len(text) > cap else "")
     return ""
 
 
+# Hermes prepends a scanner-status banner to every reply; it is not part of the
+# answer and should not be surfaced to the questioner as the deliverable text.
+_ACTOR_NOISE_PREFIXES = (
+    "⚠ tirith security scanner",
+    "tirith security scanner",
+)
+
+
+def _strip_actor_noise(text: str) -> str:
+    """Drop leading hermes banner lines (security-scanner status) from a reply."""
+    lines = text.splitlines()
+    while lines and any(lines[0].lstrip().startswith(p) for p in _ACTOR_NOISE_PREFIXES):
+        lines.pop(0)
+    return "\n".join(lines)
+
+
 # Rendering caps for the prompt / report (#4): bound size regardless of workspace.
+# Content is listed in FULL (user spec 2026-07-10): a per-file 64 KB ceiling is a
+# safety bound against a single pathological file, not a semantic truncation.
 _MAX_RENDER_FILES = 50
-_MAX_RENDER_CHARS = 1200
+_MAX_RENDER_CHARS = 65536
+# Runtime / framework files that live in every workspace and are NOT deliverables.
+# Filtered from the file tree and the diff so they never show up as noise.
+_RUNTIME_FILES = frozenset(
+    {
+        ".bashrc",
+        ".bash_logout",
+        ".profile",
+        ".sudo_as_admin_successful",
+        ".viminfo",
+        ".python_history",
+        ".wget-hsts",
+        "AGENTS.md",
+    }
+)
 # Rich binary formats we extract to text in the sandbox (a). Libs are in the
 # sandbox image (docker/sandbox §5: openpyxl / python-docx / python-pptx / pdfplumber).
 _RICH_EXTS = (".xlsx", ".xlsm", ".docx", ".pptx", ".pdf")
@@ -105,7 +137,7 @@ class ReadOnlySandbox(Protocol):
 # --------------------------------------------------------------------------- #
 _SNAPSHOT_PROBE = (
     "import os, json, hashlib\n"
-    "ROOT='.'; MAX_TEXT=2048; MAX_FILES=200\n"
+    "ROOT='.'; MAX_TEXT=65536; MAX_FILES=200\n"
     "SKIP={'.git','__pycache__','node_modules','.cache','.ipynb_checkpoints','.venv','.hermes','.npm','.local','.config','.cache','.gradle','.m2'}\n"
     "out={}\n"
     "for root, dirs, files in os.walk(ROOT):\n"
@@ -128,8 +160,8 @@ _SNAPSHOT_PROBE = (
     "        try:\n"
     "            with open(p,'rb') as f:\n"
     "                raw=f.read(MAX_TEXT)\n"
-    "            # content_hash for same-size change detection (≤4 KB)\n"
-    "            if st.st_size <= 4096:\n"
+    "            # content_hash for same-size change detection (full-content cap)\n"
+    "            if st.st_size <= 65536:\n"
     "                rec['chash']=hashlib.md5(raw).hexdigest()[:12]\n"
     "            try:\n"
     "                rec['text']=raw.decode('utf-8'); rec['truncated']=st.st_size>MAX_TEXT\n"
@@ -206,7 +238,7 @@ def _extract_probe(paths: list[str]) -> str:
     return (
         "import os, json\n"
         "PATHS=" + json.dumps(paths) + "\n"
-        "CAP=2000\n"
+        "CAP=65536\n"
         "def _c(font):\n"
         "    try:\n"
         "        c=font.color\n"
@@ -373,9 +405,21 @@ def _run_json_probe(sandbox: ReadOnlySandbox | None, probe: str) -> dict:
         return {}
 
 
+def _is_runtime_file(path: str) -> bool:
+    """True for framework/runtime files that are never user deliverables."""
+    return path.rsplit("/", 1)[-1] in _RUNTIME_FILES
+
+
 def snapshot_workspace(sandbox: ReadOnlySandbox | None) -> dict[str, dict]:
-    """Read-only FS snapshot: ``{path: {size, mtime, ext, text|binary}}``."""
-    return _run_json_probe(sandbox, _SNAPSHOT_PROBE)
+    """Read-only FS snapshot: ``{path: {size, mtime, ext, text|binary}}``.
+
+    Runtime/framework files (.bashrc, AGENTS.md, ...) are dropped so they never
+    appear as noise in the diff or file tree.
+    """
+    snap = _run_json_probe(sandbox, _SNAPSHOT_PROBE)
+    if isinstance(snap, dict):
+        return {p: rec for p, rec in snap.items() if not _is_runtime_file(p)}
+    return snap
 
 
 def snapshot_system(sandbox: ReadOnlySandbox | None) -> dict:
@@ -426,9 +470,9 @@ def diff_snapshots(pre: dict[str, dict] | None, post: dict[str, dict] | None) ->
     for path in pre:
         if path not in post:
             entry = {"path": path}
-            excerpt = pre[path].get("text", "")
+            excerpt = pre[path].get("text", "")  # full old content (render clips)
             if excerpt:
-                entry["before_excerpt"] = excerpt[:200]
+                entry["before_excerpt"] = excerpt
             removed.append(entry)
     return {"added": added, "modified": modified, "removed": removed}
 
@@ -462,64 +506,88 @@ def _fs_diff_empty(diff: dict[str, list]) -> bool:
 
 
 def _sys_diff_empty(sd: dict[str, list]) -> bool:
-    return not any(sd.get(k) for k in ("installed_packages", "opened_ports", "started_procs"))
+    # Only installed packages count as a real, reportable system change now.
+    # Ports/processes are transient noise and are no longer rendered.
+    return not sd.get("installed_packages")
+
+
+def _clip(body: str) -> str:
+    """Per-file safety clip (content is otherwise listed in full)."""
+    if len(body) > _MAX_RENDER_CHARS:
+        return body[:_MAX_RENDER_CHARS] + " …[truncated]"
+    return body
+
+
+def _indent(body: str, prefix: str = "    ") -> str:
+    return "\n".join(prefix + ln for ln in body.splitlines())
 
 
 def _render_file(prefix: str, f: dict) -> str:
+    """Render one added file: header + FULL content (indented)."""
     head = f"{prefix} {f['path']} ({f.get('kind', '?')}, {f.get('size', 0)}B)"
     body = f.get("content_excerpt", "")
     if not body:
         return head
-    if len(body) > _MAX_RENDER_CHARS:
-        body = body[:_MAX_RENDER_CHARS] + " …[truncated]"
-    indented = "\n".join("    " + ln for ln in body.splitlines())
-    return f"{head}\n{indented}"
+    return f"{head}\n{_indent(_clip(body))}"
 
 
 def _format_changes(diff: dict[str, list], sys_diff: dict[str, list]) -> str:
-    """Render FS + SYS diff as the observer's ground-truth evidence (capped)."""
+    """Render the FS + SYS diff as the observer's ground-truth evidence.
+
+    Three clean sections — 新增 / 改变 / 删除 — each listing content in FULL:
+      - ADDED    → the new file's complete content
+      - MODIFIED → BEFORE and AFTER content (a real before/after diff)
+      - REMOVED  → the deleted file's old content
+    doc/PPT/PDF are already extracted to text (kind=binary→text) upstream.
+    System changes are reduced to installed packages only (ports/procs = noise).
+    """
     fs_empty, sys_empty = _fs_diff_empty(diff), _sys_diff_empty(sys_diff)
     if fs_empty and sys_empty:
         return "mode: before/after diff -- (no filesystem or system changes this turn)"
     out = ["mode: before/after diff (what THIS turn changed in the environment)"]
     shown = 0
-    for f in diff["added"]:
-        if shown >= _MAX_RENDER_FILES:
-            break
-        out.append(_render_file("+ ADDED", f))
-        shown += 1
-    for f in diff["modified"]:
-        if shown >= _MAX_RENDER_FILES:
-            break
-        out.append(_render_file("~ MODIFIED", f))
-        # Show the before-content so the judge can see what changed FROM
-        before = f.get("before_excerpt", "")
-        if before:
-            if len(before) > _MAX_RENDER_CHARS:
-                before = before[:_MAX_RENDER_CHARS] + " …[truncated]"
-            indented = "\n".join("  [was: " + ln for ln in before.splitlines())
-            out.append(indented)
-        shown += 1
-    for f in diff["removed"]:
-        out.append(f"- REMOVED {f['path']}")
-        # Show a brief excerpt of what was removed (from baseline snapshot)
-        was = f.get("before_excerpt", "")
-        if was:
-            snippet = was[:200]
-            if len(was) > 200:
-                snippet += "…"
-            out.append(f"    [was: {snippet}]")
+
+    if diff["added"]:
+        out.append("## 新增文件 (ADDED)")
+        for f in diff["added"]:
+            if shown >= _MAX_RENDER_FILES:
+                break
+            out.append(_render_file("+ ADDED", f))
+            shown += 1
+
+    if diff["modified"]:
+        out.append("## 改变文件 (MODIFIED)")
+        for f in diff["modified"]:
+            if shown >= _MAX_RENDER_FILES:
+                break
+            head = f"~ MODIFIED {f['path']} ({f.get('kind', '?')}, {f.get('size', 0)}B)"
+            out.append(head)
+            before = f.get("before_excerpt", "")
+            after = f.get("content_excerpt", "")
+            if before:
+                out.append("    [BEFORE]")
+                out.append(_indent(_clip(before), "      "))
+            if after:
+                out.append("    [AFTER]")
+                out.append(_indent(_clip(after), "      "))
+            shown += 1
+
+    if diff["removed"]:
+        out.append("## 删除文件 (REMOVED)")
+        for f in diff["removed"]:
+            out.append(f"- REMOVED {f['path']}")
+            was = f.get("before_excerpt", "")
+            if was:
+                out.append(_indent(_clip(was)))
+
     total = len(diff["added"]) + len(diff["modified"])
     if total > _MAX_RENDER_FILES:
         out.append(f"… and {total - _MAX_RENDER_FILES} more changed files (truncated)")
+
     if not sys_empty:
-        out.append("## system state changes (non-filesystem)")
+        out.append("## 系统变更 (SYSTEM — installed packages only)")
         for pkg in sys_diff["installed_packages"]:
             out.append(f"+ INSTALLED {pkg}")
-        for port in sys_diff["opened_ports"]:
-            out.append(f"+ PORT LISTENING {port}")
-        for proc in sys_diff["started_procs"]:
-            out.append(f"+ PROCESS {proc}")
     return "\n".join(out)
 
 
@@ -619,6 +687,7 @@ def build_deterministic_report(
         intermediate=intermediate,
         final=final,
         discrepancies="; ".join(discrepancies_parts) if discrepancies_parts else "",
+        has_red_flag=bool(discrepancies_parts),  # structural checks only fire on real problems
         file_tree=file_tree,
         state_diff=state_diff,
     )
@@ -893,25 +962,41 @@ class Observer:
             changed = [f["path"] for f in diff["added"] + diff["modified"] if f.get("kind") == "binary"]
             if changed:
                 _merge_extracted(diff, extract_binaries(sandbox, changed))
-            if _fs_diff_empty(diff) and _sys_diff_empty(sys_diff):
-                # No file/system change this turn. Some tasks (QA / reasoning /
-                # role-play) deliver their result AS THE REPLY TEXT, not as a
-                # file — a pure diff observer is blind to them. Fall back to the
-                # actor's last reply so the questioner still has a deliverable to
-                # scrutinise. has_effect stays False (no environment mutation),
-                # but `final` now carries the textual answer.
+            if _fs_diff_empty(diff):
+                # No FILE change this turn. Tasks deliver results as files; when
+                # nothing was written, either (a) the deliverable is the reply
+                # text itself (QA / reasoning / role-play), or (b) the turn only
+                # touched system state (installed a package, opened a port). A
+                # pure-diff observer is blind to (a), so fall back to the actor's
+                # last reply and let the questioner scrutinise the ANSWER. A
+                # sys-only diff (b) is kept as supplementary context but must NOT
+                # mask the answer text — the earlier bug was that a stray package
+                # install suppressed this fallback and the answer was lost.
+                sys_empty = _sys_diff_empty(sys_diff)
                 last_reply = _last_assistant_reply(actor_trajectory)
+                header = (
+                    "mode: no file change this turn; deliverable is the "
+                    "assistant's reply text (below)"
+                )
+                if not sys_empty:
+                    header += "\n\n" + _format_changes(diff, sys_diff)
+                body = ("\n\n" + last_reply) if last_reply else ""
+                if not last_reply and sys_empty:
+                    header = "mode: before/after diff -- (no filesystem or system changes this turn)"
                 return ObservationReport(
                     file_tree=file_tree,
                     actor_trajectory=traj_text,
-                    final=[last_reply] if last_reply else [],
-                    state_diff=(
-                        "mode: no file/system change this turn; deliverable is the "
-                        "assistant's reply text (below)\n\n" + last_reply
+                    # final must be list[dict{path,kind,content_excerpt}] (schema).
+                    # For a text-only deliverable there is no file, so use a synthetic
+                    # path and carry the answer in content_excerpt — never a bare str,
+                    # which breaks every downstream f["path"] consumer.
+                    final=(
+                        [{"path": "(assistant reply)", "kind": "text", "content_excerpt": last_reply}]
                         if last_reply
-                        else "mode: before/after diff -- (no filesystem or system changes this turn)"
+                        else []
                     ),
-                    has_effect=False,
+                    state_diff=header + body,
+                    has_effect=not sys_empty,  # sys-only change still counts as effect
                 )
             state_diff = _format_changes(diff, sys_diff)
         else:
@@ -992,6 +1077,9 @@ class Observer:
                         report.intermediate = det.intermediate
                         if not report.discrepancies:
                             report.discrepancies = det.discrepancies
+                        report.has_red_flag = report.has_red_flag or det.has_red_flag
+                    _finalize_red_flag(report)
+                    _strip_system_intermediate(report)
                     return report
 
                 # Process tool calls
@@ -1047,6 +1135,9 @@ class Observer:
                 report.intermediate = det.intermediate
                 if not report.discrepancies:
                     report.discrepancies = det.discrepancies
+                report.has_red_flag = report.has_red_flag or det.has_red_flag
+            _finalize_red_flag(report)
+            _strip_system_intermediate(report)
             return report
 
         except TruncatedOutputError:
@@ -1057,6 +1148,56 @@ class Observer:
         except Exception:  # noqa: BLE001 — never crash the session
             # Degrade to deterministic report on any LLM failure
             return build_deterministic_report(diff=diff, file_tree=file_tree, state_diff=state_diff)
+
+
+def _derive_red_flag(disc: str) -> bool:
+    """Fallback verdict from free text when the model omits ``has_red_flag``.
+
+    Delegates to prompts._is_real_red_flag: positive phrases (a concrete problem is
+    stated) win over negative openers, so a boilerplate "No empty deliverables
+    detected. One discrepancy is present: ..." is correctly flagged.
+    """
+    return _is_real_red_flag(disc)
+
+
+def _finalize_red_flag(report: ObservationReport) -> None:
+    """Reconcile ``has_red_flag`` with the report's own ``discrepancies`` TEXT.
+
+    The model's explicit boolean is unreliable in BOTH directions (2026-07-10 iter4
+    data): it sometimes sets False while stating a real concern after a reassuring
+    opener, and sometimes sets True while its text is unambiguously "nothing found"
+    ("No concrete red flags detected... no empty deliverables or conflicting values
+    were observed" but has_red_flag=true). So the TEXT verdict (_is_real_red_flag,
+    positive-phrase-wins + negation-aware) is authoritative and overrides the boolean.
+
+    Exception: when ``discrepancies`` is EMPTY, there is no text to judge, so a True
+    boolean is left as-is (an empty-text True is a rare deterministic edge; keep it).
+    """
+    d = (report.discrepancies or "").strip()
+    if not d:
+        return
+    report.has_red_flag = _is_real_red_flag(d)
+
+
+# Markers of system-state noise the LLM sometimes drops into `intermediate`
+# (installed packages / running processes). These are not user deliverables and
+# are already covered (packages) or dropped (ports/procs) by the diff renderer.
+_SYS_INTERMEDIATE_MARKERS = ("system state", "process snapshot", "package", "installed", "port ")
+
+
+def _strip_system_intermediate(report: ObservationReport) -> None:
+    """Drop system-noise entries the LLM put into `intermediate` (source==system
+    or a system-state description). Keeps only genuine intermediate artifacts."""
+    kept = []
+    for it in report.intermediate or []:
+        if not isinstance(it, dict):
+            continue
+        src = str(it.get("source", "")).lower()
+        desc = str(it.get("desc", "")).lower()
+        if src == "system" or any(m in desc for m in _SYS_INTERMEDIATE_MARKERS):
+            continue
+        kept.append(it)
+    report.intermediate = kept
 
 
 def parse_observation_report(
@@ -1088,10 +1229,22 @@ def parse_observation_report(
     def _as_list(v: Any) -> list[dict]:
         return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
 
+    disc = str(obj.get("discrepancies") or "")
+    # Prefer the model's explicit boolean; fall back to deriving it from the text
+    # (so older outputs / truncated JSON without the field still get a verdict).
+    raw_flag = obj.get("has_red_flag")
+    if isinstance(raw_flag, bool):
+        has_flag = raw_flag
+    elif isinstance(raw_flag, str):
+        has_flag = raw_flag.strip().lower() in ("true", "yes", "1")
+    else:
+        has_flag = _derive_red_flag(disc)
+
     return ObservationReport(
         intermediate=_as_list(obj.get("intermediate")),
         final=_as_list(obj.get("final")),
-        discrepancies=str(obj.get("discrepancies") or ""),
+        discrepancies=disc,
+        has_red_flag=has_flag,
         file_tree=str(obj.get("file_tree") or fallback_tree),
         state_diff=str(obj.get("state_diff") or fallback_diff),
     )

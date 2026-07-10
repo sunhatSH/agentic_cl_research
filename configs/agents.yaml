@@ -32,10 +32,15 @@ questioner:
     - name: sufy                     # 主厂商：4 个跨风格模型
       api_base: "https://openai.sufy.com/v1"
       key_env: "SUFY_API_KEY"
+      # 顺序 = failover 优先级。可靠的非 thinking 模型在前（sonnet / qwen3-max，
+      # 极少截断）；thinking 模型（deepseek-v4-pro / kimi-k2.6）排后——它们把
+      # max_tokens 大量花在隐藏推理上，512 时频繁 TruncatedOutputError（见
+      # 2026-07-09/10 smoke）。questioner max_tokens 已提到 1024 给它们留内容
+      # 余量；rotate_every 仍在**可用**模型间轮换以抗坍缩。
       models:
         - "claude-4.6-sonnet"
-        - "deepseek/deepseek-v4-pro"
         - "qwen3-max"                # was qwen/qwen3.7-max (persistent 502 on sufy 2026-07-08)
+        - "deepseek/deepseek-v4-pro"
         - "moonshotai/kimi-k2.6"
 
 reward:

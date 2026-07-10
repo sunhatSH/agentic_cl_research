@@ -40,6 +40,15 @@ logger = logging.getLogger(__name__)
 # re-raised, since retrying another model would not help.
 _RETRYABLE_STATUS = {401, 408, 429, 500, 502, 503, 504}
 
+# Truncation is NOT an endpoint failure -- the model ran out of output budget
+# (thinking models burn it on hidden reasoning). Instead of failing over to a
+# different model, RETRY THE SAME model with a doubled max_tokens, up to this
+# many attempts (512->1024->2048->4096, or 1024->...->8192 for tool calls).
+# Only after all escalations still truncate do we fall through to the next model.
+# The retry re-sends the ORIGINAL request untouched (no error fed back) -- a
+# truncation is purely a lack of output space, so a bigger budget is all it needs.
+_TRUNCATION_MAX_ATTEMPTS = 4
+
 
 class AllEndpointsFailed(RuntimeError):
     """Raised only when every model of every provider failed for one call."""
@@ -56,11 +65,23 @@ def _is_retryable(exc: Exception) -> bool:
 class FailoverChatClient:
     """Two-level (provider x model) failover over a role's endpoint pool."""
 
-    def __init__(self, role: ResolvedRole, *, state_path: str | None = None):
+    def __init__(
+        self,
+        role: ResolvedRole,
+        *,
+        state_path: str | None = None,
+        escalate_on_truncation: bool = False,
+    ):
         # Flatten into (provider_idx, model_idx) addressable clients, but keep
         # provider boundaries so failover can express "this vendor is fully down".
         self._role = role.role
         self._providers = role.providers
+        # Truncation escalation is OFF by default. Only the reward judge enables it
+        # (it emits long rubric-scored output and genuinely needs a bigger budget);
+        # questioner/observer treat a truncation like any retryable error and fail
+        # over to the next model instead of burning more tokens on a thinking model
+        # that spent its budget on hidden reasoning.
+        self._escalate_on_truncation = escalate_on_truncation
         if not self._providers or not any(p.endpoints for p in self._providers):
             raise ValueError(f"FailoverChatClient[{role.role}] has no endpoints")
         self._clients: list[list[OpenAIChatClient]] = [
@@ -154,29 +175,60 @@ class FailoverChatClient:
             self._rotate_start()
             attempts = self._ordered_attempts()
         last_exc: Exception | None = None
+        base_max_tokens = kwargs.get("max_tokens")
+        # Escalation is only active for reward judge; others do a single attempt
+        # per model and fail over on truncation (like any retryable error).
+        max_esc = _TRUNCATION_MAX_ATTEMPTS if self._escalate_on_truncation else 1
         for pi, mi in attempts:
             client = self._clients[pi][mi]
-            try:
-                result = getattr(client, fn_name)(*args, **kwargs)
-            except Exception as exc:  # noqa: BLE001
-                if _is_retryable(exc):
+            # Per-model truncation escalation (reward only): retry the SAME model
+            # with a doubled max_tokens on truncation (512->1024->2048->4096),
+            # re-sending the original request. Only if all escalations still
+            # truncate do we move on to the next model. Non-truncation retryable
+            # errors break out immediately to the next model.
+            call_kwargs = dict(kwargs)
+            move_next = False
+            for esc in range(max_esc):
+                if base_max_tokens is not None and self._escalate_on_truncation:
+                    call_kwargs["max_tokens"] = base_max_tokens * (2**esc)
+                try:
+                    result = getattr(client, fn_name)(*args, **call_kwargs)
+                except TruncatedOutputError as exc:
                     last_exc = exc
+                    move_next = True
+                    is_last_esc = esc == max_esc - 1
                     logger.warning(
-                        "FailoverChatClient[%s]: %s on %s (provider %s) -> next",
-                        self._role, type(exc).__name__, client.model, self._providers[pi].name,
-                    )
-                    continue
-                raise  # non-retryable (e.g. 400 bad request) -> surface immediately
-            # success: promote this endpoint to the default and persist
-            with self._lock:
-                if (pi, mi) != (self._pi, self._mi):
-                    self._pi, self._mi = pi, mi
-                    logger.info(
-                        "FailoverChatClient[%s]: default now %s (provider %s)",
+                        "FailoverChatClient[%s]: truncated on %s (provider %s) "
+                        "at max_tokens=%s -> %s",
                         self._role, client.model, self._providers[pi].name,
+                        call_kwargs.get("max_tokens"),
+                        "next model" if is_last_esc else "retry x2",
                     )
-                    self._save_state()
-            return result
+                    if is_last_esc:
+                        break  # escalation exhausted (or disabled) -> next model
+                    continue  # retry same model with doubled budget
+                except Exception as exc:  # noqa: BLE001
+                    if _is_retryable(exc):
+                        last_exc = exc
+                        logger.warning(
+                            "FailoverChatClient[%s]: %s on %s (provider %s) -> next",
+                            self._role, type(exc).__name__, client.model, self._providers[pi].name,
+                        )
+                        move_next = True
+                        break
+                    raise  # non-retryable (e.g. 400 bad request) -> surface immediately
+                # success: promote this endpoint to the default and persist
+                with self._lock:
+                    if (pi, mi) != (self._pi, self._mi):
+                        self._pi, self._mi = pi, mi
+                        logger.info(
+                            "FailoverChatClient[%s]: default now %s (provider %s)",
+                            self._role, client.model, self._providers[pi].name,
+                        )
+                        self._save_state()
+                return result
+            if not move_next:  # defensive: loop ended without a decision
+                continue
         raise AllEndpointsFailed(
             f"FailoverChatClient[{self._role}]: all "
             f"{sum(len(p.endpoints) for p in self._providers)} endpoints failed; "

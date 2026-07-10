@@ -400,3 +400,144 @@
 - [ ] merge verl Hydra defaults 后 `validate_config` 结果
 - [ ] B1 全栈 1–2 step smoke（Colocate 64）结果
 - [ ] R4 全栈 1–2 step smoke（replay 行 + forgetting 回填）结果
+
+---
+
+## 2026-07-10 Observer/多轮持续改进循环（session 起点分析）
+
+- **触发**：按「代码→采集→分析→修复→采集→分析」循环持续改进 observer + 多轮对话。
+- **动作**：新增 `scripts/analyze_observer_health.py`（读 grpo_hermes.jsonl 打健康度：FS/discrepancy/端口噪声/turn 分布/ended_by/"满意却忽略红旗"耦合）。
+- **基线数据**（Jul 10 smoke, gpt5, 32 traj，用当前 HEAD 代码；已备份到 `smoke/_baseline_jul10/`）：
+  - 116 reports，0 空 diff，56 含 FS diff，22 含真实 discrepancy；端口噪声 15/116(12.9%)（旧数据是 214/216，`port<32768` 过滤器已生效）。
+  - 多轮：mean 3.69 turns，**单轮率 25%(8/32)**；ended_by = end_session 29 / agent_error 2 / patience 1。
+  - **问题定位**：questioner 忽略 observer 真实红旗——q11 observer 明确"任务要 9 输出文件仅产 1 HTML"，questioner 第 1 轮就 end_session。"满意却忽略真实红旗" 2 例。
+- **结论**：observer 报告本身已正常（能 diff 到内容、能标红旗）；瓶颈在 questioner 未认真消费 discrepancy → 多轮过浅。下一步 Iter1 改 questioner prompt。
+- **状态**：分析工具就绪 ✅，基线固化 ✅，进入 Iter1（未采集训练，纯分析+工具）。
+
+### 2026-07-10 Iter1：questioner 消费 discrepancy（改 + 采集中）
+
+- **改**：`agents/prompts.py` 两处——
+  1. `QUESTIONER_SYSTEM` 加硬规则"UNRESOLVED RED FLAGS OVERRIDE SATISFACTION"：报告 discrepancies 有具体问题（缺交付物/空文件/矛盾值/数量不符）时本轮禁止 end_session，须先追问；"no discrepancy/nothing found"样板不算红旗。
+  2. `build_questioner_prompt` 在 user turn 顶部加 `⚠ UNRESOLVED RED FLAG` banner（仅当 `_is_real_red_flag(disc)` 为真）；新增 `_is_real_red_flag` + `_NON_RED_FLAG_MARKERS`（与 analyze_observer_health.py 同步）。
+- **验证（本机）**：`pytest tests/test_agents.py` 47 passed；banner 逻辑单测（真红旗出 banner、样板不出、系统规则在位）OK。
+- **采集**：tmux `iter1`，smoke 16 query（overwrite → smoke/gpt5），logs/iter1_smoke.log。对比基线 `smoke/_baseline_jul10/`。
+- **预期**：单轮率下降、"满意却忽略真实红旗" 归零、mean turns 上升。
+- **状态**：采集进行中，待完成后 analyze 对比。
+
+### 2026-07-10 Iter2：observer 为只读/QA 任务 surface 回答内容（已改，本机验证）
+
+- **根因（从基线数据定位）**：observer 原有"FS+sys 均空 → 回退到 actor 回答文本"逻辑，但**条件是 fs 与 sys 都空**。q16/q22（QA 任务）actor 只回答文本、顺带 sandbox 里装了 edge-tts（sys diff 非空）→ 回退不触发 → observer 走常规路径把 `final` 填成一堆 `content_excerpt=''` 的 file-tree 噪声，真实答案丢失，questioner 无内容可核对。
+- **改**：`agents/observer.py::observe` —— 触发条件从 `fs空 且 sys空` 改为 **`fs空`（不管 sys）**。fs 无变化即视为"交付物是回答文本"，surface actor 最后一条回答；sys diff 非空时作为补充上下文附在 header，`has_effect = not sys_empty`（sys-only 变更仍算 effect）。
+- **附带**：新增 `_strip_actor_noise`，剥掉 hermes 回复开头的 "⚠ tirith security scanner" banner 行，让 surface 的答案干净。
+- **验证（本机）**：`pytest tests/test_agents.py` 47 passed；合成 q16 场景（fs 空 + sys-only 装包 + 文本答案）单测：答案文本进 `final`、sys diff 保留为补充、`has_effect=True`、banner 已剥离。
+- **状态**：已改已测 ✅。注意：当前运行的 iter1 smoke 进程启动于 10:13:07，早于 observer.py 改动(10:15:21)，故 iter1 数据是**纯 Iter1(questioner) 效果**，不含 Iter2。下一轮 smoke 同时含 Iter1+Iter2。
+
+### 2026-07-10 Iter3：questioner 轮换池降权高截断模型（已改，本机验证）
+
+- **改**：
+  1. `agents/questioner.py`：默认 `max_tokens` 512 → **1024**，给 thinking 模型（deepseek-v4-pro/kimi-k2.6）推理+出内容的余量（512 时它们把预算全花在隐藏推理上 → TruncatedOutputError 刷屏 → 频繁 failover 浪费调用）。
+  2. `configs/agents.yaml`：questioner.providers[sufy].models 重排——可靠非 thinking 在前（claude-4.6-sonnet, qwen3-max），thinking 在后（deepseek-v4-pro, kimi-k2.6）。failover 优先级 = 顺序；rotate_every=5 仍在**可用**模型间轮换保持抗坍缩多样性。
+  3. `tests/test_agents.py::test_config_resolve_questioner_from_yaml`：更新断言匹配新顺序。
+- **验证（本机）**：`pytest tests/test_agents.py` 47 passed；全套 `pytest tests/` = 342 passed / 7 skipped / **8 failed**（8 个全部 pre-existing：stash 我的改动后仍失败，属 test_configs[p0-*]/test_sandbox_{client,dockerfile,env}，与 agents 无关，本轮不处理）。
+- **状态**：已改已测 ✅。当前 iter1 smoke 进程早于本改动启动，仍用旧 512/旧顺序，故其 kimi 截断属预期；下一轮 smoke 含 Iter1+2+3 全部。
+
+### 2026-07-10 Iter1 采集完成 + 分析（对比基线）
+
+- **iter1 smoke 完成**（16 query, ok=15/err=1, 2131s；tmux iter1 已结束）→ `smoke/trajectory/gpt5/`。此进程启动早于 Iter2/3 改动，故是**纯 Iter1(questioner)** 效果。
+- **分析对比**（analyze_observer_health.py, baseline_jul10 vs iter1）：
+  - **单轮率 25%(8/32) → 12.5%(2/16)**（腰斩）。
+  - "满意却忽略真实红旗"（用修好的度量口径）**baseline 6 → iter1 1**。
+  - mean turns 持平 3.69；ended_by 全 end_session（无 patience 耗尽）。
+- **结论**：Iter1（questioner 消费 discrepancy + banner）确实降低了过浅多轮。iter1 log 仍见 deepseek/kimi 大量 TruncatedOutputError（旧 512/旧顺序），Iter3 会修。
+
+### 2026-07-10 Iter4：observer 输出结构化 has_red_flag（修度量根因 + 抗 boilerplate 抑制）
+
+- **根因（基线数据实证）**：questioner 的红旗判定靠**关键词匹配 discrepancies 自由文本**。但 observer 常"先安抚后报问题"——`"No empty deliverables detected. One discrepancy is present: ..."`。纯负向 marker 过滤会把整条当"无问题"丢弃 → **18/216 报告的真实红旗被抑制**（基线实测）。度量本身也因此漏计（原报 2，实为 6–7）。
+- **改**：
+  1. `agents/schema.py`：`ObservationReport` 加结构化布尔 `has_red_flag`（消费方 key 它，不再靠文本匹配）。
+  2. `agents/observer.py`：`build_deterministic_report` 结构检查命中即 `has_red_flag=True`；`parse_observation_report` 优先取模型显式布尔，缺失则 `_derive_red_flag` 从文本推导；两处 backfill OR 上 det.has_red_flag；`_finalize_red_flag` 安全网——模型报 False 但文本明写问题则覆盖为 True。红旗短语/verdict 逻辑单一来源在 prompts.py，observer import 复用。
+  3. `agents/prompts.py`：观察者 prompt 加 `has_red_flag` 字段说明（"先安抚后报问题也要 True"）；`_is_real_red_flag` 升级为"正向短语胜过安抚开头 + 否定从句/证据截断消歧"（`_RED_FLAG_PHRASES` + `_TRUNCATION_EVIDENCE_CONTEXTS` + 句内 negation guard）；questioner banner 改 key `report.has_red_flag`（legacy 数据回退文本）。
+  4. `scripts/sandbox_grpo_collect.py`：观察报告序列化补 `has_red_flag` 落盘。
+  5. `scripts/analyze_observer_health.py`：import prompts._is_real_red_flag 做单一口径（standalone fallback 保留）；`_report_has_flag` 优先结构化布尔。
+- **验证（本机）**：`pytest tests/test_agents.py` **56 passed**（+9 新回归锁：boilerplate-then-flag、det 空交付物置旗、显式布尔信任、negation guard、banner key 布尔）；10 条真实 boilerplate 样本判定全对；ruff 干净。
+- **数据脚本**：新增 `scripts/collect_smoke.sh` —— 时间戳非覆盖采集，tag=`模型_任务类型_UTC秒`（如 `gpt5_iter4_20260710T...Z`），满足"不覆盖 + 精确到秒"。
+- **状态**：已改已测 ✅。下一步跑含 Iter1+2+3+4 的合并 smoke（新脚本，时间戳目录，不覆盖 baseline/iter1）。
+
+### 2026-07-10 分析工具增强：red-flag "被跟进率" 指标
+
+- **加**：`analyze_observer_health.py` 新增 `red_flag_followed` 指标——**所有**带红旗的 turn 中，有后续 turn（questioner 追问而非结束会话）的占比。区别于旧的"末轮满意却带红旗"（只看终局），这个看全程。
+- **基线 vs iter1 实测**：red-flag followed **79.3%(23/29) → 95.7%(22/23)**。Iter1 banner 让 questioner 几乎对每条红旗都追问，直接证明机制生效。
+- 复用 `_report_has_flag`（结构化布尔优先），与 Iter4 口径一致。ruff 干净。
+
+### 2026-07-10 Iter4 合并 smoke 采集完成 + 分析（含 Iter5 修复）
+
+- **采集**：`scripts/collect_smoke.sh 16 openai/gpt-5 iter4`，tmux `iter4`，时间戳非覆盖目录 `smoke/trajectory/gpt5_iter4_20260710T121246Z/`（含 Iter1+2+3+4 全部改动）。ok=14/err=2，**1470s**（vs iter1 2131s，快 31%）。2 个 err 都是 `research` 桶沙箱 `TimeoutException`（900s slot 超时，重任务，非代码 bug）。
+- **kimi 截断骤减**：iter1 满屏 TruncatedOutputError，iter4 仅 1 次 → Iter3（max_tokens 1024 + 非 thinking 前置）生效。
+- **发现（触发 Iter5）**：iter4 数据里 observer LLM **两个方向都会把 `has_red_flag` 设错**——不仅漏标（先安抚后报问题），还**误标**：q5 文本明写"No concrete red flags detected... no empty deliverables or conflicting values were observed"却 `has_red_flag=true`。原 `_finalize_red_flag` 只 False→True，放过了 True→False。
+- **Iter5 修复**：`_finalize_red_flag` 改为**对称重整**——`discrepancies` 非空时以 TEXT 判定（`_is_real_red_flag`，正向短语胜/否定从句消歧）为准，双向覆盖模型布尔；空文本才保留布尔。`analyze_observer_health.py::_report_has_flag` 同步（对已采数据也用文本重整，度量口径一致）。新增 marker（no concrete red flag / no concrete unresolved problem）+ 否定动词 `were observed`。
+- **分析（reconciled 口径，apples-to-apples）**：
+
+  | 指标 | baseline | iter1 | iter4 |
+  |---|---|---|---|
+  | 单轮率 | 25.0% | 12.5% | 18.8%* |
+  | red-flag followed | 78.6% | 95.7% | **100%** |
+  | ended despite flag | 6 | 1 | **0** |
+  | 16q 采集耗时 | — | 2131s | **1470s** |
+
+  \*iter4 单轮 3/16 中 2 个是 research 沙箱超时 agent_error（非对话质量）；剔除后有效单轮 ≈1/14≈7%。
+- **验证（本机）**：`pytest tests/test_agents.py` **58 passed**（+2 Iter5：True→False 降级、空文本保留）；`pytest tests/` = 359 passed/8 failed（8 全 pre-existing：p0-config 缺 mock sqlite + sandbox 需凭证）；ruff 干净。
+- **结论**：observer 报告正常输出、能定位问题、结构化红旗双向可靠；多轮对话红旗跟进率 100%、零"忽略红旗"。observer+多轮主链路本机层面已收敛。**剩余靠真集群**：research 桶超时调参、真实 e2b winner-sync 下 8 槽 reward 闭环、更大样本稳定性。
+
+### 2026-07-10 Iter6：修 final 字段 schema 违规（surface 文本答案路径）
+
+- **发现（用户追问"final 字段正常吗"→查数据）**：iter4 的 48 份报告里 82 个 final item，**58 dict + 24 裸 str**。24 条全来自 Iter2 加的"fs 无变化→surface actor 回答"路径（`agents/observer.py:937`），把整条回答字符串直接塞进 `final`。
+- **违规点**：schema 规定 `final: list[dict{path,kind,content_excerpt}]`。裸 str 让任何 `f["path"]`/`f.get()` 消费方崩溃（reward judge 输入、analyze 脚本已实测崩）；questioner prompt 因走 json.dumps 不崩但 shape 不一致。
+- **修**：`observe()` surface 路径改为 `final=[{"path":"(assistant reply)","kind":"text","content_excerpt":last_reply}]`（答案进 content_excerpt，不再裸 str）。LLM 路径的 `_as_list` 本就过滤非 dict、确定性路径本就 append dict，只有这一处漏。
+- **验证（本机）**：新增 `test_final_is_list_of_dicts_for_text_only_answer`；`pytest tests/test_agents.py` **59 passed**；直接复现 q0 场景确认 `final` 全 dict、`f["path"]` 不再崩；ruff 干净。
+- **注意**：已采的 iter4 数据仍含旧裸 str（历史产物，不改）；下一轮 smoke 起 final 全合规。observer 主链路除此 schema 洞外其余正常。
+
+### 2026-07-10 Iter7：截断自适应加倍重试（同模型退避，耗尽再 failover）
+
+- **思路（用户提）**：截断不是端点故障，是输出预算不够（thinking 模型把预算烧在隐藏推理）。截断时对**同一模型**用 2× 预算原样重发（不把错误发过去），最多 4 次；4 次仍截断才 failover 换模型。
+- **改**：`agents/failover.py::_call` 每个 attempt 内加截断专属退避内循环——
+  - `chat` 512→1024→2048→4096；`chat_with_tools`(observer) 1024→2048→4096→8192（各自默认起点 ×2，4 次）。
+  - `TruncatedOutputError` 走加倍重试；5xx/超时/401 仍立即换模型（加预算无用）；400 等不可重试立即抛。
+  - 常量 `_TRUNCATION_MAX_ATTEMPTS=4`。
+- **为何这样**：比"全局放开不截断"精准（只有真截断才涨预算，常见路径不浪费 token/延迟），比"一刀切关思考"保留 observer/judge 的推理能力。截断保护 `_raise_if_truncated` 仍在（防"思考吃光预算、content 空"的静默退化被当成有效答案）。
+- **验证（本机）**：`tests/test_failover.py` +3（同模型加倍重试至成功、耗尽 4 次转下一模型、非截断错误不退避直接换模型）；`pytest tests/test_failover.py tests/test_agents.py` = **69 passed**；ruff 干净。
+- **可选后续**：既然截断已被优雅处理，Observer/Questioner 的 `max_tokens` 默认可从 1024 降回 512，让退避只在真需要时涨，省常见路径 token——暂未改（改行为，待定）。
+- **背景数据**：iter6（32q）截断 15 次全在 kimi/deepseek 两个 thinking 模型，err 由 failover 兜住；本改动让这类截断先在原模型加预算解决，减少无谓换模型。
+
+### 2026-07-10 Iter7 修订：截断加倍退避改为**仅 reward judge**
+
+- **纠偏**：Iter7 初版对三角色都开退避。按决策改为**只 reward judge 开**（`escalate_on_truncation` 开关，默认 False）：
+  - reward judge 按 rubric 长篇打分，真需要大预算 → 512→1024→2048→4096 加倍重试，耗尽再 failover。
+  - **questioner/observer 关退避**：截断即当普通可重试错误，直接 failover 换下一模型（不在 thinking 模型上烧更多 token）。仅覆盖采集态 `agents/reward.py`→`resolve_reward_client()`；verl 训练的 `OpenAIJudgeClient` 是另一套 HTTP，本次不动。
+- **事实澄清**：实测 iter1+iter6 截断 33 次**全部是 questioner**（kimi/deepseek），reward 目前无截断记录。questioner 截断由 failover 换模型兜住（err=0），符合"关退避、直接换"的新策略。
+- **改**：`failover.py::FailoverChatClient.__init__(escalate_on_truncation=False)` + `_call` 按开关决定 `max_esc`（开=4，关=1）；`base.py::resolve_reward_client` 传 `True`，observer/questioner 保持默认 False。
+- **验证（本机）**：`tests/test_failover.py` 4 个退避测试（reward 加倍至成功/耗尽转下一模型/非截断不退避/**关退避时截断立即 failover**）；`pytest tests/test_failover.py tests/test_agents.py` = **70 passed**；ruff 干净。
+
+### 2026-07-10 Iter8：observer 报告重构——干净三分类 + 全量内容 + 去噪（用户指令）
+
+- **用户指令**：observer 报告去噪，按 新增/改变/删除 三分类，各列全量内容（新增=新文件全文、改变=diff、删除=旧文件全文），doc/PPT/PDF 用插件提取；系统变更只留装包；内容全量不截断。observer **不做质量审查**（否决看 query）。
+- **背景（诊断）**：iter6 单轮率 36.7%、纯文本报告 63%、端口噪声反弹 20.3%。根因不是判定太松，而是系统噪声（端口/进程）淹没报告 + 运行时文件（.bashrc/AGENTS.md）混入 + 内容被 2KB 截断，questioner 拿到的报告信息密度低。
+- **改（仅 agents/observer.py + tests）**：
+  1. 源头放开：`_SNAPSHOT_PROBE` MAX_TEXT 2048→65536、chash 阈值 4096→65536；`_extract_probe` CAP 2000→65536。渲染 `_MAX_RENDER_CHARS` 1200→65536（工程"全量"，单文件 64KB 上限防爆）。
+  2. `_format_changes` 重构：中文三段「## 新增文件/改变文件/删除文件」——新增列全文、改变列 [BEFORE]/[AFTER]、删除列旧全文；`diff_snapshots` removed 的 before_excerpt 去掉 200 字符 cap。
+  3. 系统变更只留装包：`_sys_diff_empty` 只看 installed_packages；渲染删掉 PORT LISTENING / PROCESS。
+  4. 运行时文件去噪：新增 `_RUNTIME_FILES` 黑名单（.bashrc/.profile/AGENTS.md 等），`snapshot_workspace` 过滤 → file_tree + diff 都不含。
+  5. intermediate 去系统噪声：`_strip_system_intermediate` 剔除 LLM 塞的 source==system / "System state"/"process"/"package" 条目，两处 LLM finalize 后调用。
+- **验证（本机）**：离线渲染真实 diff 形状确认三段+全量+去噪（端口 8888/进程 uvicorn 消失，只留 INSTALLED）；`pytest tests/test_agents.py tests/test_failover.py` = **74 passed**（+4：三段渲染/运行时文件过滤/intermediate 去噪/removed 全量不截断）；observer.py ruff 干净。
+- **不改**：discrepancies/has_red_flag 判定（Iter4/5）、QA 无文件兜底路径、verl OpenAIJudgeClient。
+- **下一步**：起时间戳 smoke 验证真实采集 state_diff 干净、端口噪声→0、file_tree 无运行时文件。
+
+### 2026-07-10 Iter8 去噪初验（iter8 部分数据，9 traj/29 报告）+ Iter9 questioner 对照任务
+
+- **Iter8 去噪验证（真实采集）**：29 份报告——端口噪声 **0**（iter6 20.3%）、进程噪声 **0**、file_tree 运行时文件 **0**、intermediate 系统噪声 **0**；13 份有文件的报告全部出「## 新增/改变/删除文件」三分类 + 全量内容（q2 ops 的 2733B 检测脚本完整列出）。去噪目标达成。
+- **暴露的残留问题（定位单轮根因）**：5 条单轮里，q2/q5/q15 是合理单轮（交付完整无红旗）；**q7/q11 是"交付了但可能没满足 query 要求"**——q7 要求补 4 类测试点却只产 1 文件、q11 要求特定课题框架图。observer 按定位不看 query、不做完整性审查，故标不出 → questioner 无据可追 → 单轮。
+- **决策（用户拍板）**：这类"完整性"判断归 **questioner**（它代表用户、看得到 query），observer 保持客观不动。
+- **Iter9 改（agents/prompts.py）**：
+  1. `QUESTIONER_SYSTEM` 加硬规则"CHECK THE DELIVERABLE AGAINST YOUR ORIGINAL TASK"——任务列了 N 项/多子任务/具体数量时，核对交付是否全覆盖，缺失/半成品/跑题就追问（只凭报告证据，不臆测）。
+  2. `build_questioner_prompt` 顶部固定加「# Your original task」块；新增 `_first_user_task`（取 session_history 第一条 user，**不受 12 条滑窗影响**）——修复长会话里原始任务被挤出窗口、questioner 无法核对完整性的问题。
+- **验证（本机）**：`pytest tests/test_agents.py` **65 passed**（+2：长会话仍暴露原始任务、_first_user_task 提取）；prompts.py ruff 干净。
+- **注意**：iter8 采集进程早于 Iter9 改动，故 iter8 数据只反映 Iter8 去噪、不含 Iter9。追问率改善需含 Iter9 的新采集验证。

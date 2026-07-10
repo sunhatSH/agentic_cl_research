@@ -602,9 +602,12 @@ def test_config_resolve_questioner_from_yaml():
     try:
         q_cfg = resolve_questioner()
         assert len(q_cfg.rotation) == 4
+        # Order = failover priority. Reliable non-thinking models first
+        # (sonnet / qwen3-max), thinking models last (deepseek / kimi) — the
+        # latter over-truncate at low max_tokens (2026-07-10 Iter3).
         assert q_cfg.rotation[0].model == "claude-4.6-sonnet"
-        assert q_cfg.rotation[1].model == "deepseek/deepseek-v4-pro"
-        assert q_cfg.rotation[2].model == "qwen3-max"
+        assert q_cfg.rotation[1].model == "qwen3-max"
+        assert q_cfg.rotation[2].model == "deepseek/deepseek-v4-pro"
         assert q_cfg.rotation[3].model == "moonshotai/kimi-k2.6"
         assert q_cfg.rotate_every == 5
     finally:
@@ -665,3 +668,251 @@ def test_config_key_env_resolves_from_env(monkeypatch):
         assert ep.api_key == "my-secret-key"
     finally:
         _reload_config(None)
+
+
+# --- Iter4: structured has_red_flag verdict (2026-07-10) ---------------------
+# Regression lock for the "boilerplate opener suppresses a real flag" bug: the
+# observer often writes "No empty deliverables detected. One discrepancy is
+# present: ..." and a pure negative-substring filter wrongly dropped it.
+
+
+def test_is_real_red_flag_positive_phrase_beats_boilerplate_opener():
+    from agents.prompts import _is_real_red_flag
+
+    # Reassuring opener THEN a concrete problem -> still a red flag.
+    assert _is_real_red_flag(
+        "No empty deliverables detected. One discrepancy is present: totals disagree."
+    )
+    assert _is_real_red_flag(
+        "No clear internal contradictions. The only red flag visible is a truncated file."
+    )
+    # Pure "nothing found" note -> NOT a flag.
+    assert not _is_real_red_flag("No clear discrepancies detected from the diff alone.")
+    assert not _is_real_red_flag("No explicit discrepancies detected. None detected.")
+    assert not _is_real_red_flag("")
+
+
+def test_deterministic_report_sets_has_red_flag_on_empty_deliverable():
+    from agents.observer import build_deterministic_report
+
+    diff = {
+        "added": [{"path": "./out.json", "kind": "text", "size": 0, "content_excerpt": ""}],
+        "modified": [],
+        "removed": [],
+    }
+    rep = build_deterministic_report(diff=diff, file_tree="out.json", state_diff="+ ADDED out.json")
+    assert rep.has_red_flag is True
+    assert "empty file" in rep.discrepancies
+
+
+def test_deterministic_report_clean_has_no_red_flag():
+    from agents.observer import build_deterministic_report
+
+    diff = {
+        "added": [{"path": "./notes.txt", "kind": "text", "size": 12, "content_excerpt": "hello world"}],
+        "modified": [],
+        "removed": [],
+    }
+    rep = build_deterministic_report(diff=diff, file_tree="notes.txt", state_diff="+ ADDED notes.txt")
+    assert rep.has_red_flag is False
+    assert rep.discrepancies == ""
+
+
+def test_parse_report_trusts_explicit_has_red_flag_true():
+    text = '{"final": [], "intermediate": [], "discrepancies": "totals disagree", "has_red_flag": true}'
+    rep = parse_observation_report(text)
+    assert rep.has_red_flag is True
+
+
+def test_parse_report_derives_flag_when_boolean_missing():
+    # No has_red_flag key -> derive from text; boilerplate-then-problem must flag.
+    text = (
+        '{"final": [], "intermediate": [], '
+        '"discrepancies": "No empty deliverables detected. One discrepancy is present: X."}'
+    )
+    rep = parse_observation_report(text)
+    assert rep.has_red_flag is True
+
+
+def test_parse_report_clean_note_no_flag():
+    text = '{"final": [], "intermediate": [], "discrepancies": "No clear discrepancies detected."}'
+    rep = parse_observation_report(text)
+    assert rep.has_red_flag is False
+
+
+def test_finalize_red_flag_overrides_false_negative():
+    from agents.observer import _finalize_red_flag
+
+    rep = ObservationReport(
+        discrepancies="No empty deliverables detected. One discrepancy is present: mismatch.",
+        has_red_flag=False,
+    )
+    _finalize_red_flag(rep)
+    assert rep.has_red_flag is True
+
+
+def test_finalize_red_flag_downgrades_false_positive():
+    # iter4 data: model set has_red_flag=True while its own text is unambiguously
+    # clean ("No concrete red flags detected... no empty deliverables or conflicting
+    # values were observed"). The TEXT verdict is authoritative -> downgrade to False.
+    from agents.observer import _finalize_red_flag
+
+    rep = ObservationReport(
+        discrepancies=(
+            "No concrete red flags detected in the provided evidence. The aligned "
+            "diagram files exist, and the deprecated files contain non-empty content. "
+            "No empty deliverables or conflicting values were observed."
+        ),
+        has_red_flag=True,
+    )
+    _finalize_red_flag(rep)
+    assert rep.has_red_flag is False
+
+
+def test_finalize_red_flag_empty_text_keeps_boolean():
+    # No text to judge -> leave the (rare deterministic) True as-is.
+    from agents.observer import _finalize_red_flag
+
+    rep = ObservationReport(discrepancies="", has_red_flag=True)
+    _finalize_red_flag(rep)
+    assert rep.has_red_flag is True
+
+
+def test_questioner_banner_keys_off_has_red_flag():
+    # has_red_flag=True with terse discrepancy text -> banner appears.
+    report = ObservationReport(
+        final=[{"path": "r.json"}],
+        discrepancies="totals disagree across files",
+        has_red_flag=True,
+    )
+    msgs = build_questioner_prompt(persona=PERSONAS[0], report=report, session_history=[])
+    user = msgs[1]["content"]
+    assert "UNRESOLVED RED FLAG" in user
+    assert "totals disagree" in user
+
+
+def test_questioner_no_banner_when_no_flag():
+    report = ObservationReport(
+        final=[{"path": "r.json"}],
+        discrepancies="No clear discrepancies detected.",
+        has_red_flag=False,
+    )
+    msgs = build_questioner_prompt(persona=PERSONAS[0], report=report, session_history=[])
+    user = msgs[1]["content"]
+    assert "UNRESOLVED RED FLAG" not in user
+
+
+# --- final-field schema: surfaced text answer must be a dict, not a bare str ---
+# Regression for the Iter2 bug where fs-empty QA turns put the raw answer string
+# into final, breaking every downstream f["path"] consumer (2026-07-10).
+
+
+def test_final_is_list_of_dicts_for_text_only_answer():
+    obs = Observer(client=None)  # use_llm defaults False -> deterministic path
+    pre = {"fs": {}, "sys": {}}
+    post = {"fs": {}, "sys": {}}  # no fs change -> surface actor reply
+    traj = [
+        {"role": "user", "content": "does the module expose onReady?"},
+        {"role": "assistant", "content": "Yes, onAppReady is exposed in main.js."},
+    ]
+    report = obs.observe(baseline=pre, post=post, actor_trajectory=traj)
+    assert isinstance(report.final, list)
+    for item in report.final:
+        assert isinstance(item, dict), f"final item must be dict, got {type(item)}"
+        assert set(item.keys()) >= {"path", "kind", "content_excerpt"}
+    # the answer text is carried in content_excerpt, not as a bare string
+    assert report.final
+    assert "onAppReady" in report.final[0]["content_excerpt"]
+
+
+# --- Observer report restructure (2026-07-10): clean 3-section + full + denoise ---
+
+
+def test_format_changes_three_sections_full_content_and_denoise():
+    from agents.observer import _format_changes
+
+    diff = {
+        "added": [{"path": "./a.py", "kind": "text", "size": 5, "content_excerpt": "x = 1"}],
+        "modified": [
+            {"path": "./c.json", "kind": "text", "size": 9,
+             "content_excerpt": '{"n": 2}', "before_excerpt": '{"n": 1}'}
+        ],
+        "removed": [{"path": "./old.md", "before_excerpt": "old body full"}],
+    }
+    sys_diff = {"installed_packages": ["pkg==1.0"], "opened_ports": [8888], "started_procs": ["uvicorn"]}
+    out = _format_changes(diff, sys_diff)
+    # three sections present
+    assert "## 新增文件 (ADDED)" in out and "## 改变文件 (MODIFIED)" in out and "## 删除文件 (REMOVED)" in out
+    # added full content, removed old content, modified before+after
+    assert "x = 1" in out and "old body full" in out
+    assert "[BEFORE]" in out and '{"n": 1}' in out and "[AFTER]" in out and '{"n": 2}' in out
+    # system: package kept, ports/procs dropped
+    assert "INSTALLED pkg==1.0" in out
+    assert "8888" not in out and "uvicorn" not in out and "PORT LISTENING" not in out and "PROCESS" not in out
+
+
+def test_snapshot_workspace_filters_runtime_files(monkeypatch):
+    import agents.observer as obs
+
+    fake = {
+        "./deliverable.md": {"size": 10, "text": "hi"},
+        "./.bashrc": {"size": 5, "text": "x"},
+        "./AGENTS.md": {"size": 5, "text": "y"},
+    }
+    monkeypatch.setattr(obs, "_run_json_probe", lambda sandbox, probe: fake)
+    snap = obs.snapshot_workspace(object())
+    assert "./deliverable.md" in snap
+    assert "./.bashrc" not in snap and "./AGENTS.md" not in snap
+
+
+def test_strip_system_intermediate_removes_noise():
+    from agents.observer import _strip_system_intermediate
+
+    rep = ObservationReport(
+        intermediate=[
+            {"desc": "System state change: packages installed", "source": "system", "value_excerpt": "edge-tts"},
+            {"desc": "running process snapshot", "source": "system", "value_excerpt": "MainThread"},
+            {"desc": "intermediate file overwritten later", "source": "./tmp.txt", "value_excerpt": "draft"},
+        ]
+    )
+    _strip_system_intermediate(rep)
+    assert len(rep.intermediate) == 1
+    assert rep.intermediate[0]["source"] == "./tmp.txt"
+
+
+def test_removed_file_keeps_full_content_not_capped():
+    from agents.observer import diff_snapshots
+
+    long_body = "L" * 5000
+    pre = {"./gone.md": {"size": 5000, "mtime": 1.0, "text": long_body}}
+    post = {}
+    d = diff_snapshots(pre, post)
+    assert d["removed"][0]["before_excerpt"] == long_body  # not clipped to 200
+
+
+# --- Iter9: questioner checks deliverable against the ORIGINAL task -----------
+
+
+def test_questioner_prompt_surfaces_original_task_even_in_long_session():
+    # A long history (> 12 msgs) must still expose turn-1 task at the top.
+    history = [{"role": "user", "content": "补充这 4 类测试点：A、B、C、D 再复审"}]
+    for i in range(20):
+        history.append({"role": "assistant", "content": f"done {i}"})
+        history.append({"role": "user", "content": f"followup {i}"})
+    report = ObservationReport(final=[{"path": "review_v2.txt", "kind": "text", "content_excerpt": "..."}])
+    msgs = build_questioner_prompt(persona=PERSONAS[0], report=report, session_history=history)
+    user = msgs[1]["content"]
+    assert "# Your original task" in user
+    assert "4 类测试点" in user  # original task survived the window
+    # system prompt carries the completeness rule
+    assert "CHECK THE DELIVERABLE AGAINST YOUR ORIGINAL TASK" in msgs[0]["content"]
+
+
+def test_first_user_task_extraction():
+    from agents.prompts import _first_user_task
+
+    assert _first_user_task([{"role": "user", "content": "task one"},
+                             {"role": "assistant", "content": "ok"},
+                             {"role": "user", "content": "task two"}]) == "task one"
+    assert _first_user_task([{"role": "assistant", "content": "hi"}]) == ""
+    assert _first_user_task([]) == ""
