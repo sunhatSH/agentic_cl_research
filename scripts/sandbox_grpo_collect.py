@@ -86,6 +86,7 @@ class SlotTrajectory:
     num_turns: int = 0           # actual turns run (multi-turn collect)
     ended_by: str = ""           # k_budget | end_session | agent_error (multi-turn)
     observer_reports: list[dict[str, Any]] = field(default_factory=list)  # per-turn debug
+    children: list[dict[str, Any]] = field(default_factory=list)  # sub-agent (delegate_task) trajectories
 
     def to_jsonl(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -436,6 +437,12 @@ def _run_one_collect_query(
             stdout = (_asst or {}).get("content", "") if _asst else ""
             stderr = aturn.error or ""
             all_messages.extend(aturn.messages)
+            # Accumulate any sub-agent (delegate_task) child trajectories this turn.
+            for _ch in aturn.children:
+                t.children.append(
+                    {"turn": turn, "task_index": _ch.task_index,
+                     "goal": _ch.goal, "messages": _ch.messages}
+                )
 
             # Hard failure on first turn: session-ending (not worth retrying).
             if turn == 1 and not stdout and not ok:

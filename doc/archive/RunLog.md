@@ -590,3 +590,16 @@
 - **第一步（用户要求）：对现有 real 轨迹跑 qc** —— 3690 条：HARD 18%（D1 空回合 662 + A3 2），C1 早退 2505（**误报**：现有轨迹展平、恒 0 tool_calls，C1 判据"0 工具调用"命中正常轨迹），A1/A2/B2 工具类全 0（无结构化 tool_calls 无对象）。**实证印证**：展平轨迹上 qc 只有文本类(D1/A3)有意义，工具类失效、C1 误报——qc 要真正有用**必须先有 P2 结构化轨迹**。
 - **验证（本机）**：`tests/test_qc_trajectory.py` 8 passed（clean/D1/A2+A2b/A3/B2/A1-needs-defined/child-hard 冒泡/clean-traj）；`pytest test_actor+test_qc_trajectory+test_agents` = 84 passed；ruff 干净。
 - **待做**：P2 沙箱 smoke（等 w3real）验证结构化采集 → 之后 qc 工具类检查才有对象；qc 接入采集管线（HARD 丢弃，用户已定）留在 P2 smoke 通过后（避免对展平轨迹误 C1 丢弃）。
+
+### 2026-07-13 方案3 P2 沙箱验证通过（结构化 tool_calls + 子 agent 采集全通）
+
+- **杀掉卡死的 w3real**（旧 hermes_cli 采集，GPT-5 阶段最后 6 条卡 50min 未动；已落盘 3690 gpt5 会话保留），起 P2 sandbox smoke 验证新代码。
+- **版本真相**：荣磊 hermes 0.11.0（本地跑，非沙箱）；sunhao4 本地 0.17.0；**沙箱镜像 v2026.6.5**。三版本 API 有差异——荣磊的 `persist_session` 等 kwargs 在新版没了。
+- **沙箱适配（逐个定位，用 0.17.0 源对照）**：
+  1. `persist_session` TypeError → capture 脚本按 `inspect.signature(AIAgent.__init__)` **过滤 kwargs**（版本鲁棒）。
+  2. HTTP 404 / Connection error（首次调 LLM 端点不对）→ 根因：AIAgent.__init__ 不自动读 config providers 块，CLI 是先解析再传 base_url/api_key。**改用 hermes 自己的 `hermes_cli.runtime_provider.resolve_runtime_provider(requested="agent")`**（与 `hermes chat -q` oneshot 同路径）拿 base_url/api_key/provider/api_mode，一次跑通。
+- **定向验证（强制 delegate 的 query）**：parent messages=8, tool_calls=4, delegate_task=1；**children captured=3**（ALPHA/BETA/GAMMA 三子 agent 各自独立轨迹，msgs=6/tool_calls=2）。结构化 tool_calls ✓ + 子 agent 采集 ✓ 全通。
+- **children 落盘**：`SlotTrajectory` 加 `children` 字段，采集 loop 累积 `aturn.children`（asdict 自动序列化进 grpo_hermes.jsonl）。
+- **P2+P3 闭环**：qc_trajectory 对真实结构化轨迹（parent+3child）跑出 clean，工具类检查有对象了（展平轨迹上失效的问题解决）。
+- **验证（本机）**：`pytest tests/test_actor.py tests/test_qc_trajectory.py` 19 passed；rollout/* ruff 干净。删临时 probe 脚本。
+- **下一步**：P3 qc 接入采集管线（HARD 丢弃）；结构化模式跑一批真实采集。

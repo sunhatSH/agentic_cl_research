@@ -107,6 +107,35 @@ def _child_messages(children_caps):
     return out
 
 
+def _resolve_runtime(name: str, model: str) -> dict:
+    """Resolve endpoint via hermes' OWN oneshot resolver (the working path).
+
+    Returns a dict with base_url/api_key/provider/api_mode (whatever the resolver
+    provides). Falls back to reading providers.<name> from ~/.hermes/config.yaml,
+    then to {} (caller then uses env). Never raises."""
+    # 1. hermes' own resolver — identical to `hermes chat -q` oneshot.
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        rt = resolve_runtime_provider(requested=name, target_model=model or None)
+        if isinstance(rt, dict) and rt.get("base_url"):
+            return rt
+    except Exception:
+        pass
+    # 2. plain config.yaml providers.<name> read.
+    try:
+        import yaml
+
+        cfg = yaml.safe_load(open(os.path.expanduser("~/.hermes/config.yaml"), encoding="utf-8")) or {}
+        prov = ((cfg.get("providers") or {}).get(name)) or {}
+        if prov.get("base_url"):
+            return {"base_url": str(prov["base_url"]), "api_key": str(prov.get("api_key") or ""),
+                    "provider": name}
+    except Exception:
+        pass
+    return {}
+
+
 def main() -> None:
     in_path = sys.argv[1]
     result_out = {"messages": [], "children": [], "ok": False, "error": ""}
@@ -117,22 +146,41 @@ def main() -> None:
         max_iter = int(spec.get("max_iterations", 30))
 
         _install_patches()
+        import inspect
+
         import run_agent
 
-        # model/base/key from sandbox config + env (keys stay in sandbox).
+        # Resolve the endpoint the SAME way the working `hermes chat -q` (oneshot)
+        # path does: hermes_cli.runtime_provider.resolve_runtime_provider(requested=
+        # "agent") returns {base_url, api_key, provider, api_mode, credential_pool}
+        # from ~/.hermes/config.yaml providers.agent. Reusing hermes' own resolver
+        # avoids reconstructing the URL/api_mode by hand (earlier hand-rolls hit
+        # HTTP 404 then Connection error). Falls back to a plain config read, then env.
         model = os.environ.get("AGENT_MODEL_NAME", "")
-        base = os.environ.get("AGENT_MODEL_BASE", "")
-        key = os.environ.get("AGENT_MODEL_KEY", "")
+        runtime = _resolve_runtime("agent", model)
+        base = runtime.get("base_url") or os.environ.get("AGENT_MODEL_BASE", "")
+        key = runtime.get("api_key") or os.environ.get("AGENT_MODEL_KEY", "")
 
-        agent = run_agent.AIAgent(
-            base_url=base or None,
-            api_key=key or None,
-            model=model,
-            max_iterations=max_iter,
-            save_trajectories=False,
-            quiet_mode=True,
-            persist_session=False,
-        )
+        # Version-robust: only pass kwargs the sandbox's hermes AIAgent accepts.
+        want = {
+            "base_url": base or None,
+            "api_key": key or None,
+            "provider": runtime.get("provider") or "agent",
+            "api_mode": runtime.get("api_mode"),
+            "model": model,
+            "max_iterations": max_iter,
+            "save_trajectories": False,
+            "quiet_mode": True,
+            "persist_session": False,
+            "skip_memory": True,
+            "skip_context_files": True,
+        }
+        try:
+            sig_params = set(inspect.signature(run_agent.AIAgent.__init__).parameters)
+        except (TypeError, ValueError):
+            sig_params = set(want)  # fall back to trying all if introspection fails
+        kwargs = {k: v for k, v in want.items() if k in sig_params and v is not None}
+        agent = run_agent.AIAgent(**kwargs)
         run_token = f"capture/{os.getpid()}"
         agent._run_token = run_token
         with _CHILD_SINK_LOCK:
