@@ -145,3 +145,41 @@ def test_buffer_dump_load_roundtrip(tmp_path):
     # Restored buffer is functional (can sample).
     restored.set_step(8)
     assert len(restored.sample(3)) == 3
+
+
+def test_per_bucket_floors_cap_over_30():
+    """bucket_floors (= cap/30) give each bucket its own hard floor; a small bucket
+    at its low floor is never evicted, while a large bucket evicts down to its higher
+    floor (2026-07-13: replaces the flat q_min floor)."""
+    from replay_buffer.bucket import BucketReplayBuffer
+
+    buf = BucketReplayBuffer(
+        num_buckets=9, total_capacity=25000, q_min=500,
+        bucket_names=["workflow", "ops", "qa", "finance", "office",
+                      "communication", "safety", "coding", "research"],
+        bucket_task_counts=[56, 44, 36, 20, 11, 11, 9, 2, 6],
+        bucket_floors=[151, 136, 124, 97, 76, 76, 70, 42, 61],
+    )
+    assert buf.bucket_floors["coding"] == 42
+    assert buf.bucket_floors["workflow"] == 151
+    # eviction respects per-bucket floor, not the scalar q_min
+    assert buf.eviction._floor("coding") == 42
+    assert buf.eviction._floor("workflow") == 151
+
+
+def test_bucket_floors_length_mismatch_raises():
+    from replay_buffer.bucket import BucketReplayBuffer
+
+    try:
+        BucketReplayBuffer(num_buckets=9, bucket_floors=[1, 2, 3])
+        raise AssertionError("expected ValueError for wrong-length bucket_floors")
+    except ValueError:
+        pass
+
+
+def test_no_bucket_floors_falls_back_to_q_min():
+    from replay_buffer.bucket import BucketReplayBuffer
+
+    buf = BucketReplayBuffer(num_buckets=9, q_min=200)
+    # absent bucket_floors -> every bucket floor == scalar q_min
+    assert all(v == 200 for v in buf.bucket_floors.values())

@@ -90,6 +90,7 @@ def build_buffer(cfg):
         q_min=int(bcfg.get("q_min", 2000)),
         bucket_names=list(bcfg.get("bucket_names", [])) or None,
         bucket_task_counts=list(bcfg.get("bucket_task_counts", [])) or None,
+        bucket_floors=list(bcfg.get("bucket_floors", [])) or None,
         alpha=float(bcfg.get("alpha", 0.5)),
         priority=priority,
         eviction_type=bcfg.get("eviction_type", "priority"),

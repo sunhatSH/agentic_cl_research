@@ -48,22 +48,31 @@ class Eviction:
         pioneer_boost: float = 0.5,
         pioneer_threshold: int = 10,
         rng: random.Random | None = None,
+        floors: dict[str, int] | None = None,
     ):
         if eviction_type not in ("priority", "reservoir"):
             raise ValueError(f"unknown eviction_type {eviction_type!r}")
         self.q_min = q_min
+        # Per-bucket hard floors (bucket_floors = cap/30). When absent for a
+        # bucket, fall back to the scalar q_min (backward compatible).
+        self.floors = dict(floors or {})
         self.soft_target = dict(soft_target)
         self.eviction_type = eviction_type
         self.pioneer_boost = pioneer_boost
         self.pioneer_threshold = pioneer_threshold
         self.rng = rng or random.Random()
 
+    def _floor(self, bucket: str) -> int:
+        """Hard floor for this bucket: per-bucket value, else scalar q_min."""
+        return self.floors.get(bucket, self.q_min)
+
     def should_evict(self, store: TrajectoryStore, bucket: str) -> bool:
         """Return True iff bucket size exceeds its soft_target AND has room
-        above q_min to evict from."""
+        above the bucket's hard floor to evict from."""
         size = store.bucket_size(bucket)
-        target = self.soft_target.get(bucket, self.q_min)
-        return size > target and size > self.q_min
+        floor = self._floor(bucket)
+        target = self.soft_target.get(bucket, floor)
+        return size > target and size > floor
 
     def select_victim(self, store: TrajectoryStore, bucket: str) -> str | None:
         """Return the trajectory_id to evict.
@@ -71,9 +80,9 @@ class Eviction:
         - 'priority' mode: lowest-priority trajectory in the bucket.
         - 'reservoir' mode: a uniformly random trajectory in the bucket.
 
-        Returns None if bucket is at or below q_min (cannot evict further).
+        Returns None if bucket is at or below its hard floor (cannot evict further).
         """
-        if store.bucket_size(bucket) <= self.q_min:
+        if store.bucket_size(bucket) <= self._floor(bucket):
             return None
         if self.eviction_type == "reservoir":
             ids = store.list_by_bucket(bucket)

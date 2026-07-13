@@ -98,6 +98,7 @@ class BucketReplayBuffer:
         alpha: float = 0.5,
         priority: Priority | None = None,
         eviction_type: str = "priority",
+        bucket_floors: Sequence[int] | None = None,
         within_bucket_sampling: str = "priority",
         seed: int | None = None,
     ):
@@ -121,6 +122,9 @@ class BucketReplayBuffer:
         if num_buckets == 1 and (len(bucket_names) != 1 or len(bucket_task_counts) != 1):
             bucket_names = ["All"]
             bucket_task_counts = [sum(bucket_task_counts)]
+            # Collapse inherited per-bucket floors too (sum -> one floor for "All").
+            if bucket_floors is not None and len(bucket_floors) != 1:
+                bucket_floors = [sum(bucket_floors)]
 
         if len(bucket_names) != num_buckets or len(bucket_task_counts) != num_buckets:
             raise ValueError("bucket_names and bucket_task_counts must each have length num_buckets")
@@ -136,6 +140,14 @@ class BucketReplayBuffer:
 
         targets = allocate_quota(total_capacity, q_min, bucket_task_counts, alpha)
         self.soft_target = dict(zip(self.bucket_names, targets, strict=True))
+        # Per-bucket hard floors (bucket_floors = cap/30, scaled to the soft target).
+        # Absent -> the scalar q_min floor applies to every bucket (legacy behavior).
+        if bucket_floors is not None:
+            if len(bucket_floors) != num_buckets:
+                raise ValueError("bucket_floors must have length num_buckets")
+            self.bucket_floors = dict(zip(self.bucket_names, bucket_floors, strict=True))
+        else:
+            self.bucket_floors = {b: q_min for b in self.bucket_names}
 
         self._rng = random.Random(seed)
         self.store = TrajectoryStore(backend="memory")
@@ -145,6 +157,7 @@ class BucketReplayBuffer:
             soft_target=self.soft_target,
             eviction_type=eviction_type,
             rng=self._rng,
+            floors=self.bucket_floors,
         )
         # Persistent sampler so starvation / last-sample state survives across
         # sample() calls (bug A4 -- previously a fresh sampler was built each call).
@@ -213,7 +226,7 @@ class BucketReplayBuffer:
         # FIRST when the bucket is at/over its soft target, then insert, so the
         # steady-state bucket size never exceeds soft_target (bug A5).
         while self.store.bucket_size(bucket) >= self.soft_target[bucket]:
-            if self.store.bucket_size(bucket) <= self.q_min:
+            if self.store.bucket_size(bucket) <= self.bucket_floors[bucket]:
                 break
             victim = self.eviction.select_victim(self.store, bucket)
             if victim is None:

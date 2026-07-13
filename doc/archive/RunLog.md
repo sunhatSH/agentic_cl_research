@@ -620,3 +620,13 @@
 - **验证**：重新 qc 那批结构化 smoke → **hard 8→0，13 条全 clean**；`tests/test_qc_trajectory.py` 9 passed（新增"连续 loop 判 HARD"+"跨轮合理重复不误报"）；ruff 干净。
 - **意义**：P2 结构化采集 + P3 qc 真正串通——真实 tool_calls 出来了，qc 不再误杀长任务。
 - **下一步**：结构化模式跑真实采集（写 real/，旧展平数据已 archive 到 real/_archive_flat_20260713）。
+
+### 2026-07-13 桶下限改为 per-bucket = cap/30（弃统一 q_min=500）
+
+- **决策**：桶下限（hard floor）不用统一常数，而是 **各桶 cap 的 1/30**（用户明确："按 1/30 的上限进行缩放"）——下限继承上限的相对大小关系、随桶规模平滑缩放，小桶（coding 42）不被迫凑量、大桶（workflow 151）保护更高。合计 833（占 25k 的 3.3%，不挤占容量）。
+- **实现（per-bucket floor，向后兼容）**：
+  - `configs/base.yaml`：加 `bucket_floors=[151,136,124,97,76,76,70,42,61]`（=round(cap/30)，顺序对齐 bucket_names）；q_min=500 保留为配额公式基数 + 无 floors 时的 fallback，注释澄清 q_min 不再直接当淘汰下限。
+  - `replay_buffer/eviction.py`：`Eviction` 加 `floors` 参数 + `_floor(bucket)`（per-bucket 优先，回退标量 q_min）；should_evict/select_victim 用 `_floor`。
+  - `replay_buffer/bucket.py`：加 `bucket_floors` 参数，建 `self.bucket_floors` 传给 Eviction；淘汰循环用 per-bucket floor；**single-bucket collapse（R0）同步折叠 floors**（修 r0-10k/25k 回归）。
+  - `trainer/cl_main.py::build_buffer`：读 `bcfg.bucket_floors` 传入。
+- **验证（本机）**：floors==round(cap/30) ✓；buffer 构造后 eviction._floor(coding)=42/workflow=151 ✓；`pytest tests/` = **387 passed / 8 failed**（8 全 pre-existing：5 p0 缺 mock sqlite + 3 sandbox 需凭证）；新增 test_bucket 3 项（per-bucket floor / 长度校验 / 无 floors 回退 q_min）；ruff 干净。
