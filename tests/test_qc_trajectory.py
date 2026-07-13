@@ -54,14 +54,26 @@ def test_a3_xml_leak_is_hard():
     assert "A3" in codes
 
 
-def test_b2_repeated_same_tool_args_is_hard():
+def test_b2_consecutive_loop_is_hard():
+    # 4 identical calls in a row = blind retry loop -> HARD.
     call = _tc("run", '{"cmd":"ls"}')
     msgs = [{"role": "user", "content": "q"}]
-    for _ in range(3):
+    for _ in range(4):
         msgs.append({"role": "assistant", "content": "", "tool_calls": [call]})
         msgs.append({"role": "tool", "content": "err", "success": False})
-    codes = {x["code"] for x in scan_messages(msgs)}
-    assert "B2" in codes
+    assert "B2" in {x["code"] for x in scan_messages(msgs)}
+
+
+def test_b2_not_flagged_for_legit_repeats_across_turns():
+    # Same read 3x total but NOT consecutive (different calls in between) -> no B2.
+    # This is the false-positive that total-count B2 wrongly killed on long sessions.
+    read = _tc("read_file", '{"path":"a.txt"}')
+    other = _tc("read_file", '{"path":"b.txt"}')
+    msgs = [{"role": "user", "content": "q"}]
+    for oc in (read, other, read, other, read):
+        msgs.append({"role": "assistant", "content": "", "tool_calls": [oc]})
+        msgs.append({"role": "tool", "content": "ok", "success": True})
+    assert "B2" not in {x["code"] for x in scan_messages(msgs)}
 
 
 def test_a1_only_when_defined_tools_given():

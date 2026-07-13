@@ -611,3 +611,12 @@
 - **语义**：HARD（工具幻觉/截断/死循环/空回合/XML泄漏）丢弃；仅对结构化 actor 有意义（展平轨迹工具检查 inert，且此前实测 C1 误报——所以结构化采集才该开 qc 硬丢弃）。
 - **验证（本机）**：`pytest tests/test_actor.py tests/test_qc_trajectory.py` 19 passed；语法/import OK；ruff 我新增行干净（sandbox_grpo_collect 的 I001/E741 pre-existing）。
 - **下一步（step 2）**：`--actor-impl hermes_structured` 跑真实采集；旧展平数据 archive。
+
+### 2026-07-13 结构化 smoke 验证 + qc B2 判据修正（连续 loop，非总数）
+
+- **结构化 smoke（16q, hermes_structured, 写 smoke/）验证采集本身成功**：tool_calls 大量出现（q2=34, q14=342, q3=324...，对比展平模式恒 0）；children 采到（q7=2, q15=1）。
+- **但暴露 qc B2 误杀**：13 条里 8 条命中 B2 被 qc_hard 丢弃——B2 旧判据"同工具+参数总数≥3"对长多轮 hermes（几百次工具调用、跨轮反复 read 同路径属正常）严重误判。荣磊的 B2 是为短 sub-agent 轨迹调的。
+- **修 B2**：改为**连续 ≥4 次同 (tool,args)** 才算 blind-retry loop（`_B2_CONSECUTIVE=4`，max consecutive run，非总数）。B1（同路径写）保持总数但仅 warn。
+- **验证**：重新 qc 那批结构化 smoke → **hard 8→0，13 条全 clean**；`tests/test_qc_trajectory.py` 9 passed（新增"连续 loop 判 HARD"+"跨轮合理重复不误报"）；ruff 干净。
+- **意义**：P2 结构化采集 + P3 qc 真正串通——真实 tool_calls 出来了，qc 不再误杀长任务。
+- **下一步**：结构化模式跑真实采集（写 real/，旧展平数据已 archive 到 real/_archive_flat_20260713）。

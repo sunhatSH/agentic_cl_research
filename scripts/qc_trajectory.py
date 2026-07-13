@@ -14,7 +14,7 @@ Failure taxonomy (HARD = should bounce the trajectory):
   A2  tool-name token jitter      (non [A-Za-z_][\\w.-]* chars)            HARD
   A2b tool-args jitter/injection  (args not JSON obj / illegal / tag leak) HARD
   A3  XML literal leak to content (<tool_call>/<invoke>/<think> in content)HARD
-  B2  same tool+args >=3          (loop / blind retry)                     HARD
+  B2  same tool+args >=4 in a row (blind retry loop, consecutive)          HARD
   D1  both-empty assistant turn   (no content AND no tool_calls)           HARD
   B1  same-path write_file >=3    (full-rewrite-on-error)                  warn
   C1  early bail                  (<=3 asst turns, 0 tool calls)           warn
@@ -56,6 +56,12 @@ _ERROR_MARKERS = (
 )
 
 HARD_CODES = {"A1", "A2", "A2b", "A3", "B2", "D1"}
+
+# B2 loop threshold: min CONSECUTIVE identical (tool, args) calls to flag a blind
+# retry loop. 4 (not 3) + consecutive-only avoids killing legitimate long multi-turn
+# sessions that re-issue the same read across different turns (2026-07-13 struct smoke:
+# total-count B2 wrongly hard-dropped 8/13 long trajectories with 100s of tool calls).
+_B2_CONSECUTIVE = 4
 
 
 def _has_illegal_chars(s: Any) -> bool:
@@ -115,7 +121,11 @@ def scan_messages(messages: list[dict], *, label: str = "parent",
     asst = [m for m in (messages or []) if m.get("role") == "assistant"]
     n_tool_calls = 0
     write_paths: Counter = Counter()
-    tool_arg_sig: Counter = Counter()
+    # B2 = blind-retry LOOP: the SAME (tool, args) issued repeatedly with no
+    # intervening progress. In a long multi-turn hermes session calling read_file
+    # on the same path 3x across different turns is legitimate (re-checking state),
+    # so we detect the max CONSECUTIVE run of an identical call, not the total.
+    call_seq: list[tuple] = []  # ordered (name, raw) of every tool call
 
     for i, m in enumerate(messages or []):
         role = m.get("role")
@@ -141,13 +151,25 @@ def scan_messages(messages: list[dict], *, label: str = "parent",
                     f.append({"code": "A2b", "where": f"{label}#{i}", "detail": "illegal char / tag in args"})
                 if name in ("write_file", "write") and isinstance(obj, dict) and obj.get("path"):
                     write_paths[obj["path"]] += 1
-                tool_arg_sig[(name, raw)] += 1
+                call_seq.append((name, raw))
+    # B1 keeps total-count (warn only): many writes to one path is a soft smell.
     for p, c in write_paths.items():
         if c >= 3:
             f.append({"code": "B1", "where": label, "detail": f"write_file x{c} to {p}"})
-    for (name, _), c in tool_arg_sig.items():
-        if c >= 3:
-            f.append({"code": "B2", "where": label, "detail": f"{name} same-args x{c}"})
+    # B2 HARD: a CONSECUTIVE run of the identical (tool, args) — a blind-retry loop
+    # with no intervening progress. Total-count would wrongly flag legitimate
+    # re-checks across a long multi-turn session, so we use max consecutive run.
+    max_run, run, run_sig = 1, 1, None
+    for sig in call_seq:
+        if sig == run_sig:
+            run += 1
+            if run > max_run:
+                max_run, max_sig = run, sig
+        else:
+            run, run_sig = 1, sig
+    if max_run >= _B2_CONSECUTIVE:
+        f.append({"code": "B2", "where": label,
+                  "detail": f"{max_sig[0]} identical call x{max_run} in a row (loop)"})
     if n_tool_calls == 0 and len(asst) <= 3:
         f.append({"code": "C1", "where": label, "detail": f"{len(asst)} asst turns, 0 tool calls"})
     # C2 / C3: assistant text right after a failed tool result
