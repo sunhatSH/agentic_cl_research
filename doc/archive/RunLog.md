@@ -553,3 +553,12 @@
 - **Iter10 修**：`configs/agents.yaml` questioner 池**移除两个 thinking 模型**，改为 3 个可靠非 thinking：claude-4.6-sonnet + qwen3-max + openai/gpt-5.4-mini。questioner 的活不需深推理，多样性靠 3 家 + rotate + 人设 + 每轮报告变化。`tests/test_agents.py` 断言更新（4→3 模型）。
 - **验证（本机）**：`pytest tests/test_agents.py tests/test_failover.py` 全绿；ruff 干净。
 - **决策**：暂不上 128——先跑含 Iter10 的验证 smoke 确认 questioner_error 归零、agent_error 仅剩沙箱超时（基础设施）。达标再上 128。
+
+### 2026-07-10 Iter10 复检达标 → 起 128 并发全量真实采集
+
+- **iter10（32q，含 Iter10）复检**：questioner 截断/失败 **0**（iter9 是 22 次）、**questioner_error 0**（iter9 是 4）✅ Iter10 修复生效；端口/进程/运行时噪声 0；红旗漏追问 **0**；有效多轮率 54%、mean 2.89 turns、红旗跟进率 94.1%。单轮率 53% 系数据集 QA/communication/一次性任务占比高的自然结果（13 个真单轮均为一次完整交付/天然单轮，非漏追问）。残留 4 agent_error 全是 900s 沙箱超时（基础设施）。
+- **自检判据 A–G 全过 → 起 128 真实采集**。
+- **真实采集配置（用户拍板）**：全量 3702 query、actor = GPT-5 + Qwen27B 两份、slot 900s 主采 + 失败行 1800s retry 补跑。
+- **改 `scripts/run_w3_pipeline.sh`**：并发 32→128；每模型加 S2r retry 段（`--collect-mode retry` slot=1800s 仅重跑失败行）；S1 生成幂等（queries 已存在则跳过，省 20min LLM 分类）。
+- **启动**：tmux `w3real`，`bash scripts/run_w3_pipeline.sh`，写 `agentic_cl_rollouts/real/trajectory/{gpt5,qwen27b}/`，日志 logs/w3real_*.log。含 Iter1–10 全部 observer/questioner 改动。
+- **状态**：GPT-5 128 并发全量采集进行中。

@@ -21,10 +21,15 @@ fi
 echo "taskspecs: $(ls "$TASKSPECS" | wc -l) entries"
 
 # ── S1: 打标 + 人设 + 可跑性 (合并单次 LLM, 32并发) ──────────────────
-log "S1: 打标+人设+可跑性 (32并发)"
-$PY scripts/run_cold_start.py --generate --no-collect \
-    --classify-workers 32 \
-    --taskspecs-dir "$TASKSPECS" --queries "$QUERIES"
+# ── S1: 打标 + 人设 + 可跑性 (幂等: queries 已存在则跳过, 避免重复 20min LLM 分类) ─
+if [ -s "$QUERIES" ]; then
+  echo "[skip] S1 生成: $QUERIES 已存在 ($(wc -l < "$QUERIES") rows)"
+else
+  log "S1: 打标+人设+可跑性 (32并发)"
+  $PY scripts/run_cold_start.py --generate --no-collect \
+      --classify-workers 32 \
+      --taskspecs-dir "$TASKSPECS" --queries "$QUERIES"
+fi
 N=$(wc -l < "$QUERIES")
 echo "queries: $N rows"
 
@@ -36,12 +41,23 @@ ROLLOUTS=/mnt/afs_toolcall/sunhao4/agentic_cl_rollouts
 collect_model() {  # $1=model  $2=model-tag  $3=parquet-dir
   local MODEL="$1" TAG="$2" PQ="$3"
   local TRAJ="$ROLLOUTS/real/trajectory/$TAG/grpo_hermes.jsonl"
-  log "S2: 冷采集 [$MODEL] $N queries, 32并发 → real/trajectory/$TAG/"
+  log "S2: 冷采集 [$MODEL] $N queries, 128并发, slot=900s → real/trajectory/$TAG/"
   $PY scripts/run_cold_start.py \
-      --num-queries "$N" --max-concurrent 32 \
+      --num-queries "$N" --max-concurrent 128 \
       --actor-model "$MODEL" --model-tag "$TAG" \
       --taskspecs-dir "$TASKSPECS" --queries "$QUERIES" \
-      --max-turns 20 --hermes-max-turns 30 --slot-timeout 900
+      --max-turns 20 --hermes-max-turns 30 --slot-timeout 900 \
+      --collect-mode overwrite
+
+  # S2r: retry ONLY the failed rows (mostly 900s sandbox timeouts on heavy tasks)
+  # at a longer 1800s slot timeout. retry mode keeps all good rows, re-runs failures.
+  log "S2r: 重跑失败任务 [$MODEL] slot=1800s (retry 模式, 仅失败行)"
+  $PY scripts/run_cold_start.py \
+      --num-queries "$N" --max-concurrent 128 \
+      --actor-model "$MODEL" --model-tag "$TAG" \
+      --taskspecs-dir "$TASKSPECS" --queries "$QUERIES" \
+      --max-turns 20 --hermes-max-turns 30 --slot-timeout 1800 \
+      --collect-mode retry
 
   log "S2b: 后清洗 [$MODEL]"
   bin/strip_zw < "$TRAJ" \
