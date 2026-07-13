@@ -99,7 +99,10 @@ trainer:
   save_freq: 50
   test_freq: 50
   critic_warmup: 0
-  logger: ['console', 'swanlab']
+  logger: ${oc.decode:${oc.env:VERL_LOGGER,[console,swanlab]}}   # DEBUG=1 → console; 正式 swanlab only
+  log_val_generations: 50
+  rollout_data_dir: ${oc.decode:${oc.env:ROLLOUT_DATA_DIR,null}}
+  validation_data_dir: ${oc.decode:${oc.env:VAL_DATA_DIR,null}}
   project_name: RL
 
 # ---- Ray：连接脚本起好的多机 head（不传 address=local）----------------------

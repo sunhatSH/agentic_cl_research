@@ -111,12 +111,25 @@ if [ "${RANK}" = "0" ]; then
         esac
         run_dir="$PROJECT_DIR/runs/$phase/$exp"
         ckpt_dir="$PROJECT_DIR/ckpts/$exp"
-        mkdir -p "$run_dir/logs" "$run_dir/eval" "$run_dir/buffer" "$ckpt_dir"
+        # 训练/eval 日志 + 生成文本 → logs/experiments/<phase>/<exp>/（单一来源）。
+        # runs/<phase>/<exp>/ 只留 config 快照 + checkpoints 软链。
+        log_dir="$PROJECT_DIR/logs/experiments/$phase/$exp"
+        mkdir -p "$run_dir" "$run_dir/eval" "$run_dir/buffer" "$ckpt_dir" \
+                 "$log_dir/rollout" "$log_dir/val"
         ln -sfn "$ckpt_dir" "$run_dir/checkpoints"
         cp -f "$cfg" "$run_dir/config.snapshot.yaml" 2>/dev/null || true
-        echo "================ [run_phases] start: $exp ($cfg) -> $run_dir ================"
+        # 全量记录：verl 把 rollout/验证生成文本落到这两个目录（base.yaml 读同名 env）。
+        export ROLLOUT_DATA_DIR="$log_dir/rollout"
+        export VAL_DATA_DIR="$log_dir/val"
+        # console 仅 debug：DEBUG=1 保留 console，否则只 swanlab（正式训练不刷屏）。
+        if [ "${DEBUG:-0}" = "1" ]; then
+            export VERL_LOGGER="[console,swanlab]"
+        else
+            export VERL_LOGGER="[swanlab]"
+        fi
+        echo "================ [run_phases] start: $exp ($cfg) -> logs/experiments/$phase/$exp ================"
         CKPT_DIR="$ckpt_dir" python -m trainer.cl_main --config "$cfg" \
-            2>&1 | tee "$run_dir/logs/train.log"
+            2>&1 | tee "$log_dir/train.log"
         status=${PIPESTATUS[0]}
         if [ "$status" != "0" ]; then
             echo "[run_phases] FAILED: $exp (exit $status) — 继续后续实验" >&2
@@ -127,7 +140,7 @@ if [ "${RANK}" = "0" ]; then
             if [ "${RUN_EVAL:-1}" = "1" ]; then
                 echo "[run_phases] eval: $exp -> $run_dir/eval (按桶记录)"
                 bash "$PROJECT_DIR/scripts/eval.sh" "$ckpt_dir" --exp-dir "$run_dir" \
-                    2>&1 | tee "$run_dir/logs/eval.log" || \
+                    2>&1 | tee "$log_dir/eval.log" || \
                     echo "[run_phases] WARN: eval 失败($exp),训练结果仍保留" >&2
             fi
         fi

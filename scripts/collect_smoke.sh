@@ -5,7 +5,7 @@
 # never clobbered (the requirement: 模型_任务类型_采集开始时间, 精确到秒). Output:
 #   <ROLLOUTS>/smoke/trajectory/<TAG>/grpo_hermes.jsonl
 #   <ROLLOUTS>/smoke/debug/observer_report/<TAG>/observer_reports.jsonl
-#   logs/<TAG>.log
+#   logs/smoke/<TAG>.log
 #
 # Usage:
 #   scripts/collect_smoke.sh [N_QUERIES] [ACTOR_MODEL] [TASK_TYPE] [EXTRA run_cold_start args...]
@@ -37,8 +37,8 @@ MODEL_SHORT="$(_short "$ACTOR_MODEL")"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 TAG="${MODEL_SHORT}_${TASK_TYPE}_${TS}"
 
-mkdir -p logs
-LOG="logs/${TAG}.log"
+mkdir -p logs/smoke
+LOG="logs/smoke/${TAG}.log"
 
 source scripts/load_tencent_env.sh
 

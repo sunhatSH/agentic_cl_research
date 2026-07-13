@@ -119,8 +119,8 @@ class PatienceTracker:
     def on_failure(self) -> bool:
         """Register a failed turn; return True to REDO, False to end session.
 
-        P ≤ 0.01 → exhausted (stop).  P ≥ 1 → always continue.
-        Otherwise → continue with probability P.
+        P ≤ 0.1 → exhausted (stop).  P ≥ 1 → always continue.
+        Otherwise → continue with probability P (coin flip).
         """
         self.fail_count += 1
         pk = self.current_patience()
