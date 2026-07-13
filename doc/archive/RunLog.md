@@ -572,3 +572,12 @@
 - **行为不变验证**：`CliStdoutActor` 的 messages 构造 = 旧 loop（[user, assistant(stdout), (system[stderr])]）；下游 stdout/stderr/ok 检查语义保留（hard-fail、turn_failed 仅在 not ok 时触发，stderr 从 aturn.error 取，成功turn 的 [stderr] 仍在 messages 里）。默认 hermes_cli，w3real 采集不受影响。
 - **验证（本机）**：新增 `tests/test_actor.py` 7 passed（成功/失败/空输出/resume_sid透传/注册表/默认值）；`pytest tests/test_agents.py` 65 passed；`rollout/actor.py` + `tests/test_actor.py` ruff 干净（sandbox_grpo_collect 的 3 个 E741/I001 是 pre-existing）。
 - **下一步**：P2 `StructuredHermesActor` + 沙箱内 patch 脚本（run_conversation 结构化 + _run_single_child child 捕获）。已核实沙箱镜像 hermes 是 pip -e 装、`run_agent` 在 pyproject py-modules 里 → 沙箱内可直接 import+patch。
+
+### 2026-07-13 方案3 P2：StructuredHermesActor + 沙箱内捕获脚本（代码完成，沙箱 smoke 待 w3real）
+
+- **新增 `rollout/_hermes_capture.py`**（沙箱内跑）：import run_agent，patch `AIAgent.run_conversation`（stash 结构化 messages，含 tool_calls、压缩后=训练推理一致）+ `delegate_tool._run_single_child`（收 hermes 自主 delegate 的 child 轨迹到 _CHILD_SINK）。读 input.json{query,history,max_iterations}，跑 `run_conversation(query, conversation_history=history)`，输出 `__CAPTURE__<json>`{messages,children,ok,error} 到 stdout（probe 风格）。model/base/key 从沙箱 env/config 取（key 不出沙箱）。fail loud（异常写进 error payload）。
+- **`rollout/actor.py` 加 `StructuredHermesActor`**：`files.write_files` 上传捕获脚本（每沙箱一次）+ input.json → `commands.run("python _hermes_capture.py in.json")` → `_extract_capture` 从 stdout 抽 `__CAPTURE__` payload → ActorTurn(messages, children)。多轮续接用 conversation_history（非 --resume）。注册名 `hermes_structured`。
+- **CLI wiring**：`run_cold_start.py` 加 `--actor-impl {hermes_cli,hermes_structured}`（默认 hermes_cli），透传 stage_collect → _run_one_collect_query。默认不变，w3real 不受影响。
+- **验证（本机离线）**：`tests/test_actor.py` +4（_extract_capture 抓噪声 stdout 里的 payload / 缺 marker 返回 None / StructuredHermesActor round-trip 用 fake sandbox 验证结构化 messages+children 解析+脚本上传 / 无 payload 是 error 不崩），共 11 passed；`pytest tests/test_actor.py tests/test_agents.py` = 76 passed；rollout/* + tests ruff 干净（run_cold_start 的 7 个 E702/F401 是 pre-existing，非我引入）。
+- **⚠️ 待沙箱验证（P2 smoke，等 w3real 跑完释放沙箱）**：沙箱镜像 hermes 是 pinned v2026.6.5，AIAgent kwargs / run_conversation 签名需在真沙箱确认与参考源一致；验证结构化 tool_calls 落盘、多轮续接、若触发 delegate 则 child 被采、observer diff 覆盖 child 文件操作、questioner 追问正常。
+- **下一步**：w3real 完成 → P2 沙箱 smoke（小样本 --actor-impl hermes_structured）→ P3 qc_trajectory 集成。

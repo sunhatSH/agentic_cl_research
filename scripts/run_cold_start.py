@@ -294,7 +294,8 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
                    multi_turn: bool = True, out_dir: Path | None = None,
                    backend: str = "e2b", template_name: str = "agentic-cl-sandbox",
                    workspace_dir: str | None = None,
-                   model_tag: str | None = None, smoke: bool = False) -> int:
+                   model_tag: str | None = None, smoke: bool = False,
+                   actor_impl: str = "hermes_cli") -> int:
     """Run parallel sandbox collection — 1 sandbox per query.
 
     Multi-turn (default): actor(hermes) + observer + questioner drive up to
@@ -392,6 +393,7 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
                 slot_timeout=slot_timeout, backend=backend, template=template_name,
                 observer=observer, questioner=questioner, rng_seed=i,
                 workspace_dir=workspace_dir, observer_log=observer_log,
+                actor_impl=actor_impl,
             ): i
             for i in to_run
         }
@@ -469,6 +471,10 @@ def main() -> None:
     ap.add_argument("--backend", default="e2b", help="sandbox backend (e2b|local)")
     ap.add_argument("--template", default="agentic-cl-sandbox", help="sandbox template name")
     ap.add_argument("--actor-model", default="openai/gpt-5")
+    ap.add_argument("--actor-impl", default="hermes_cli",
+                    choices=["hermes_cli", "hermes_structured"],
+                    help="actor backend: hermes_cli (stdout, default) | "
+                         "hermes_structured (in-sandbox structured tool_calls + sub-agent capture)")
     ap.add_argument("--max-turns", type=int, default=20, help="K_max: follow-up upper bound (§3.5 U{1..K_max})")
     ap.add_argument("--hermes-max-turns", type=int, default=30, help="hermes ReAct limit")
     ap.add_argument("--slot-timeout", type=int, default=900, help="per-sandbox timeout (s)")
@@ -505,6 +511,7 @@ def main() -> None:
             num_queries=args.num_queries,
             max_concurrent=args.max_concurrent,
             actor_model=args.actor_model,
+            actor_impl=args.actor_impl,
             backend=args.backend,
             template_name=args.template,
             max_turns=args.max_turns,

@@ -21,9 +21,17 @@ the loop. ``make_actor(name)`` only resolves a name -> builder.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
+
+# Path to the sandbox-side capture script (uploaded into the sandbox by the
+# structured actor). Kept as a real file (not an inline string) so it is
+# lintable / unit-testable on its own.
+_CAPTURE_SCRIPT = Path(__file__).with_name("_hermes_capture.py")
+_CAPTURE_MARKER = "__CAPTURE__"
 
 
 @dataclass
@@ -153,3 +161,106 @@ class CliStdoutActor:
             error="" if ok else (stderr[:200] or "hermes produced no output"),
             session_id=sid,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Implementation: hermes_structured (方案3 P2) — run a patched run_conversation  #
+# INSIDE the sandbox, return STRUCTURED messages (tool_calls, post-compression   #
+# = train/infer consistent) + any delegate_task sub-agent child trajectories.    #
+# --------------------------------------------------------------------------- #
+
+_SANDBOX_CAPTURE_PATH = "/tmp/_hermes_capture.py"
+_SANDBOX_INPUT_PATH = "/tmp/_hermes_capture_in.json"
+
+
+class StructuredHermesActor:
+    """Capture hermes' STRUCTURED trajectory by running a patched
+    ``run_conversation`` inside the sandbox (see rollout/_hermes_capture.py).
+
+    - Uploads the capture script once per sandbox (idempotent).
+    - Per turn: writes {query, history} to the sandbox, runs the script, extracts
+      the ``__CAPTURE__`` payload from stdout -> ActorTurn(messages, children).
+    - Multi-turn continuation is via ``conversation_history`` (structured prior
+      messages), NOT hermes ``--resume`` — the CLI resume channel is unused here.
+    - ⚠️ Requires in-sandbox validation against the pinned HERMES_VERSION (P2 smoke):
+      AIAgent kwargs / run_conversation signature must match. Fails loud (error
+      payload) if the sandbox hermes API differs.
+    """
+
+    def __init__(self) -> None:
+        self._script_src = _CAPTURE_SCRIPT.read_text(encoding="utf-8")
+        self._uploaded: set[int] = set()  # id(sb) -> uploaded flag (per-sandbox)
+
+    def _ensure_script(self, sb: Any) -> None:
+        if id(sb) in self._uploaded:
+            return
+        sb._sb.files.write_files(  # type: ignore[union-attr]
+            [{"path": _SANDBOX_CAPTURE_PATH, "data": self._script_src}]
+        )
+        self._uploaded.add(id(sb))
+
+    def run_turn(
+        self,
+        sb: Any,
+        query: str,
+        *,
+        conversation_history: Sequence[dict] | None = None,
+        model: str,  # noqa: ARG002 — sandbox reads model/base/key from its own env/config
+        base: str,  # noqa: ARG002
+        max_turns: int,
+        timeout: int,
+        resume_sid: str | None = None,  # noqa: ARG002 — structured uses history, not --resume
+    ) -> ActorTurn:
+        try:
+            self._ensure_script(sb)
+            spec = {
+                "query": query,
+                "history": list(conversation_history or []),
+                "max_iterations": max_turns,
+            }
+            sb._sb.files.write_files(  # type: ignore[union-attr]
+                [{"path": _SANDBOX_INPUT_PATH, "data": json.dumps(spec, ensure_ascii=False)}]
+            )
+            out = sb._sb.commands.run(  # type: ignore[union-attr]
+                f"python {_SANDBOX_CAPTURE_PATH} {_SANDBOX_INPUT_PATH}",
+                timeout=timeout,
+            )
+            stdout = out.stdout or ""
+            payload = _extract_capture(stdout)
+            if payload is None:
+                return ActorTurn(
+                    ok=False,
+                    error="capture payload not found; stderr=" + ((out.stderr or "")[:200]),
+                )
+            children = [
+                ChildTraj(
+                    task_index=c.get("task_index", -1),
+                    goal=c.get("goal", ""),
+                    messages=c.get("messages") or [],
+                )
+                for c in (payload.get("children") or [])
+            ]
+            return ActorTurn(
+                messages=payload.get("messages") or [],
+                children=children,
+                ok=bool(payload.get("ok")),
+                error=str(payload.get("error") or ""),
+                session_id=None,
+            )
+        except Exception as exc:  # noqa: BLE001 — isolate slot failures
+            return ActorTurn(ok=False, error=f"{type(exc).__name__}: {exc}")
+
+
+def _extract_capture(stdout: str) -> dict | None:
+    """Pull the ``__CAPTURE__<json>`` payload out of (possibly noisy) stdout."""
+    idx = stdout.rfind(_CAPTURE_MARKER)
+    if idx == -1:
+        return None
+    raw = stdout[idx + len(_CAPTURE_MARKER):].strip().splitlines()[0]
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+register_actor("hermes_structured", lambda **kw: StructuredHermesActor())
