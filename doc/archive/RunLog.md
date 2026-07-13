@@ -581,3 +581,12 @@
 - **验证（本机离线）**：`tests/test_actor.py` +4（_extract_capture 抓噪声 stdout 里的 payload / 缺 marker 返回 None / StructuredHermesActor round-trip 用 fake sandbox 验证结构化 messages+children 解析+脚本上传 / 无 payload 是 error 不崩），共 11 passed；`pytest tests/test_actor.py tests/test_agents.py` = 76 passed；rollout/* + tests ruff 干净（run_cold_start 的 7 个 E702/F401 是 pre-existing，非我引入）。
 - **⚠️ 待沙箱验证（P2 smoke，等 w3real 跑完释放沙箱）**：沙箱镜像 hermes 是 pinned v2026.6.5，AIAgent kwargs / run_conversation 签名需在真沙箱确认与参考源一致；验证结构化 tool_calls 落盘、多轮续接、若触发 delegate 则 child 被采、observer diff 覆盖 child 文件操作、questioner 追问正常。
 - **下一步**：w3real 完成 → P2 沙箱 smoke（小样本 --actor-impl hermes_structured）→ P3 qc_trajectory 集成。
+
+### 2026-07-13 方案3 P3：qc_trajectory 失败模式质检（搬 tongronglei 逻辑，离线完成）
+
+- **新增 `scripts/qc_trajectory.py`**：搬 tongronglei `v2/qc_checks.py::scan_messages` 的失败模式检查（**只搬逻辑，无 key/CLI**），对结构化 messages + sub-agent children 各自跑。**不搬** `scan_structure`（他的 showcase 门槛：≥3 delegate/≥20 工具轮，不适合单 agent 通用质检）。
+  - HARD：A1 工具幻觉(需 defined_tools) / A2 名抖动 / A2b 参数抖动 / A3 XML泄漏 / B2 同调用×3 / D1 空回合。warn：B1 全量重写 / C1 早退 / C2 甩锅用户 / C3 自称工具坏。
+  - `audit_trajectory(traj)` → {findings, codes, hard, children_hard}；child HARD 冒泡到整条 hard。CLI `python scripts/qc_trajectory.py <jsonl>` 出直方图 + hard 率。
+- **第一步（用户要求）：对现有 real 轨迹跑 qc** —— 3690 条：HARD 18%（D1 空回合 662 + A3 2），C1 早退 2505（**误报**：现有轨迹展平、恒 0 tool_calls，C1 判据"0 工具调用"命中正常轨迹），A1/A2/B2 工具类全 0（无结构化 tool_calls 无对象）。**实证印证**：展平轨迹上 qc 只有文本类(D1/A3)有意义，工具类失效、C1 误报——qc 要真正有用**必须先有 P2 结构化轨迹**。
+- **验证（本机）**：`tests/test_qc_trajectory.py` 8 passed（clean/D1/A2+A2b/A3/B2/A1-needs-defined/child-hard 冒泡/clean-traj）；`pytest test_actor+test_qc_trajectory+test_agents` = 84 passed；ruff 干净。
+- **待做**：P2 沙箱 smoke（等 w3real）验证结构化采集 → 之后 qc 工具类检查才有对象；qc 接入采集管线（HARD 丢弃，用户已定）留在 P2 smoke 通过后（避免对展平轨迹误 C1 丢弃）。
