@@ -371,6 +371,7 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
     # merged holds the final state; start from existing (successes preserved).
     merged: dict[int, dict] = dict(existing)
     ok = err = 0
+    qc_dropped = 0
     t0 = time.time()
 
     def _flush() -> None:
@@ -408,6 +409,14 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
                     # success (a failed rerun must not clobber an old success —
                     # but to_run already excludes successes, so this is safe).
                     merged[traj.query_index] = row
+                elif getattr(traj, "qc_hard", False):
+                    # Failed hard QC (tool hallucination / truncation / loop / ...)
+                    # -> drop from the buffer-bound output. Recorded as an error row
+                    # (with qc_codes) so it's not silently lost and can be inspected.
+                    err += 1
+                    qc_dropped += 1
+                    row["error"] = "qc_hard: " + ",".join(row.get("qc_codes") or [])
+                    merged[traj.query_index] = row
                 else:
                     ok += 1
                     merged[traj.query_index] = row
@@ -436,6 +445,8 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
     total_err = sum(1 for t in merged.values() if t.get("error"))
     print(f"  done in {elapsed:.0f}s  this_pass(ok={ok} err={err})  "
           f"file_total(ok={total_ok} err={total_err})  ({len(to_run)/max(1,elapsed):.2f} traj/s)")
+    if qc_dropped:
+        print(f"  [qc] dropped {qc_dropped} trajectories on hard QC failure (see qc_codes in rows)")
 
     manifest = {
         "actor": "hermes", "mode": mode, "max_concurrent": max_concurrent,

@@ -87,6 +87,8 @@ class SlotTrajectory:
     ended_by: str = ""           # k_budget | end_session | agent_error (multi-turn)
     observer_reports: list[dict[str, Any]] = field(default_factory=list)  # per-turn debug
     children: list[dict[str, Any]] = field(default_factory=list)  # sub-agent (delegate_task) trajectories
+    qc_hard: bool = False        # failed hard QC (tool hallucination/truncation/loop/...) -> dropped
+    qc_codes: list[str] = field(default_factory=list)  # QC failure-mode codes tripped
 
     def to_jsonl(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -541,6 +543,19 @@ def _run_one_collect_query(
     t.slot_idx = 0
     t.sandbox_id = sid
     t.bucket = bucket
+    # Failure-mode QC (P3): audit the structured trajectory + sub-agent children.
+    # Only meaningful for structured actors (tool_calls present); on flattened
+    # trajectories the tool checks are inert. Marks qc_hard for the write path to
+    # drop (HARD = tool hallucination / truncation / loop / empty-turn / XML leak).
+    if not t.error:
+        try:
+            from scripts.qc_trajectory import audit_trajectory
+
+            _qc = audit_trajectory({"messages": t.messages, "children": t.children})
+            t.qc_hard = _qc["hard"]
+            t.qc_codes = _qc["codes"]
+        except Exception:  # noqa: BLE001 — QC must never break collection
+            pass
     return t
 
 

@@ -603,3 +603,11 @@
 - **P2+P3 闭环**：qc_trajectory 对真实结构化轨迹（parent+3child）跑出 clean，工具类检查有对象了（展平轨迹上失效的问题解决）。
 - **验证（本机）**：`pytest tests/test_actor.py tests/test_qc_trajectory.py` 19 passed；rollout/* ruff 干净。删临时 probe 脚本。
 - **下一步**：P3 qc 接入采集管线（HARD 丢弃）；结构化模式跑一批真实采集。
+
+### 2026-07-13 P3 qc 接入采集管线（HARD 丢弃）
+
+- **SlotTrajectory** 加 `qc_hard` / `qc_codes` 字段。`_run_one_collect_query` 在 return 前（无 error 时）跑 `qc_trajectory.audit_trajectory({messages, children})`，标记 qc_hard + codes（QC 异常不阻断采集）。
+- **run_cold_start.stage_collect 写入路径**：qc_hard 的轨迹**不计 ok**、`row.error="qc_hard: <codes>"` 记为 error 行（不进 buffer-bound 成功集，但保留供检查，不静默丢），计 `qc_dropped` 并在收尾打印。
+- **语义**：HARD（工具幻觉/截断/死循环/空回合/XML泄漏）丢弃；仅对结构化 actor 有意义（展平轨迹工具检查 inert，且此前实测 C1 误报——所以结构化采集才该开 qc 硬丢弃）。
+- **验证（本机）**：`pytest tests/test_actor.py tests/test_qc_trajectory.py` 19 passed；语法/import OK；ruff 我新增行干净（sandbox_grpo_collect 的 I001/E741 pre-existing）。
+- **下一步（step 2）**：`--actor-impl hermes_structured` 跑真实采集；旧展平数据 archive。
