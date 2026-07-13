@@ -63,6 +63,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from rollout.actor import CliStdoutActor, make_actor, register_actor
 from rollout.sandbox_client import ExecResult, grpo_advantages, make_sandbox, select_winner
 
 
@@ -183,6 +184,12 @@ def _hermes_chat(
         return stdout, stderr, out.exit_code == 0, sid
     except Exception as exc:  # noqa: BLE001 — isolate slot failures
         return "", f"{type(exc).__name__}: {exc}", False, None
+
+
+# Register the default CLI actor now that _hermes_chat exists. The collection loop
+# resolves the actor by name via make_actor(); swapping to the structured actor (P2)
+# touches no loop code. chat_fn is injected to avoid a circular import.
+register_actor("hermes_cli", lambda **kw: CliStdoutActor(chat_fn=_hermes_chat))
 
 
 def _run_hermes_slot(sb: Any, query: str, model: str, base: str, hermes_max_turns: int, timeout: int) -> SlotTrajectory:
@@ -342,6 +349,7 @@ def _run_one_collect_query(
     rng_seed: int = 0,
     workspace_dir: str | None = None,
     observer_log: Path | None = None,
+    actor_impl: str = "hermes_cli",
 ) -> SlotTrajectory:
     """Full lifecycle for ONE query in collect mode (multi-turn, no reward/winner).
 
@@ -360,6 +368,8 @@ def _run_one_collect_query(
     import random as _random
 
     from agents.personas import PERSONAS, sample_persona
+
+    actor_obj = make_actor(actor_impl)  # facade: hermes_cli (default) | hermes_structured (P2)
     from agents.questioner import PatienceTracker
 
     query = task["query"]
@@ -408,16 +418,24 @@ def _run_one_collect_query(
 
         while cur_query is not None:
             turn += 1
-            stdout, stderr, ok, hsid = _hermes_chat(
-                sb, cur_query, actor_model, hermes_max_turns, slot_timeout,
+            # Actor facade: run one turn. hermes_cli reproduces the prior
+            # `hermes chat` stdout behavior exactly; hermes_structured (P2) returns
+            # structured messages + sub-agent children. Loop code is impl-agnostic.
+            aturn = actor_obj.run_turn(
+                sb, cur_query, conversation_history=all_messages,
+                model=actor_model, base=actor_base,
+                max_turns=hermes_max_turns, timeout=slot_timeout,
                 resume_sid=session_sid,
             )
-            if hsid:
-                session_sid = hsid
-            all_messages.append({"role": "user", "content": cur_query})
-            all_messages.append({"role": "assistant", "content": stdout})
-            if stderr:
-                all_messages.append({"role": "system", "content": f"[stderr] {stderr[:300]}"})
+            if aturn.session_id:
+                session_sid = aturn.session_id
+            ok = aturn.ok
+            # Derive stdout/stderr for the legacy downstream checks. For hermes_cli
+            # the parent messages are [user, assistant(stdout), (system[stderr])].
+            _asst = next((m for m in aturn.messages if m.get("role") == "assistant"), None)
+            stdout = (_asst or {}).get("content", "") if _asst else ""
+            stderr = aturn.error or ""
+            all_messages.extend(aturn.messages)
 
             # Hard failure on first turn: session-ending (not worth retrying).
             if turn == 1 and not stdout and not ok:

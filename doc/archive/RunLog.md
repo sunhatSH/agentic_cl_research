@@ -562,3 +562,13 @@
 - **改 `scripts/run_w3_pipeline.sh`**：并发 32→128；每模型加 S2r retry 段（`--collect-mode retry` slot=1800s 仅重跑失败行）；S1 生成幂等（queries 已存在则跳过，省 20min LLM 分类）。
 - **启动**：tmux `w3real`，`bash scripts/run_w3_pipeline.sh`，写 `agentic_cl_rollouts/real/trajectory/{gpt5,qwen27b}/`，日志 logs/w3real_*.log。含 Iter1–10 全部 observer/questioner 改动。
 - **状态**：GPT-5 128 并发全量采集进行中。
+
+### 2026-07-13 方案3 P1：Actor 工厂-门面骨架（纯解耦，行为不变）
+
+- **背景**：actor 硬编码 `hermes chat -q` 抓 stdout → 工具调用被展平成文本，无结构化 tool_calls，qc/结构化训练做不了。要改方案3（沙箱内 patch run_conversation 拿结构化+压缩后轨迹 + sub-agent child 捕获），先搭工厂-门面解耦。
+- **P1 改**：
+  - 新增 `rollout/actor.py`：`Actor` Protocol + `ActorTurn{messages,children,ok,error,session_id}` + `ChildTraj{task_index,goal,messages}` + `register_actor`/`make_actor` 注册表（镜像 sandbox_client 范式）+ `CliStdoutActor`（包现有 `_hermes_chat`，children 恒空）。
+  - `scripts/sandbox_grpo_collect.py`：注册 `hermes_cli` actor；`_run_one_collect_query` 加 `actor_impl="hermes_cli"` 参数，多轮 loop 改调 `actor_obj.run_turn(...)`，`all_messages.extend(turn.messages)` 替代手工拼 user/assistant/stderr。
+- **行为不变验证**：`CliStdoutActor` 的 messages 构造 = 旧 loop（[user, assistant(stdout), (system[stderr])]）；下游 stdout/stderr/ok 检查语义保留（hard-fail、turn_failed 仅在 not ok 时触发，stderr 从 aturn.error 取，成功turn 的 [stderr] 仍在 messages 里）。默认 hermes_cli，w3real 采集不受影响。
+- **验证（本机）**：新增 `tests/test_actor.py` 7 passed（成功/失败/空输出/resume_sid透传/注册表/默认值）；`pytest tests/test_agents.py` 65 passed；`rollout/actor.py` + `tests/test_actor.py` ruff 干净（sandbox_grpo_collect 的 3 个 E741/I001 是 pre-existing）。
+- **下一步**：P2 `StructuredHermesActor` + 沙箱内 patch 脚本（run_conversation 结构化 + _run_single_child child 捕获）。已核实沙箱镜像 hermes 是 pip -e 装、`run_agent` 在 pyproject py-modules 里 → 沙箱内可直接 import+patch。
