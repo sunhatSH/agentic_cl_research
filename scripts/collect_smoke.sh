@@ -51,7 +51,7 @@ echo "[collect_smoke] traj -> smoke/trajectory/$TAG/grpo_hermes.jsonl"
     --actor-model "$ACTOR_MODEL" --model-tag "$TAG" \
     --smoke --collect-mode overwrite \
     --taskspecs-dir "$TASKSPECS" --queries "$QUERIES" \
-    --max-turns 20 --hermes-max-turns 30 --slot-timeout 900 \
+    --max-turns 20 --hermes-max-turns 90 --slot-timeout 900 \
     "$@" 2>&1 | tee "$LOG"
 
 echo "[collect_smoke] DONE tag=$TAG"

@@ -46,7 +46,7 @@ collect_model() {  # $1=model  $2=model-tag  $3=parquet-dir
       --num-queries "$N" --max-concurrent 128 \
       --actor-model "$MODEL" --model-tag "$TAG" \
       --taskspecs-dir "$TASKSPECS" --queries "$QUERIES" \
-      --max-turns 20 --hermes-max-turns 30 --slot-timeout 900 \
+      --max-turns 20 --hermes-max-turns 90 --slot-timeout 900 \
       --collect-mode overwrite
 
   # S2r: retry ONLY the failed rows (mostly 900s sandbox timeouts on heavy tasks)
@@ -56,7 +56,7 @@ collect_model() {  # $1=model  $2=model-tag  $3=parquet-dir
       --num-queries "$N" --max-concurrent 128 \
       --actor-model "$MODEL" --model-tag "$TAG" \
       --taskspecs-dir "$TASKSPECS" --queries "$QUERIES" \
-      --max-turns 20 --hermes-max-turns 30 --slot-timeout 1800 \
+      --max-turns 20 --hermes-max-turns 90 --slot-timeout 1800 \
       --collect-mode retry
 
   log "S2b: 后清洗 [$MODEL]"

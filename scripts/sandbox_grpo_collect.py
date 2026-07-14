@@ -461,8 +461,12 @@ def _run_one_collect_query(
                      "goal": _ch.goal, "messages": _ch.messages}
                 )
 
-            # Hard failure on first turn: session-ending (not worth retrying).
-            if turn == 1 and not stdout and not ok:
+            # Hard failure on first turn: session-ending ONLY when the actor
+            # truly produced nothing (no structured messages at all). Hermes
+            # hitting max_iterations without a final summary produces 60+
+            # messages of useful tool_calls but ok=False — that's a partial
+            # completion, not a hard failure worth discarding.
+            if turn == 1 and not ok and len(all_messages) <= 1:
                 t.error = stderr[:200] or "hermes produced no output"
                 ended_by = "agent_error"
                 break

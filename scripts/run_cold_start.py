@@ -487,7 +487,7 @@ def main() -> None:
                     help="actor backend: hermes_cli (stdout, default) | "
                          "hermes_structured (in-sandbox structured tool_calls + sub-agent capture)")
     ap.add_argument("--max-turns", type=int, default=20, help="K_max: follow-up upper bound (§3.5 U{1..K_max})")
-    ap.add_argument("--hermes-max-turns", type=int, default=30, help="hermes ReAct limit")
+    ap.add_argument("--hermes-max-turns", type=int, default=90, help="hermes ReAct limit")
     ap.add_argument("--slot-timeout", type=int, default=900, help="per-sandbox timeout (s)")
     ap.add_argument("--collect-mode", choices=["overwrite", "incremental", "retry"],
                     default="incremental")

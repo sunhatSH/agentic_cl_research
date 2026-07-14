@@ -260,7 +260,7 @@ LLM 自我对话的已知失效模式是**模式坍缩**——follow-up 趋同�
 | 维度 | 粒度 | 抗坍缩机制 | 正交性 |
 |------|------|-----------|--------|
 | **人设随机** $p$ | 会话级 | 42 人设 = 职业 + 偏好 + 用户画像 + 观察偏好（整体 vs 细节、形式 vs 内容）。每会话随机抽 1 个。观察偏好让同一份客观报告被不同人设问出不同侧面 | 改变"以谁的视角问、强调结果的哪一面"的先验 |
-| **轮数 $K$ 压制** | 会话级 | follow-up 轮数抽样（1–3 均匀，期望 2），出题 agent 亦可提前 `<end_session>` 自然终止 | 截断自回归生成链——链越长越易漂进模板腔；轮数随机化避免模型学到"固定第 N 轮结束"的捷径 |
+| **会话长度由 Questioner 驱动** | 会话级 | 三层协同控制（详见 §3.3）： **(1) Questioner 满意度（主控）** — 每轮 observer 出报告后,Questioner（LLM 带人设）自主判断"交付够好了吗"。够则输出 `<end_session>` 自然停止；不够则继续追问。 **(2) Max\_turns=20（兜底安全帽）** — Questioner 始终不满意时的硬件上限,正常情况几乎到不了（通常 3–8 轮即满意结束）。 **(3) 耐心 P0×r^k（仅失败轮）** — hermes 本轮崩溃或空输出时才消耗；成功追问不耗耐心,Questioner 满意结束也不耗耐心。 | 链越长越易坍缩,但终止权归有判断力的一方(Questioner),而非随机抽样 |
 | **winner 状态逐轮演化** | 轮级（天然） | 每轮 winner 状态都被上一条 follow-up 改变，观察报告 $R_t$ 随之不同 | 即使人设固定，每轮报告不同 → 出题条件分布天然变化 |
 | **Questioner 多模型轮换** | 轮级（每 5 次提问切换） | Questioner 在 4 个跨厂商模型之间轮换，每 5 次 `chat()` 调用后切换到下一个 | 从模型层面注入输出风格异质性——不同厂商训练数据、对齐方式、语言风格各异，轮换后 follow-up 的关注点、语气、角度自然分散 |
 
@@ -272,14 +272,16 @@ LLM 自我对话的已知失效模式是**模式坍缩**——follow-up 趋同�
 
 ```text
 Algorithm 1: User-Sim Session Rollout（单会话，三 agent）
-输入: 种子 q1（真实回流）、母版 M、42 人设库 P、K_max
- 1:  p ~ P；K ~ U{1..K_max}                       # 会话级抽样（出题人设 + 轮数）
- 2:  slots ← spawn(M, 8)                          # 位级同起点
- 3:  H ← []；q ← q1
- 4:  for t = 1, 2, ... do
- 5:      T ← parallel_rollout(slots, q, H)         # 8 条轨迹
- 6:      w ← select_winner_with_fallback(T)        # 按已有 reward 选 winner（含兜底）
- 7:      if w = None: buffer←T; continue/终止       # 沿用现行 scorer-error 兜底
+输入: 种子 q1（真实回流）、母版 M、42 人设库 P、K_max=20
+ 1:  p ~ P                                             # 会话级随机抽人设
+ 2:  slots ← spawn(M, 8)                              # 位级同起点
+ 3:  H ← []；q ← q1；turns ← 0
+ 4:  while turns < K_max:
+ 5:      T ← parallel_rollout(slots, q, H)             # 8 条轨迹
+ 6:      w ← select_winner_with_fallback(T)            # 按已有 reward 选 winner（含兜底）
+ 7:      if w = None: 按耐心决定 redo 或 终止          # 耐心 P0×r^k，仅失败轮消耗
+ 8:      R_t ← observer(w, baseline)                   # 沙箱 before/after diff → 结构化报告
+ 9:      q ← questioner(p, R_t, H)                     # 人设 p 判"够好了吗？"
  8:      sync_to_winner(w)；H ← H ∥ T[w].messages
  9:      R_t ← Observer(actor=T[w], sandbox=winner) # 观察 agent：客观报告
 10:      r ← Reward(R_t, T[w], rubric)              # 奖励模型：以报告为证据打分
