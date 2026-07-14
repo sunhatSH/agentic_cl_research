@@ -630,3 +630,48 @@
   - `replay_buffer/bucket.py`：加 `bucket_floors` 参数，建 `self.bucket_floors` 传给 Eviction；淘汰循环用 per-bucket floor；**single-bucket collapse（R0）同步折叠 floors**（修 r0-10k/25k 回归）。
   - `trainer/cl_main.py::build_buffer`：读 `bcfg.bucket_floors` 传入。
 - **验证（本机）**：floors==round(cap/30) ✓；buffer 构造后 eviction._floor(coding)=42/workflow=151 ✓；`pytest tests/` = **387 passed / 8 failed**（8 全 pre-existing：5 p0 缺 mock sqlite + 3 sandbox 需凭证）；新增 test_bucket 3 项（per-bucket floor / 长度校验 / 无 floors 回退 q_min）；ruff 干净。
+
+### 2026-07-13/14 逻辑链汇总（本 session 关键决策）
+
+## 1. 数据链路
+```
+generated_tasks(task.json) → adapter → taskspecs_w3
+    + taskspecs_w3(old) → S1 classify → queries_buffer.jsonl/queries_train.jsonl
+    → hermes_structured collection → grpo_hermes.jsonl(结构化tool_calls+children)
+    → qc_hard discard → filter errors → warmup_buffer → 训练
+```
+
+## 2. 桶容量
+- cap = α=0.5 √加权(ClawEval n_i = 9桶), total_capacity=25000
+- floor = cap/30 per-bucket (workflow 151, coding 42, ... 合计 833)
+- q_min 退位为配额公式基数, 真实淘汰下限是 bucket_floors
+- α=0.5 让步: workflow:coding 从任务本来的 9.3:1 压到 3.6:1
+
+## 3. 会话长度控制（三层）
+- (1) Questioner满意度(主控): LLM+persona自主判断\<end_session\>
+- (2) max_turns=20(兜底): 正常3-8轮, 到不了20
+- (3) 耐心P0×r^k(失败轮): hermes crash/空输时才消耗
+- 更新: usersim.md §3.1, Algorithm1
+
+## 4. Reward
+- Judge: completion/safety/robustness → safety*(0.8c+0.2r)
+- Ground truth: answer_key.checks → 显式 completion anchors (ALL→1.0, ≥80%→0.9, ...)
+- 有answer_key自动注入, 无则纯judge
+- 训练parquet的extra_info.record_id读取answer_key
+
+## 5. 采集修复
+- hermes-max-turns 30→90 (复杂任务撞上限)
+- ok=False但messages>1 → 不再误杀(半完成有回放价值)
+- to_jsonl: backslashreplace修复非法UTF-8
+- filter_and_borrow: 剔error → 查缺口 → 从训练池补 → 去除补采的
+
+## 6. 反遗忘实验设计
+- 7桶有新训练数据+ground truth
+- qa/communication纯replay, 训练数据极少(2/9)
+- 若训练后qa/communication分不降 → replay防遗忘的最硬证据
+- 讨论: 需确认是否免于cherry-picking质疑
+
+## 7. 版本适配
+- 沙箱hermes v2026.6.5 ≠ 荣磊0.11.0
+- AIAgent kwargs按inspect.signature过滤 (persist_session removed)
+- resolve_runtime_provider("agent")复制CLI的oneshot路径 (非手搓base_url)
