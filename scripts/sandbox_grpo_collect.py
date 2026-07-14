@@ -91,7 +91,22 @@ class SlotTrajectory:
     qc_codes: list[str] = field(default_factory=list)  # QC failure-mode codes tripped
 
     def to_jsonl(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False)
+        raw = json.dumps(asdict(self), ensure_ascii=False)
+        # Hermes tool outputs can contain bytes that are not valid UTF-8
+        # (binary file fragments, corrupted terminal output). Python's
+        # "surrogateescape" error handler preserves these as lone surrogates,
+        # but json.dumps may then emit them as-is, breaking downstream parsers.
+        # We use "backslashreplace" so invalid bytes become \xNN sequences —
+        # the JSON stays valid AND the original byte values are recoverable
+        # (unlike "replace" which silently substitutes �).
+        try:
+            raw.encode("utf-8")
+        except UnicodeEncodeError:
+            raw = (
+                raw.encode("utf-8", errors="backslashreplace")
+                .decode("utf-8", errors="backslashreplace")
+            )
+        return raw
 
 
 # --------------------------------------------------------------------------- #

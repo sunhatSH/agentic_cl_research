@@ -312,6 +312,13 @@ def compute_score(
     task = _task_text(info, ground_truth)
     rubric = _rubric_text(info)
     client = judge if judge is not None else get_judge()
+    # Inject ground-truth answer_key checks if available.
+    record_id = str(info.get("record_id", "")) or None
+    if record_id:
+        from agents.prompts import _load_ground_truth
+        gt = _load_ground_truth(record_id)
+        if gt:
+            rubric += gt
 
     try:
         verdict = client.score(

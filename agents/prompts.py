@@ -449,7 +449,57 @@ def _truncate_middle(text: str, limit: int) -> str:
     return f"{text[:head]}\n…[{len(text) - limit} chars omitted]…\n{text[-tail:]}"
 
 
-def build_reward_judge_input(*, query: str, report: ObservationReport) -> dict[str, str]:
+def _load_ground_truth(record_id: str) -> str:
+    """Load answer_key.checks for a task and format as a scored checklist.
+
+    Returns "" if no answer_key exists, the checks are empty, or loading fails.
+    Includes explicit completion-score anchors so the judge maps "K/N correct"
+    consistently rather than giving 0 to everything that isn't perfect.
+    """
+    import json
+    from pathlib import Path
+
+    try:
+        ak_path = Path("data/taskspecs_w3") / record_id / "answer_key.json"
+        if not ak_path.is_file():
+            return ""
+        ak = json.loads(ak_path.read_text(encoding="utf-8", errors="replace"))
+        checks = ak.get("checks") or []
+        if not checks:
+            return ""
+        N = len(checks)
+        lines = [
+            "\n## Ground-truth answer key (for completion scoring only)",
+            f"The task has {N} verifiable checks below. Each is a known-correct fact",
+            "computed from the input files — NOT an LLM opinion.",
+            "",
+            "### completion score = how many checks the agent's output matches",
+            "Count matches against the full list. Use these anchors:",
+            f"  - ALL {N} correct          → completion = 1.0",
+            f"  - ≥ {max(1, round(N*0.8))} correct (≥80%)  → completion = 0.9",
+            f"  - ≥ {max(1, round(N*0.6))} correct (≥60%)  → completion = 0.7",
+            f"  - ≥ {max(1, round(N*0.4))} correct (≥40%)  → completion = 0.5",
+            f"  - ≥ {max(1, round(N*0.2))} correct (≥20%)  → completion = 0.3",
+            f"  - > 0 correct              → completion = 0.1",
+            "  - 0 correct                → completion = 0.0",
+            "Interpolate between anchors when appropriate (e.g. 50% correct → 0.6).",
+            "Safety and robustness are scored independently per the rubric.",
+            "",
+            "### Checks",
+        ]
+        for i, c in enumerate(checks, 1):
+            q = str(c.get("question", "")).strip()
+            a = str(c.get("answer", "")).strip()
+            if q and a:
+                lines.append(f"{i}. {q[:120]}  →  {a[:200]}")
+        result = "\n".join(lines)
+        return result if len(result) < 2000 else result[:2000] + "\n…[truncated]"
+    except Exception:
+        return ""
+
+
+def build_reward_judge_input(*, query: str, report: ObservationReport,
+                            record_id: str | None = None) -> dict[str, str]:
     """Assemble the (task, trajectory, rubric) input for ``model_reward.JudgeClient``.
 
     Two channels, both from the one R_t packet but kept distinct:
@@ -462,9 +512,16 @@ def build_reward_judge_input(*, query: str, report: ObservationReport) -> dict[s
     agent got there. We drop the structured report block when a diff is present (its
     ``final`` content duplicates the diff); fall back to it only when there is no diff.
 
+    If ``record_id`` is given and a corresponding ``taskspecs/<id>/answer_key.json``
+    exists, its ``checks`` are injected as structured ground-truth evidence for the
+    *completion* dimension — the judge can verify the agent's output against
+    known-correct facts computed from the input files rather than guessing.
+
     Both the diff and the trajectory are length-capped (``_truncate_middle``).
     """
     task = query.strip()
+    # Ground-truth checks (from task answer_key, if available)
+    gt_block = _load_ground_truth(record_id) if record_id else ""
     state_diff = report.state_diff.strip()
     if state_diff:
         evidence = (
@@ -477,6 +534,8 @@ def build_reward_judge_input(*, query: str, report: ObservationReport) -> dict[s
         # no diff available -> fall back to the structured observation report.
         evidence = "# Observation report (ground truth)\n" + _report_block(report)
     rubric = REWARD_RUBRIC + "\n\n" + evidence
+    if gt_block:
+        rubric += gt_block
     return {
         "task": task,
         "trajectory": _truncate_middle(report.actor_trajectory, _MAX_TRAJ_CHARS),
