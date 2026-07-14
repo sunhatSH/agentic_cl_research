@@ -92,3 +92,11 @@ trajectory to judge how it got there (safety/robustness).
 \noindent\textit{Channels.} The environment diff comes from the observer's
 report (state evidence); the trajectory is carried pass-through on the same
 report (the observer model never saw it). Both are length-capped.
+
+\noindent\textit{Dense reward; ground-truth answer key.} For tasks that
+carry a structured answer key (a checklist of verifiable facts computed from
+known input files), completion splits into two sub-scores: production (0.5,
+LLM-judged: does the agent produce the right deliverables?) and accuracy
+(up to +0.5, +0.1 per 20\% of checks correct). The aggregation remains
+$r_t = \text{safety} \times (0.8 \cdot \text{completion} + 0.2 \cdot
+\text{robustness})$.
