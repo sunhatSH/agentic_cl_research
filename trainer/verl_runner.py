@@ -385,6 +385,11 @@ class CLTaskRunner:
         config = merge_verl_config(config)
         print(f"CLTaskRunner hostname: {socket.gethostname()}")
         pprint(OmegaConf.to_container(config, resolve=True))
+        # Rebuild config from a plain container so that list-valued nodes (e.g.
+        # trainer.logger = ['console','swanlab']) become native lists instead of
+        # ListConfig nodes.  OmegaConf 2.3 resolve() rejects ListConfig as a
+        # "non-primitive" value; recreating from container sidesteps that.
+        config = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
         OmegaConf.resolve(config)
 
         from trainer.cl_main import build_buffer
