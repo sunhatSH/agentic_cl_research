@@ -131,5 +131,15 @@ PY
 RUN conda install -y -c conda-forge nodejs=22
 RUN npm install -g @openai/codex
 
+# ---- flash_attn (CUDA 13.0 无预编译包，shim 兜底) ----
+# PyTorch 2.13 sdpa 内置 unpad_input / pad_input / index_first_axis，
+# 但 verl attention_utils.py 硬 import flash_attn.bert_padding。
+# 先尝试 pip install flash-attn（编译耗时，可能因 CUDA 13.0 失败），
+# 再落 shim 作为 fallback（torch sdpa 实现，同语义、0 依赖、无需编译）。
+RUN python -m pip install flash-attn --no-build-isolation 2>&1 | grep -E "Successfully|error" || echo "flash-attn install failed (expected on CUDA 13.0), shim will cover"
+COPY flash_attn_shim/ /opt/flash_attn_shim/
+ENV PYTHONPATH="/opt/flash_attn_shim:${PYTHONPATH}"
+
+
 WORKDIR /workspace
 CMD ["/bin/bash"]

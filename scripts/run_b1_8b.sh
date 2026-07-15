@@ -11,6 +11,7 @@ CONDA_ENV=/mnt/afs_toolcall/sunhao4/miniconda3/envs/py310_base
 # --- Python env (py310_base has torch/ray/vllm/verl-deps installed) ---
 export PATH="$CONDA_ENV/bin:$PATH"
 export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$PROJECT_DIR"
+export PYTHONPATH="/tmp/flash_attn_shim_pkg:$PYTHONPATH"
 export PYTHON=$CONDA_ENV/bin/python
 
 # --- CUDA runtime libs (nvidia/*/lib) so lightllm rollout subprocesses can load
