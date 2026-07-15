@@ -54,7 +54,11 @@ def _install_patches():
             self._cap = {
                 "messages": (result or {}).get("messages") if isinstance(result, dict) else None,
                 "completed": (result or {}).get("completed") if isinstance(result, dict) else None,
+                "partial": (result or {}).get("partial") if isinstance(result, dict) else None,
                 "error": (result or {}).get("error") if isinstance(result, dict) else None,
+                "api_calls": (result or {}).get("api_calls") if isinstance(result, dict) else None,
+                "tools": getattr(self, "tools", None),
+                "system_prompt": getattr(self, "_cached_system_prompt", None),
                 "ephemeral_system_prompt": getattr(self, "ephemeral_system_prompt", None),
                 "model": getattr(self, "model", None),
             }
@@ -93,17 +97,21 @@ def _install_patches():
 
 
 def _child_messages(children_caps):
-    """Flatten harvested child caps -> [{task_index, goal, messages}]."""
+    """Flatten harvested child caps -> [{task_index, goal, messages, system_prompt, base_system_prompt, tools}]."""
     out = []
     for c in children_caps or []:
         cap = c.get("cap") or {}
-        out.append(
-            {
-                "task_index": c.get("task_index"),
-                "goal": c.get("goal"),
-                "messages": cap.get("messages") or [],
-            }
-        )
+        # Child: ephemeral_system_prompt = delegated task + context (the "real" instruction).
+        # _cached_system_prompt = hermes identity + tool enforcement (the "base").
+        row = {
+            "task_index": c.get("task_index"),
+            "goal": c.get("goal"),
+            "messages": cap.get("messages") or [],
+            "system_prompt": cap.get("ephemeral_system_prompt"),
+            "base_system_prompt": cap.get("system_prompt"),
+            "tools": cap.get("tools"),
+        }
+        out.append(row)
     return out
 
 
@@ -195,7 +203,17 @@ def main() -> None:
         with _CHILD_SINK_LOCK:
             child_caps = _CHILD_SINK.pop(run_token, [])
 
-        result_out["messages"] = cap.get("messages") or (res or {}).get("messages") or []
+        # Messages from result (hermes stores system prompt separately — messages
+        # start with user, NOT system). system_prompt and tools are surfaced as
+        # independent fields (matching nairong/荣磊's schema) so downstream can
+        # reassemble the full system context at training time.
+        msgs = cap.get("messages") or (res or {}).get("messages") or []
+        result_out["messages"] = msgs
+        result_out["system_prompt"] = cap.get("system_prompt") or ""
+        result_out["ephemeral_system_prompt"] = cap.get("ephemeral_system_prompt") or ""
+        result_out["tools"] = cap.get("tools") or []
+        result_out["api_calls"] = cap.get("api_calls") or (res or {}).get("api_calls", 0)
+        result_out["partial"] = cap.get("partial") or (res or {}).get("partial", False)
         result_out["children"] = _child_messages(child_caps)
         result_out["ok"] = bool((res or {}).get("completed", True)) and not (res or {}).get("error")
         result_out["error"] = str((res or {}).get("error") or "")

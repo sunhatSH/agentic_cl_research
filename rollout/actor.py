@@ -46,6 +46,9 @@ class ChildTraj:
     task_index: int
     goal: str
     messages: list[dict] = field(default_factory=list)
+    system_prompt: str = ""
+    base_system_prompt: str = ""
+    tools: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -64,6 +67,10 @@ class ActorTurn:
     ok: bool = True
     error: str = ""
     session_id: str | None = None
+    system_prompt: str = ""
+    tools: list[dict] = field(default_factory=list)
+    api_calls: int = 0
+    partial: bool = False
 
 
 class Actor(Protocol):
@@ -237,6 +244,9 @@ class StructuredHermesActor:
                     task_index=c.get("task_index", -1),
                     goal=c.get("goal", ""),
                     messages=c.get("messages") or [],
+                    system_prompt=c.get("system_prompt") or "",
+                    base_system_prompt=c.get("base_system_prompt") or "",
+                    tools=c.get("tools") or [],
                 )
                 for c in (payload.get("children") or [])
             ]
@@ -246,6 +256,10 @@ class StructuredHermesActor:
                 ok=bool(payload.get("ok")),
                 error=str(payload.get("error") or ""),
                 session_id=None,
+                system_prompt=payload.get("system_prompt") or "",
+                tools=payload.get("tools") or [],
+                api_calls=payload.get("api_calls", 0),
+                partial=payload.get("partial", False),
             )
         except Exception as exc:  # noqa: BLE001 — isolate slot failures
             return ActorTurn(ok=False, error=f"{type(exc).__name__}: {exc}")

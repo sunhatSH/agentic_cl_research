@@ -76,6 +76,11 @@ class SlotTrajectory:
     slot_idx: int
     sandbox_id: str
     messages: list[dict[str, Any]] = field(default_factory=list)
+    system_prompt: str = ""       # hermes _cached_system_prompt (base identity + date + model)
+    tools: list[dict[str, Any]] = field(default_factory=list)  # hermes tool definitions (OpenAI format)
+    api_calls: int = 0            # number of API calls made this turn
+    partial: bool = False         # partial completion flag
+    children: list[dict[str, Any]] = field(default_factory=list)  # sub-agent (delegate_task) trajectories
     answer: str = ""
     reward: float | None = None
     advantage: float | None = None
@@ -86,7 +91,6 @@ class SlotTrajectory:
     num_turns: int = 0           # actual turns run (multi-turn collect)
     ended_by: str = ""           # k_budget | end_session | agent_error (multi-turn)
     observer_reports: list[dict[str, Any]] = field(default_factory=list)  # per-turn debug
-    children: list[dict[str, Any]] = field(default_factory=list)  # sub-agent (delegate_task) trajectories
     qc_hard: bool = False        # failed hard QC (tool hallucination/truncation/loop/...) -> dropped
     qc_codes: list[str] = field(default_factory=list)  # QC failure-mode codes tripped
 
@@ -454,11 +458,20 @@ def _run_one_collect_query(
             stdout = (_asst or {}).get("content", "") if _asst else ""
             stderr = aturn.error or ""
             all_messages.extend(aturn.messages)
+            # Accumulate system_prompt / tools from the FIRST turn only (same across turns).
+            if turn == 1:
+                t.system_prompt = aturn.system_prompt or ""
+                t.tools = aturn.tools or []
+                t.api_calls = aturn.api_calls
+                t.partial = aturn.partial
             # Accumulate any sub-agent (delegate_task) child trajectories this turn.
             for _ch in aturn.children:
                 t.children.append(
                     {"turn": turn, "task_index": _ch.task_index,
-                     "goal": _ch.goal, "messages": _ch.messages}
+                     "goal": _ch.goal, "messages": _ch.messages,
+                     "system_prompt": _ch.system_prompt,
+                     "base_system_prompt": _ch.base_system_prompt,
+                     "tools": _ch.tools}
                 )
 
             # Hard failure on first turn: session-ending ONLY when the actor

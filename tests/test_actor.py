@@ -167,6 +167,32 @@ def test_structured_actor_roundtrip_parses_messages_and_children():
     assert "/tmp/_hermes_capture.py" in paths and "/tmp/_hermes_capture_in.json" in paths
 
 
+
+def test_structured_actor_preserves_leading_system_message():
+    """Capture script now prepends the hermes system prompt (tool defs + agent
+    instructions) as messages[0] on the first turn. The actor must pass it
+    through unchanged so the trajectory starts with role:system, matching the
+    CC pipeline's _join_system output and pick_prompt's expectation."""
+    import json as _json
+    payload = {
+        "messages": [
+            {"role": "system", "content": "# Tools\nYou are a coding agent..."},
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "a"},
+        ],
+        "ephemeral_system_prompt": "# Tools\nYou are a coding agent...",
+        "children": [],
+        "ok": True, "error": "",
+    }
+    sb = _FakeSb("__CAPTURE__" + _json.dumps(payload) + "\n")
+    t = StructuredHermesActor().run_turn(sb, "q", conversation_history=[],
+                                         model="m", base="b", max_turns=30, timeout=900)
+    assert t.ok is True
+    assert t.messages[0]["role"] == "system"
+    assert t.messages[0]["content"].startswith("# Tools")
+    assert t.messages[1]["role"] == "user"
+
+
 def test_structured_actor_no_payload_is_error_not_crash():
     sb = _FakeSb("hermes exploded, no marker")
     t = StructuredHermesActor().run_turn(sb, "q", conversation_history=[], model="m",
