@@ -152,6 +152,11 @@ cl:
     #   workflow 163  ops 145  qa 131  finance 97  office 72
     #   communication 72  safety 65  coding 30  research 53
     bucket_floors: [163, 145, 131, 97, 72, 72, 65, 30, 53]
+    # Bucket-level replay sampling strategy:
+    #   uniform  – equal weight per non-empty bucket
+    #   quota    – soft_target mix + uniform + starvation boost (current default)
+    #   distance – capability-space distance weighted (farther = higher replay weight)
+    bucket_strategy: uniform
 
   weighting:
     scheme: W0                    # W0 = gamma=delta=1 (flat, priority-only).

@@ -94,6 +94,7 @@ def build_buffer(cfg):
         priority=priority,
         eviction_type=bcfg.get("eviction_type", "priority"),
         within_bucket_sampling=bcfg.get("within_bucket_sampling", "priority"),
+        bucket_strategy=bcfg.get("bucket_strategy", "quota"),
         seed=bcfg.get("seed", None),
     )
 

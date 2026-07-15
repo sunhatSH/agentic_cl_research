@@ -90,6 +90,7 @@ class BucketReplayBuffer:
         eviction_type: str = "priority",
         bucket_floors: Sequence[int] | None = None,
         within_bucket_sampling: str = "priority",
+        bucket_strategy: str = "quota",
         seed: int | None = None,
     ):
         if bucket_names is None:
@@ -126,6 +127,7 @@ class BucketReplayBuffer:
         self.alpha = alpha
         self.eviction_type = eviction_type
         self.within_bucket_sampling = within_bucket_sampling
+        self._bucket_strategy_name = bucket_strategy
 
         targets = allocate_quota(total_capacity, bucket_task_counts, alpha)
         self.soft_target = dict(zip(self.bucket_names, targets, strict=True))
@@ -149,9 +151,9 @@ class BucketReplayBuffer:
         from replay_buffer.sampler import BaselineSampler, TwoLevelSampler
 
         if eviction_type == "reservoir" or within_bucket_sampling == "priority":
-            # Ablation / future: use TwoLevelSampler with priority
             self._sampler = TwoLevelSampler(
                 self,
+                bucket_strategy=bucket_strategy,
                 within_bucket_sampling=within_bucket_sampling,
                 rng=self._rng,
             )
@@ -257,6 +259,15 @@ class BucketReplayBuffer:
     def add_trajectories(self, batch) -> list[str]:
         """Bulk add. Each item is (trajectory, bucket, metadata)."""
         return [self.add_trajectory(t, b, m) for t, b, m in batch]
+
+    def set_current_bucket(self, bucket: str | None) -> None:
+        """Notify the sampler which bucket is currently being trained.
+
+        When using ``bucket_strategy="distance"``, this causes farther buckets
+        to receive higher replay weights.
+        """
+        if hasattr(self._sampler, "set_current_bucket"):
+            self._sampler.set_current_bucket(bucket)
 
     def sample(self, batch_size: int):
         """Proportional-random sampling (BaselineSampler by default).

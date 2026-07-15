@@ -44,13 +44,15 @@ def test_sample_marks_replayed():
 
 
 def test_uniform_mix_brings_small_bucket_in():
-    """With heavy uniform mix, the smallest bucket C should be sampled
+    """With uniform mix, the smallest bucket C should be sampled
     despite its tiny quota."""
     buf = _make_buffer()
-    sampler = TwoLevelSampler(buf, bucket_mix_ratio=0.0, rng=random.Random(0))
+    sampler = TwoLevelSampler(buf, bucket_strategy="quota", mix_ratio=0.0, rng=random.Random(0))
     counts = {"A": 0, "B": 0, "C": 0}
     for _ in range(200):
-        bucket = sampler._sample_buckets(1)[0]
+        weights = sampler.bucket_strategy.get_weights(buf)
+        names = list(weights)
+        [bucket] = sampler.rng.choices(names, weights=[weights[b] for b in names], k=1)
         counts[bucket] += 1
     # Uniform: each ~1/3
     assert counts["C"] > 30  # not starved
@@ -58,12 +60,14 @@ def test_uniform_mix_brings_small_bucket_in():
 
 def test_quota_mix_favours_large_bucket():
     buf = _make_buffer()
-    sampler = TwoLevelSampler(buf, bucket_mix_ratio=1.0, rng=random.Random(0))
+    sampler = TwoLevelSampler(buf, bucket_strategy="quota", mix_ratio=1.0, rng=random.Random(0))
     counts = {"A": 0, "B": 0, "C": 0}
     for _ in range(300):
-        bucket = sampler._sample_buckets(1)[0]
+        weights = sampler.bucket_strategy.get_weights(buf)
+        names = list(weights)
+        [bucket] = sampler.rng.choices(names, weights=[weights[b] for b in names], k=1)
         counts[bucket] += 1
-    # A has largest task count -> largest quota -> most picks.
+    # Pure quota: A (500) >> B (200) >> C (50)
     assert counts["A"] > counts["B"] > counts["C"]
 
 
