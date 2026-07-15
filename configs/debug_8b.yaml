@@ -37,3 +37,8 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: 4
     fsdp_config:
       param_offload: false
+
+# ── trainer 覆盖 ──────────────────────────────────────────────────────────────
+trainer:
+  experiment_name: b1_8b_debug
+  project_name: agentic-cl

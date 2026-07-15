@@ -1,0 +1,74 @@
+{
+  "dimensions": [
+    "tool_intensity",
+    "reasoning_depth",
+    "structure_rigidity",
+    "knowledge_domain",
+    "multi_step"
+  ],
+  "coordinates": {
+    "workflow": [
+      6.8,
+      7.2,
+      6.5,
+      5.0,
+      7.4
+    ],
+    "ops": [
+      9.3,
+      6.9,
+      8.7,
+      5.4,
+      8.1
+    ],
+    "qa": [
+      2.1,
+      4.3,
+      5.8,
+      4.0,
+      3.2
+    ],
+    "finance": [
+      7.6,
+      8.4,
+      7.9,
+      9.2,
+      7.8
+    ],
+    "office": [
+      8.2,
+      6.7,
+      7.3,
+      5.1,
+      7.5
+    ],
+    "communication": [
+      6.9,
+      5.8,
+      6.2,
+      4.3,
+      6.6
+    ],
+    "safety": [
+      7.8,
+      7.1,
+      8.5,
+      6.7,
+      7.3
+    ],
+    "coding": [
+      8.5,
+      8.9,
+      8.2,
+      7.8,
+      8.4
+    ],
+    "research": [
+      7.1,
+      9.0,
+      6.0,
+      7.5,
+      7.7
+    ]
+  }
+}
