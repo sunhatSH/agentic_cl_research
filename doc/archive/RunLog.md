@@ -19,6 +19,15 @@
 
 ## 记录（最新在最上面）
 
+### 2026-07-16 00:34 | 本机 Mac（darwin，无 GPU） | commit 02eaa6e
+- 动作：**第二次重 build** + push Qwen36-lightllm 训练镜像（修正）。第一次因远端改动未 pull（本地落后 30 commits）全层 CACHED 推送了旧内容（digest `8631ec6c`）；pull 后 Dockerfile 已含远端 2026-07-15 实机踩坑补齐：transformers 5.8.0→5.12.0、tensordict 区间限定、新增 ray/msgpack/torchdata/protobuf、pyyaml>=6.0.2、自检加 MistralForSequenceClassification。但 `npm install -g @openai/codex` 因 base 镜像无 Node.js 构建失败（exit 127 npm: command not found）。修复：在 codex 前加 `conda install -y -c conda-forge nodejs=22`。构建成功 push。
+- 结果：✅ build+push 成功，新 digest `sha256:115f2596c8d8c5b25fe3f7bd6b1a32f749ef46a1138680248898c818055480f0`（8 层新推）。旧 digest `8631ec6c` 已被覆盖。⚠️ `InvalidBaseImagePlatform` 警告同前（base linux/amd64 vs 本机 arm64，不影响）。
+- 产物：`registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/qwen36-lightllm:1.0`
+- 解释：远端 commit 包含大量依赖版本升级（都是 2026-07-15 训练机实机踩坑验证的），已全量 bake 进镜像。修复提交 `02eaa6e`。
+
+### 2026-07-16 00:29 | 本机 Mac（darwin，无 GPU） | commit b760a8d ~~无效~~（见上条）
+- 动作：第一次重 build——但因为本地落后远端 30 commits，Dockerfile 实际是旧版，全部 CACHED 命中，推的还是旧 digest。本次无效，见上条修正。
+
 ### 2026-07-03（晚，本机 CPU 开发机） | commit <pending>
 - 动作：租户迁移收尾——把**重 build 路径**上残留的旧租户默认值也切到 `ccr-zuhu2026`。前一条（21:07）做的是 retag+push（未重 build），故 `build_and_push.sh` 与 Dockerfile 里仍指向旧租户 `ccr-devsfttj`；本次补齐：① `docker/qwen36-lightllm/build_and_push.sh` 默认 `NAMESPACE ccr-devsfttj→ccr-zuhu2026`、`USERNAME devsfttj-sunhao4→zuhu2026-sunhao4`（原 `NAMESPACE:?` 必填改为默认新租户）。② `docker/qwen36-lightllm/Dockerfile` `ARG BASE_IMAGE` 的 base 由 `ccr-devsfttj/verl:...`→`ccr-zuhu2026/verl:...`（@孙豪 确认 base 已 retag 到新租户）。③ `Migration_64GPU.md:219` 旧的"base 仍在旧租户、重 build 需确认能否跨租户拉"注记 → 改为"base 已迁新租户，重 build 直接拉"。
 - 结果：✅ 全仓活配置（脚本/Dockerfile/yaml）里 `ccr-devsfttj` 已清零；剩余引用全在 doc/ 历史与迁移记录中（RunLog 禁改历史，正确保留）。新地址 `registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/qwen36-lightllm:1.0` 一致落地于 build 脚本 + Dockerfile + 启动指南 + Migration。
