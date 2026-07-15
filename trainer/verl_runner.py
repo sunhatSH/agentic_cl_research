@@ -12,6 +12,29 @@ from typing import Any
 from omegaconf import OmegaConf
 
 
+def _ensure_agent_loops_registered() -> None:
+    """Trigger @register for verl's builtin agent loops (single_turn / tool).
+
+    verl fills ``_agent_loop_registry`` as a side effect of importing the
+    ``*_agent_loop`` modules (their ``@register(...)`` decorator runs at import
+    time). Our custom CLTaskRunner entry does not go through verl's full main
+    chain, so on the single-turn path the registry can be empty and verl raises
+    "Agent loop single_turn_agent not registered". Importing the modules here --
+    after verl is already loaded in the worker process -- populates it. Best
+    effort: on the cluster this is already handled, so any failure is ignored.
+    """
+    import importlib
+
+    for mod in (
+        "verl.experimental.agent_loop.single_turn_agent_loop",
+        "verl.experimental.agent_loop.tool_agent_loop",
+    ):
+        try:
+            importlib.import_module(mod)
+        except Exception:  # noqa: BLE001 -- registration is best-effort
+            pass
+
+
 def merge_verl_config(cl_cfg: Any) -> Any:
     """Ensure OmegaConf object is compatible with verl RayPPOTrainer.
 
@@ -382,6 +405,11 @@ class CLTaskRunner:
         from verl.utils.dataset.rl_dataset import collate_fn
         from verl.utils.fs import copy_to_local
 
+        # verl 自带 agent loop（single_turn / tool）的 @register 装饰器需要其模块被 import
+        # 才会填入 _agent_loop_registry。本项目自定义入口不走 verl 完整 main 链路，
+        # 单轮 rollout 时 registry 可能为空 -> "single_turn_agent not registered"。
+        # 此处在 verl 已加载的进程状态下主动触发注册（容错，集群上本就正常）。
+        _ensure_agent_loops_registered()
         config = merge_verl_config(config)
         print(f"CLTaskRunner hostname: {socket.gethostname()}")
         pprint(OmegaConf.to_container(config, resolve=True))
@@ -472,12 +500,12 @@ def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
         )
         ray.init(**OmegaConf.to_container(ray_init_kwargs))
 
-    # Pre-import verl agent_loop to avoid circular import in Ray workers.
-    # verl's agent_loop/__init__.py has a known circular dependency:
-    # single_turn_agent_loop.py imports from agent_loop which is still being
-    # initialized. Pre-importing here ensures the module is fully loaded
-    # before any Ray worker tries to import it.
-    import verl.experimental.agent_loop  # noqa: F401
+    # Pre-import verl's builtin agent-loop modules to trigger @register
+    # before Ray workers fork. Importing the package directly hits a known
+    # circular import (single_turn_agent_loop.py ← agent_loop/__init__.py),
+    # so we import the leaf modules individually -- same strategy as
+    # _ensure_agent_loops_registered().
+    _ensure_agent_loops_registered()
 
     task_runner_class = ray.remote(num_cpus=1)(CLTaskRunner)
     runner = task_runner_class.remote()

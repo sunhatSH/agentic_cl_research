@@ -17,6 +17,8 @@ actor_rollout_ref:
   model:
     path: /mnt/afs_toolcall/sunhao4/models/Qwen3-8B
     use_fused_kernels: false
+    override_config:
+      attn_implementation: sdpa   # avoid flash_attn dep (not installed)
 
   # ── 训练引擎（8 GPU FSDP, micro_batch=4）────────────────────────────────────
   actor:
@@ -49,9 +51,10 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: 4
     # 多轮 / 推理格式（Qwen3 设置）
     multi_turn:
+      enable: false
       format: qwen3_coder
       reasoning_format: qwen3
-      max_turns: 20
+      max_assistant_turns: 20
     checkpoint_engine:
       update_weights_bucket_megabytes: 2048
     # lightllm 引擎参数
@@ -62,7 +65,7 @@ actor_rollout_ref:
         enable_torch_memory_saver: true
         graph_max_batch_size: 64
         running_max_req_size: 64
-        sampling_backend: sglang_kernel
+        sampling_backend: triton
 
   ref:
     path: /mnt/afs_toolcall/sunhao4/models/Qwen3-8B
@@ -106,7 +109,7 @@ trainer:
   save_freq: 25
   test_freq: 25
   critic_warmup: 0
-  logger: [console, swanlab]
+  logger: console
   log_val_generations: 50
   project_name: agentic-cl
   experiment_name: qwen3_8b_b1

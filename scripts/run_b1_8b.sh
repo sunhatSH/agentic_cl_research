@@ -13,6 +13,17 @@ export PATH="$CONDA_ENV/bin:$PATH"
 export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$PROJECT_DIR"
 export PYTHON=$CONDA_ENV/bin/python
 
+# --- CUDA runtime libs (nvidia/*/lib) so lightllm rollout subprocesses can load
+#     libcudart.so.13 / cudnn / nccl. Without this, forked model procs die with
+#     "libcudart.so.13: cannot open shared object file" -> assert proc.is_alive() fails. ---
+_NV_LIB_ROOT="$CONDA_ENV/lib/python3.10/site-packages/nvidia"
+if [ -d "$_NV_LIB_ROOT" ]; then
+  for _d in "$_NV_LIB_ROOT"/*/lib; do
+    [ -d "$_d" ] && LD_LIBRARY_PATH="$_d:${LD_LIBRARY_PATH:-}"
+  done
+  export LD_LIBRARY_PATH
+fi
+
 # --- HF cache to local disk (AFS doesn't support flock) ---
 export HF_DATASETS_CACHE=/tmp/hf_datasets_cache
 export HF_HOME=/tmp/hf_home
