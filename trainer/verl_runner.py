@@ -472,6 +472,13 @@ def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
         )
         ray.init(**OmegaConf.to_container(ray_init_kwargs))
 
+    # Pre-import verl agent_loop to avoid circular import in Ray workers.
+    # verl's agent_loop/__init__.py has a known circular dependency:
+    # single_turn_agent_loop.py imports from agent_loop which is still being
+    # initialized. Pre-importing here ensures the module is fully loaded
+    # before any Ray worker tries to import it.
+    import verl.experimental.agent_loop  # noqa: F401
+
     task_runner_class = ray.remote(num_cpus=1)(CLTaskRunner)
     runner = task_runner_class.remote()
     ray.get(runner.run.remote(cfg, resume_from))
