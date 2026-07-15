@@ -19,7 +19,6 @@ cl:
   buffer:
     enabled: true
     num_buckets: 9
-    # total_capacity / q_min 统一由 base.yaml 定 (25000 / 2000)
     warmup_path: data/mock/buffer_dumps/p0-a_27b100.sqlite   # 100% pi0_27b
   weighting:
     scheme: W0

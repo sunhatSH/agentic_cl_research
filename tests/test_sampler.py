@@ -10,9 +10,9 @@ def _make_buffer():
     buf = BucketReplayBuffer(
         num_buckets=3,
         total_capacity=300,
-        q_min=10,
         bucket_names=["A", "B", "C"],
         bucket_task_counts=[10, 5, 1],
+        bucket_floors=[10, 10, 5],
         alpha=0.5,
     )
     for i in range(30):
@@ -71,9 +71,9 @@ def test_empty_sampler_returns_empty():
     buf = BucketReplayBuffer(
         num_buckets=3,
         total_capacity=300,
-        q_min=10,
         bucket_names=["A", "B", "C"],
         bucket_task_counts=[1, 1, 1],
+        bucket_floors=[10, 10, 10],
     )
     sampler = TwoLevelSampler(buf, rng=random.Random(0))
     assert sampler.sample(8) == []

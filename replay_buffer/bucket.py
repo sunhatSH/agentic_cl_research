@@ -3,14 +3,14 @@
 Implements the design from ``doc/BucketDesign.md``:
 - 9 buckets (workflow / ops / qa / finance / office /
   communication / safety / coding / research), not by difficulty.
-- Quota allocation: q_min hard floor + sqrt-weighted soft target.
+- Quota allocation: sqrt-weighted proportional (α=0.5).
 - In-bucket eviction only -- no cross-bucket displacement.
 - Trajectory metadata: trajectory_id, bucket, priority, insert_step,
   last_replay_step, replay_count, token_length, pattern_id, etc.
 
 Quota formula (sub-linear weighting):
-    soft_target_i = q_min + (C - K * q_min) * n_i^alpha / sum_j(n_j^alpha)
-    where n_i = bucket_task_counts[i], C = total_capacity, K = num_buckets,
+    soft_target_i = C * n_i^alpha / sum_j(n_j^alpha)
+    where n_i = bucket_task_counts[i], C = total_capacity,
     alpha < 1 dampens the dominance of large buckets.
 """
 
@@ -31,18 +31,15 @@ from replay_buffer.store import TrajectoryStore
 
 def allocate_quota(
     total_capacity: int,
-    q_min: int,
     bucket_task_counts: Sequence[int],
     alpha: float = 0.5,
 ) -> list[int]:
     """Compute soft_target per bucket.
 
-    soft_target_i = q_min + remaining * n_i^alpha / sum_j(n_j^alpha)
-    where remaining = total_capacity - K * q_min.
+    soft_target_i = C * n_i^alpha / sum_j(n_j^alpha)
 
     Args:
         total_capacity: C, total trajectory slots across all buckets.
-        q_min: hard floor reserved per bucket.
         bucket_task_counts: n_i for each bucket; relative size weights.
         alpha: sub-linear exponent. alpha=1.0 = proportional; alpha=0.5
                (default) = square-root weighting; alpha=0.0 = uniform.
@@ -52,16 +49,12 @@ def allocate_quota(
         Sums to total_capacity (modulo integer rounding -- the largest
         bucket absorbs the rounding residue).
     """
-    k = len(bucket_task_counts)
-    if total_capacity < k * q_min:
-        raise ValueError(f"total_capacity ({total_capacity}) must be >= K * q_min ({k * q_min})")
     weights = [n**alpha for n in bucket_task_counts]
     s = sum(weights)
-    remaining = total_capacity - k * q_min
-    targets = [q_min + int(remaining * w / s) for w in weights]
+    targets = [int(total_capacity * w / s) for w in weights]
     residue = total_capacity - sum(targets)
     if residue != 0:
-        idx = max(range(k), key=lambda i: weights[i])
+        idx = max(range(len(bucket_task_counts)), key=lambda i: weights[i])
         targets[idx] += residue
     return targets
 
@@ -72,27 +65,24 @@ class BucketReplayBuffer:
     Args:
         num_buckets: number of buckets, default 9 (overridable for R0 single-buffer ablation).
         total_capacity: C, total trajectory slots (10k-50k).
-        q_min: hard floor per bucket.
         bucket_names: list of K capability names.
         bucket_task_counts: list of n_i, used for quota allocation.
+        bucket_floors: per-bucket hard floor (eviction protection). Required.
         alpha: sub-linear weighting exponent in quota formula (default 0.5).
         priority: Priority instance (anti-forgetting); pass RewardPriority for R5.
         eviction_type: 'priority' (default) or 'reservoir' (R0 CLEAR baseline).
         within_bucket_sampling: 'priority' (default) or 'uniform' (R0 / R3).
         seed: optional RNG seed for reproducible reservoir / sampling.
 
-    Single-bucket mode (R0 CLEAR baseline): pass ``num_buckets=1``. When the
-    default 9 ``bucket_names`` / ``bucket_task_counts`` are inherited from a
-    multi-bucket config, they are automatically collapsed to one ``"All"``
-    bucket whose task count is the sum -- so ``configs/phase3/r0.yaml`` can set
-    only ``num_buckets: 1`` without redefining the name/count lists (bug A2).
+    In-bucket eviction only, no cross-bucket displacement.  bucket_floors
+    provide the per-bucket hard floor; eviction never drops a bucket below
+    its floor regardless of priority.
     """
 
     def __init__(
         self,
         num_buckets: int = 9,
         total_capacity: int = 25000,
-        q_min: int = 2000,
         bucket_names: Sequence[str] | None = None,
         bucket_task_counts: Sequence[int] | None = None,
         alpha: float = 0.5,
@@ -131,43 +121,42 @@ class BucketReplayBuffer:
 
         self.num_buckets = num_buckets
         self.total_capacity = total_capacity
-        self.q_min = q_min
         self.bucket_names = list(bucket_names)
         self.bucket_task_counts = list(bucket_task_counts)
         self.alpha = alpha
         self.eviction_type = eviction_type
         self.within_bucket_sampling = within_bucket_sampling
 
-        targets = allocate_quota(total_capacity, q_min, bucket_task_counts, alpha)
+        targets = allocate_quota(total_capacity, bucket_task_counts, alpha)
         self.soft_target = dict(zip(self.bucket_names, targets, strict=True))
-        # Per-bucket hard floors (bucket_floors = cap/30, scaled to the soft target).
-        # Absent -> the scalar q_min floor applies to every bucket (legacy behavior).
-        if bucket_floors is not None:
-            if len(bucket_floors) != num_buckets:
-                raise ValueError("bucket_floors must have length num_buckets")
-            self.bucket_floors = dict(zip(self.bucket_names, bucket_floors, strict=True))
-        else:
-            self.bucket_floors = {b: q_min for b in self.bucket_names}
+        # Per-bucket hard floors.  Required for eviction protection.
+        if bucket_floors is None:
+            raise ValueError("bucket_floors is required")
+        if len(bucket_floors) != num_buckets:
+            raise ValueError("bucket_floors must have length num_buckets")
+        self.bucket_floors = dict(zip(self.bucket_names, bucket_floors, strict=True))
 
         self._rng = random.Random(seed)
         self.store = TrajectoryStore(backend="memory")
         self.priority_fn = priority or Priority()
         self.eviction = Eviction(
-            q_min=q_min,
             soft_target=self.soft_target,
             eviction_type=eviction_type,
             rng=self._rng,
             floors=self.bucket_floors,
         )
-        # Persistent sampler so starvation / last-sample state survives across
-        # sample() calls (bug A4 -- previously a fresh sampler was built each call).
-        from replay_buffer.sampler import TwoLevelSampler
+        # Persistent sampler so last-sample state survives across sample() calls.
+        from replay_buffer.sampler import BaselineSampler, TwoLevelSampler
 
-        self._sampler = TwoLevelSampler(
-            self,
-            within_bucket_sampling=within_bucket_sampling,
-            rng=self._rng,
-        )
+        if eviction_type == "reservoir" or within_bucket_sampling == "priority":
+            # Ablation / future: use TwoLevelSampler with priority
+            self._sampler = TwoLevelSampler(
+                self,
+                within_bucket_sampling=within_bucket_sampling,
+                rng=self._rng,
+            )
+        else:
+            self._sampler = BaselineSampler(self, rng=self._rng)
 
         self._step = 0
         self._seen_counts: dict[str, int] = {b: 0 for b in self.bucket_names}
@@ -253,8 +242,8 @@ class BucketReplayBuffer:
             return tid
         n_seen = self._seen_counts[bucket]
         if self._rng.random() < cap / max(n_seen, 1):
-            # Reservoir manages capacity itself; the q_min hard floor (a
-            # bucketed-mode concept) must NOT block the random replacement,
+            # Reservoir manages capacity itself — pick victim directly. Hard
+            # floor must NOT block the random replacement in reservoir mode,
             # so pick the victim directly rather than via Eviction.select_victim.
             ids = self.store.list_by_bucket(bucket)
             if ids:
@@ -270,10 +259,10 @@ class BucketReplayBuffer:
         return [self.add_trajectory(t, b, m) for t, b, m in batch]
 
     def sample(self, batch_size: int):
-        """Two-level sampling -- delegates to the persistent TwoLevelSampler.
+        """Proportional-random sampling (BaselineSampler by default).
 
-        The sampler is created once in ``__init__`` so starvation_boost and
-        last-sample bookkeeping persist across calls (bug A4).
+        TwoLevelSampler used when ``within_bucket_sampling='priority'`` or
+        ``eviction_type='reservoir'`` (ablation / future).
         """
         return self._sampler.sample(batch_size)
 

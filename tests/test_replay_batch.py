@@ -13,7 +13,7 @@ class FakeBatch:
 
 
 def _buffer_with(n: int) -> BucketReplayBuffer:
-    buf = BucketReplayBuffer(total_capacity=14000, q_min=500, seed=0)
+    buf = BucketReplayBuffer(total_capacity=14000, bucket_floors=[163,145,131,97,72,72,65,30,53], seed=0)
     for i in range(n):
         buf.add_trajectory("t", "workflow", metadata={"pattern_id": f"p{i}"})
     return buf

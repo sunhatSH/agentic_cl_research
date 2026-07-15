@@ -8,7 +8,7 @@ Rules (from ``doc/BucketDesign.md``):
   (boost for pioneering samples).
 
 Two-tier sizing:
-- hard floor (q_min) -- never evicted below this regardless of priority.
+- hard floor (bucket_floors) -- never evicted below this regardless of priority.
 - soft target (formula) -- exceeding accelerates eviction, below accelerates intake.
 """
 
@@ -23,16 +23,15 @@ class Eviction:
     """In-bucket eviction policy.
 
     Args:
-        q_min: hard floor per bucket. Eviction never reduces a bucket below
-               q_min, even if its priority is the lowest globally.
         soft_target: dict mapping bucket name -> int soft quota. Computed by
                      BucketReplayBuffer's quota allocator. Eviction triggers
                      when bucket_size > soft_target[bucket].
+        floors: per-bucket hard floor. Eviction never reduces a bucket below
+                its floor. Required (no scalar fallback).
         eviction_type: 'priority' (default) evicts the lowest-priority
                        trajectory in the bucket. 'reservoir' evicts a
                        uniformly random trajectory -- used by the R0 CLEAR
-                       baseline (random discard, see doc/CL_Update_Sunhao.md
-                       Phase 3 R0 row).
+                       baseline (random discard).
         pioneer_boost: priority added to the first few trajectories entering
                        a near-empty bucket, so they survive until comparable
                        peers arrive. Default 0.5.
@@ -42,19 +41,15 @@ class Eviction:
 
     def __init__(
         self,
-        q_min: int,
         soft_target: dict[str, int],
+        floors: dict[str, int] | None = None,
         eviction_type: str = "priority",
         pioneer_boost: float = 0.5,
         pioneer_threshold: int = 10,
         rng: random.Random | None = None,
-        floors: dict[str, int] | None = None,
     ):
         if eviction_type not in ("priority", "reservoir"):
             raise ValueError(f"unknown eviction_type {eviction_type!r}")
-        self.q_min = q_min
-        # Per-bucket hard floors (bucket_floors = cap/30). When absent for a
-        # bucket, fall back to the scalar q_min (backward compatible).
         self.floors = dict(floors or {})
         self.soft_target = dict(soft_target)
         self.eviction_type = eviction_type
@@ -63,8 +58,8 @@ class Eviction:
         self.rng = rng or random.Random()
 
     def _floor(self, bucket: str) -> int:
-        """Hard floor for this bucket: per-bucket value, else scalar q_min."""
-        return self.floors.get(bucket, self.q_min)
+        """Hard floor for this bucket."""
+        return self.floors.get(bucket, 0)
 
     def should_evict(self, store: TrajectoryStore, bucket: str) -> bool:
         """Return True iff bucket size exceeds its soft_target AND has room

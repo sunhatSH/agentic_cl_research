@@ -68,8 +68,8 @@ data:
   # 打标后的训练数据(scripts/labeled_to_parquet.py 产物)。可用 TRAIN_FILES/VAL_FILES 覆盖。
   train_files: ${oc.env:TRAIN_FILES,/mnt/afs_toolcall/sunhao4/agentic_cl_research/datasets/train.parquet}
   val_files: ${oc.env:VAL_FILES,/mnt/afs_toolcall/sunhao4/agentic_cl_research/datasets/val.parquet}
-  train_batch_size: 1024
-  gen_batch_size: 1024
+  train_batch_size: 256            # 每步新 rollout 条数
+  gen_batch_size: 256              # rollout 生成 batch（对齐 train）
   dataloader_num_workers: 4
 
 # Algorithm
@@ -93,7 +93,7 @@ reward:
 # Continual Learning -- replay buffer config (read by trainer/cl_main.py)
 cl:
   lambda_replay: 0.0              # lambda_3, set per experiment
-  replay_batch_size: 512         # 拼在 train batch(1024) 级；由 ppo_mini_batch 逐 mini
+  replay_batch_size: 64           # buffer 回放，拼在 train_batch(256) 上。20% 回放比
                                   # batch 前向消化显存。足量以覆盖 9 桶 + 每 mini batch 都
                                   # 有 replay 行(CL loss 每步生效)。旧值 32 太稀疏(~2/mini batch)
   replay_warmup_size: 0           # >0: linearly ramp replay batch while buffer
@@ -110,9 +110,6 @@ cl:
                                   # hard error (mis-set path should fail loud).
     num_buckets: 9
     total_capacity: 25000
-    # q_min = 配额公式的基数（allocate_quota 用它算每桶 cap；见下）。它 NOT 直接当
-    # 淘汰下限——真正的每桶下限是 bucket_floors（= cap/30，各桶不同，见下）。
-    q_min: 500
     alpha: 0.5                      # 任务→容量映射曲线：√ 加权（次线性）。见 bucket_caps 说明。
     # 桶体系(2026-07-04)= ClawEval 官方 category 合并(去多模态)。单层、无子桶。
     # 定义+官方 category 映射见 runs/_analysis/capability_buckets/buckets.json。
@@ -129,35 +126,32 @@ cl:
       - research                    # 研究综合 (research+synthesis)
     bucket_task_counts: [56, 44, 36, 20, 11, 11, 9, 2, 6]
     # ── 桶容量上限（soft_target / cap）与初始比例 ──────────────────────────────
-    # 由 allocate_quota(C=25000, q_min=500, task_counts, α=0.5) 计算并在此固化，
+    # 由 allocate_quota(C=25000, task_counts, α=0.5) 计算并在此固化，
     # 便于直接查阅 / 手动微调（运行时 BucketReplayBuffer 也会按同公式重算，二者一致）。
-    # 公式：cap_i = q_min + (C - K·q_min) · n_i^0.5 / Σ_j n_j^0.5
+    # 公式：cap_i = C · n_i^0.5 / Σ_j n_j^0.5
     # 为什么 α=0.5（平方根加权，非按比例 α=1 / 非均匀 α=0）：
     #   - α=1（按比例）：workflow 28.7% vs coding 3.1%，比值 9.3:1——大桶碾压、长尾饿死。
     #   - α=0（均匀）：全 11.1%，无视任务分布，主流能力吃亏。
-    #   - α=0.5（本方案）：workflow 19.6% vs coding 6.4%，比值压到 3.1:1——大桶温和倾斜、
+    #   - α=0.5（本方案）：workflow 19.7% vs coding 3.7%，比值压到 5.3:1——大桶温和倾斜、
     #     小桶被抬起来。兼顾"评测里主流能力占比高该多回放" + "长尾能力不被遗忘"。
-    # 各桶容量占比%（= √n_i 归一化）与上限值（cap，含 q_min 保底）：
-    #   workflow      19.6%  cap=4531
-    #   ops           17.4%  cap=4070
-    #   qa            15.8%  cap=3729
-    #   finance       11.7%  cap=2907
-    #   office         8.7%  cap=2285
-    #   communication  8.7%  cap=2285
-    #   safety         7.9%  cap=2114
-    #   research       6.4%  cap=1818
-    #   coding         3.7%  cap=1261
+    # 各桶容量占比%（= √n_i 归一化）与上限值（cap）：
+    #   workflow      19.7%  cap=4915
+    #   ops           17.4%  cap=4354
+    #   qa            15.8%  cap=3938
+    #   finance       11.7%  cap=2935
+    #   office         8.7%  cap=2177
+    #   communication  8.7%  cap=2177
+    #   safety         7.9%  cap=1969
+    #   research       6.4%  cap=1607
+    #   coding         3.7%  cap= 928
     #   合计 25000
-    bucket_caps: [4531, 4070, 3729, 2907, 2285, 2285, 2114, 1261, 1818]
+    bucket_caps: [4915, 4354, 3938, 2935, 2177, 2177, 1969, 928, 1607]
     # ── 桶容量下限（hard floor，淘汰保护线）= 各桶 cap 的 1/30 ────────────────
-    # 为什么按 cap/30 而非统一常数：下限要**继承上限的相对大小关系**（大桶下限也略高、
-    # 小桶更小），且是很小的托底值——桶跌破它就永不淘汰，保护该能力不被挤空。统一常数
-    # 会让小桶（coding 数据本就少）被迫凑不可能的量，或大桶保护过度。cap/30 让下限随
-    # 桶规模平滑缩放（workflow 151 … coding 42），合计仅 833（占 25k 的 3.3%，不挤占容量）。
+    # 淘汰只在桶内做（禁止跨桶挤出），下限以下不可淘汰。
     # 顺序对齐 bucket_names/task_counts。
-    #   workflow 151  ops 136  qa 124  finance 97  office 76
-    #   communication 76  safety 70  coding 42  research 61
-    bucket_floors: [151, 136, 124, 97, 76, 76, 70, 42, 61]
+    #   workflow 163  ops 145  qa 131  finance 97  office 72
+    #   communication 72  safety 65  coding 30  research 53
+    bucket_floors: [163, 145, 131, 97, 72, 72, 65, 30, 53]
 
   weighting:
     scheme: W0                    # W0 = gamma=delta=1 (flat, priority-only).

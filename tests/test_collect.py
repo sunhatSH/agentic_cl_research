@@ -94,7 +94,7 @@ def test_full_chain_into_buffer():
     for t in trajs:
         t.reward = 1.0 if "372" in (t.messages[-1]["content"]) else 0.0
 
-    buffer = BucketReplayBuffer(total_capacity=700, q_min=50)
+    buffer = BucketReplayBuffer(total_capacity=700, bucket_floors=[10]*9)
     counts = ingest_trajectories(buffer, trajs, valid_buckets=buffer.bucket_names)
     assert counts["added"] == 8  # all tagged finance
     assert counts["skipped"] == 0

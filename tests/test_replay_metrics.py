@@ -77,7 +77,7 @@ def test_per_row_masked_mean():
 
 
 def test_backfill_forgetting_activates_signal():
-    buf = BucketReplayBuffer(total_capacity=1000, q_min=100, seed=0)
+    buf = BucketReplayBuffer(total_capacity=1000, bucket_floors=[33]*9, seed=0)
     # Two identical trajectories; only A's current logprob drifts down.
     for tid in ("traj-A", "traj-B"):
         buf.add_trajectory(
@@ -104,5 +104,5 @@ def test_backfill_forgetting_activates_signal():
 
 
 def test_backfill_skips_missing_trajectory():
-    buf = BucketReplayBuffer(total_capacity=1000, q_min=100, seed=0)
+    buf = BucketReplayBuffer(total_capacity=1000, bucket_floors=[33]*9, seed=0)
     assert backfill_forgetting(buf, ["ghost"], current_means=[-1.0]) == 0

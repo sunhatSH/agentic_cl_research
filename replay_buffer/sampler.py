@@ -1,11 +1,17 @@
-"""Two-level sampling: pick bucket, then pick trajectory within bucket.
+"""Replay sampling strategies.
 
-Bucket-level: mixed strategy -- partly proportional to soft_target quota (covers
-large buckets) and partly uniform (covers long-tail capabilities). Buckets that
-have not been replayed for a long time receive a starvation_boost.
+BaselineSampler (current default):
+    Pure proportional random: pick bucket by soft_target share, then uniformly
+    random within bucket.  No priority, no starvation, no mix ratio.
+    This is the initial implementation; the doc describes the future direction.
 
-Within-bucket: priority-weighted random sampling, NOT top-k greedy. Greedy
-top-k repeats "star trajectories" and reduces diversity.
+TwoLevelSampler (future / ablation):
+    Mixed strategy -- partly proportional to soft_target quota (covers
+    large buckets) and partly uniform (covers long-tail capabilities). Buckets that
+    have not been replayed for a long time receive a starvation_boost.
+
+    Within-bucket: priority-weighted random sampling, NOT top-k greedy. Greedy
+    top-k repeats "star trajectories" and reduces diversity.
 """
 
 from __future__ import annotations
@@ -196,3 +202,70 @@ class TwoLevelSampler:
             return []
         priorities = [max(self.buffer.store.get_metadata(tid)["priority"], 1e-9) for tid in ids]
         return _weighted_choice_without_replacement(self.rng, ids, priorities, k)
+
+
+class BaselineSampler:
+    """Simple proportional-random sampler — the initial implementation.
+
+    Bucket-level: weight proportional to soft_target (no mix ratio, no starvation).
+    Within-bucket: uniform random (no priority).
+
+    This is the baseline; doc/source/BucketAlgorithm.md §6 describes the
+    future TwoLevelSampler with mix ratio + starvation + priority weighting.
+    """
+
+    def __init__(self, buffer, rng: random.Random | None = None):
+        self.buffer = buffer
+        self.rng = rng or random.Random()
+
+    def sample(self, batch_size: int):
+        if batch_size <= 0:
+            return []
+
+        total = len(self.buffer.store)
+        target = min(batch_size, total)
+        out = []
+        chosen: set[str] = set()
+
+        # Build bucket weights from soft_target
+        names = self.buffer.bucket_names
+        weights = [self.buffer.soft_target.get(b, 0) for b in names]
+
+        max_tries = target * 20
+        tries = 0
+        while len(out) < target and tries < max_tries:
+            tries += 1
+            # Pick bucket proportional to soft_target
+            [bucket] = self.rng.choices(names, weights=weights, k=1)
+            ids = self.buffer.store.list_by_bucket(bucket)
+            if not ids:
+                continue
+            tid = self.rng.choice(ids)
+            if tid in chosen:
+                continue
+            got = self.buffer.store.get(tid)
+            if got is None:
+                continue
+            chosen.add(tid)
+            traj, meta = got
+            out.append((tid, traj, meta))
+
+        # Fallback sweep if re-draw didn't fill target
+        if len(out) < target:
+            for b in names:
+                for tid in self.buffer.store.list_by_bucket(b):
+                    if tid in chosen:
+                        continue
+                    got = self.buffer.store.get(tid)
+                    if got is None:
+                        continue
+                    chosen.add(tid)
+                    traj, meta = got
+                    out.append((tid, traj, meta))
+                    if len(out) >= target:
+                        break
+                if len(out) >= target:
+                    break
+
+        self.buffer.mark_replayed([tid for tid, _, _ in out])
+        return out

@@ -27,7 +27,7 @@ actor_rollout_ref:
     optim:
       lr: 1.0e-6
     use_dynamic_bsz: true
-    ppo_mini_batch_size: 64
+    ppo_mini_batch_size: 32
     ppo_micro_batch_size_per_gpu: 1
     ppo_max_token_len_per_gpu: 32768
     ulysses_sequence_parallel_size: ${oc.env:ULYSSES_SP_SIZE,4}   # 训练 SP; 换卡数按需覆盖
@@ -80,8 +80,8 @@ reward:
 data:
   train_files: ${oc.env:TRAIN_FILES,/mnt/afs_toolcall/sunhao4/agentic_cl_research/datasets/train.parquet}
   val_files: ${oc.env:VAL_FILES,/mnt/afs_toolcall/sunhao4/agentic_cl_research/datasets/val.parquet}
-  train_batch_size: ${oc.env:TRAIN_BATCH_SIZE,1024}   # 每 step 新任务数(replay 512 另拼)
-  gen_batch_size: ${oc.env:TRAIN_BATCH_SIZE,1024}
+  train_batch_size: ${oc.env:TRAIN_BATCH_SIZE,256}   # base.yaml=256; env 可覆盖
+  gen_batch_size: ${oc.env:TRAIN_BATCH_SIZE,256}
   max_prompt_length: 4096
   max_response_length: 8192
   return_raw_chat: true

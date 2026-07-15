@@ -110,5 +110,8 @@ print("[selfcheck] numpy", np.__version__, "OK")
 print("[selfcheck] ALL PASS — lightllm 训练镜像就绪")
 PY
 
+# ---- Codex CLI（容器内 debug / 交互）----
+RUN npm install -g @openai/codex
+
 WORKDIR /workspace
 CMD ["/bin/bash"]

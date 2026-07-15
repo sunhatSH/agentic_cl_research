@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # 论文构建脚本 —— 在 master-thesis/ 下可复现编译。
-# 用法：  bash thesis/build.sh         # 编译
-#         bash thesis/build.sh clean   # 清理产物
-# 产物：  thesis/最终稿/main.pdf
+# 用法：  bash build.sh         # 编译
+#         bash build.sh clean   # 清理产物
+# 产物：  最终稿/main.pdf
 set -euo pipefail
 
-# 切到本脚本所在目录的上一级（master-thesis/），再进 thesis/
+# 切到本脚本所在目录（master-thesis/）——ructhesis.cls / 字体 / figures / latex 均在此层
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"                     # now in master-thesis/thesis/
+cd "$SCRIPT_DIR"                     # now in master-thesis/
 
-# ructhesis.cls / 字体 / figures 在上一级（master-thesis/），加进搜索路径
-export TEXINPUTS="..:${TEXINPUTS:-}"
+# 中文字体按文件名寻址（simsun.ttc 等在本目录），交给 xelatex 的字体搜索路径
+export OSFONTDIR="${OSFONTDIR:-$HOME/.fonts}"
 
 if [[ "${1:-}" == "clean" ]]; then
   latexmk -C -output-directory=最终稿 main.tex
@@ -19,8 +19,7 @@ if [[ "${1:-}" == "clean" ]]; then
   exit 0
 fi
 
-# latexmk 自动跑 xelatex → biber → xelatex ×2（biber 在 thesis/ 目录解析 latex/ref.bib）
-# 注意：显式传 ./main.tex，避免 TEXINPUTS 含 ".." 时 latexmk 误解析到上级模板的 main.tex
+# latexmk 自动跑 xelatex → biber → xelatex ×2（biber 解析 latex/ref.bib）
 latexmk -xelatex \
   -interaction=nonstopmode \
   -file-line-error \

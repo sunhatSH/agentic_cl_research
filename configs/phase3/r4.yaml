@@ -15,7 +15,6 @@ cl:
   buffer:
     enabled: true
     num_buckets: 9
-    # total_capacity / q_min 统一由 base.yaml 定 (25000 / 2000)，桶容量不作超参
   weighting:
     scheme: W0                   # 无 U 形（token 级均匀）；priority 仍按轨迹缩放 + 用于采样。
                                  # 与 R4-w(W2) 的唯一差异 = 是否启用 U 形块权重

@@ -17,7 +17,7 @@ Q_TRAIN=datasets/queries_train.jsonl
 echo "=== Step 1: filter errors ==="
 $PY -c "
 import json
-FLOORS={'workflow':151,'ops':136,'qa':124,'finance':97,'office':76,'communication':76,'safety':70,'coding':42,'research':61}
+FLOORS={'workflow':163,'ops':145,'qa':131,'finance':97,'office':72,'communication':72,'safety':65,'coding':30,'research':53}
 clean={}; dropped=0; kept=0
 with open('$TRAJ','r',errors='replace') as f, open('$CLEAN','w',encoding='utf-8') as out:
     for l in f:
@@ -43,7 +43,7 @@ echo "=== Step 2: borrow from training if needed ==="
 $PY -c "
 import json, random
 random.seed(42)
-FLOORS={'workflow':151,'ops':136,'qa':124,'finance':97,'office':76,'communication':76,'safety':70,'coding':42,'research':61}
+FLOORS={'workflow':163,'ops':145,'qa':131,'finance':97,'office':72,'communication':72,'safety':65,'coding':30,'research':53}
 # count clean trajectories
 clean={}
 with open('$CLEAN','r',errors='replace') as f:

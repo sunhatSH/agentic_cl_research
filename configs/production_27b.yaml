@@ -1,0 +1,17 @@
+# 27B 生产配置 — 64 GPU fully-async（40 推理 + 24 训练）。
+# 用法: bash scripts/train.sh configs/production_27b.yaml
+#
+# 与 debug_8b 共享 base.yaml 的算法默认值（train_batch=256, replay_batch=64,
+# 9桶 buffer, W0 flat weighting 等），仅在模型/硬件/并行度上分叉。
+
+defaults:
+  - _generated_ppo_trainer
+  - base
+  - cluster                       # 64GPU 引擎层 overlay
+
+# ── 模型（Qwen3.6-27B）───────────────────────────────────────────────────────
+actor_rollout_ref:
+  model:
+    path: /mnt/afs_agents/share_models/Qwen/Qwen3.6-27B
+  ref:
+    path: /mnt/afs_agents/share_models/Qwen/Qwen3.6-27B

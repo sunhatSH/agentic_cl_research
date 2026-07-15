@@ -1,19 +1,16 @@
-% XeLaTeX can use any Mac OS X font. See the setromanfont command below.
-% Input to XeLaTeX is full Unicode, so Unicode characters can be typed directly into the source.
+% !TEX TS-program = xelatex
+% !TEX encoding = UTF-8 Unicode
+%
+% 中国人民大学专业硕士学位论文 —— 面向智能体大语言模型的持续强化学习
+% 模板：ructhesis（master-thesis/ructhesis.cls）
+% 编译（在 master-thesis/ 目录下执行）：
+%   latexmk -xelatex -interaction=nonstopmode -file-line-error \
+%     -output-directory=thesis/最终稿 thesis/main.tex
+% 或手动：xelatex thesis/main → biber main（在 最终稿/ 内）→ xelatex ×2
 
-% The next lines tell TeXShop to typeset with xelatex, and to open and save the source with Unicode encoding.
+\documentclass[promaster]{ructhesis}
 
-%!TEX TS-program = xelatex
-%!TEX encoding = UTF-8 Unicode
-
-\documentclass[a4paper,master]{ructhesis}
-
-%自添宏包
-\usepackage{skak}%国际象棋
-\usepackage{subfigure}%子图http://www.ctex.org/documents/latex/graphics/node111.html
-\usepackage{chemfig}%化学式
-\usetikzlibrary{trees}
-
+% ── 自添宏包（去掉模板示例里与本文无关的 skak 国际象棋、chemfig 化学式）──
 \usepackage{algorithm}
 \usepackage{algorithmicx}
 \usepackage{algpseudocode}
@@ -23,60 +20,54 @@
 \usepackage{xcolor}
 \usepackage[section]{placeins}
 \usepackage{url}
+\usepackage{tabularx}
+\usepackage{array}
 \usepackage[backend=biber,bibstyle=gb7714-2015,gbnamefmt=lowercase,gbpub=false]{biblatex}
-\addbibresource{ref/test.bib}
+\addbibresource{latex/ref.bib}
 \newcommand{\upcite}[1]{\textsuperscript{\textsuperscript{\cite{#1}}}}
 
-% list figure and table name
+% ── 字体覆盖（模板 cls 硬编码了 Windows 字体 PostScript 名，Linux 上用 Liberation 兜底）──
+% cls 已用 \IfFontExistsTF 兜底，此处不再重复设字体，避免覆盖 cls 的 CJK family 设置。
+
+% ── 图目录 / 表目录名 ──
 \renewcommand{\listfigurename}{图目录}
 \renewcommand{\listtablename}{表目录}
 
+% ── 算法环境汉化 ──
 \floatname{algorithm}{算法}
 \counterwithin{algorithm}{chapter}
-
 \renewcommand{\algorithmicrequire}{\textbf{输入：}}
-%Use Input in the format of Algorithm
 \renewcommand{\algorithmicensure}{\textbf{输出：}}
-%UseOutput in the format of Algorithm
 \algnewcommand\algorithmicforeach{\textbf{for each}}
 \algdef{S}[FOR]{ForEach}[1]{\algorithmicforeach\ #1\ \algorithmicdo}
 
+% ── TODO 占位宏（依赖实验结果的数字一律用此标记，不编造）──
+\newcommand{\todo}[1]{{\color{red}[TODO: #1]}}
+% 配图占位框（图未绘制时用，不报错）
+\newcommand{\figplaceholder}[2][7cm]{%
+  \fbox{\parbox[c][#1][c]{0.85\textwidth}{\centering\itshape 图待绘制：#2}}%
+}
 
+% ── 论文元信息（题目/作者/导师/日期 等）单一信源：latex/thesis-info.tex ──
+\input{latex/thesis-info}
 
-%将封面信息补全，相关专业名称过长的请在文字前添加命令\ziju{-0.15}
-%文头
-% \sign{中国人民大学本科毕业论文}
-\sign{中国人民大学硕士学位论文}
-%\sign{博士学位论文}
+% ── 封面信息 ──
+\sign{专业硕士学位论文}
 
+\title{\thesistitle}
+\author{\thesisauthor}
+\school{XXX学院}
+\field{XXXX}
+\studentid{XXXXXXXXXX}
+\advisor{\thesisadvisor}
+\date{\thesisdate}
 
+% 研究生填写
+\etitle{\thesisetitle}
+\keywords{持续学习；强化学习；大语言模型；智能体；经验回放}
+\keywordzh{持续学习；强化学习；大语言模型；智能体；经验回放；灾难性遗忘}
+\keyworden{Continual Learning;\qquad Reinforcement Learning;\qquad Large Language Model;\qquad Agent;\qquad Experience Replay}
 
-%以下信息本科研究生都需要补全
-\title{中国人民大学LaTeX模板}%论文题名
-\author{XXX}%作者
-\school{XX学院}%学院
-\field{XXXX}%专业
-\studentid{2012202000}%学号
-\advisor{XXX}%指导老师
-\date{20XX年XX月XX日}
-
-
-%以下本科填写
-\grade{}%年级
-\score{4.0}%成绩
-\thesiscode{论文编码：RUC-BK-专业代码}%论文编码
-\subtitle{}%论文副题名，没有不填写
-
-
-%以下研究生填写
-\etitle{LaTeX template of Renmin university of China}%英文题目
-\keywords{\TeX{}}%论文主题词
-%摘要关键词
-\keywordzh{中文摘要关键词}%中文摘要关键词
-\keyworden{English\qquad template}%英文摘要关键词
-
-
-%
 \begin{document}
 
 %扉页
@@ -93,11 +84,9 @@
 \authorization{figures/shouquan.png}
 %中文摘要
 \pagestyle{fancy}
-\include{format/cabstractpage}
+\input{latex/format/cabstractpage}
 %英文摘要
-\include{format/eabstractpage}
-
-
+\input{latex/format/eabstractpage}
 
 \frontmatter
 
@@ -109,19 +98,17 @@
 %表格目录
 {\renewcommand{\addvspace}[1]{} \listoftables}
 
-
 \mainmatter\clearpage
 \pagestyle{newformat}
 
 %正文章节
-\include{chap/chapter1}
-\include{chap/chapter2}
-\include{chap/chapter3}
-\input{chap/chapter4}%要插入本科签名的最后一个章节,插入命令使用\input{}
-
-%本科签名
-%\autograph
-
+\input{latex/chap/chapter1_绪论}
+\input{latex/chap/chapter2_相关工作}
+\input{latex/chap/chapter3_问题定义}
+\input{latex/chap/chapter4_方法}
+\input{latex/chap/chapter5_系统实现}
+\input{latex/chap/chapter6_实验设计}
+\input{latex/chap/chapter7_总结展望}
 
 %参考文献
 \cleardoublepage
@@ -130,17 +117,9 @@
 
 %附录
 \appendix
-\include{chap/appendix_1}
+\input{latex/appendix/appendix_prompts}
 
 %致谢
-\include{format/acknowledge}
+\input{latex/format/acknowledge}
 
-
-
-\end{document}  
-
-
-
-
-
-
+\end{document}

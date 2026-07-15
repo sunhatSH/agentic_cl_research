@@ -18,7 +18,6 @@ cl:
     enabled: true
     num_buckets: 1               # 单 buffer，无桶结构（名/数自动塌缩为 "All"）
     total_capacity: 10000        # CLEAR 原论文 10k
-    q_min: 10000
     eviction_type: reservoir     # CLEAR：随机丢弃（reservoir sampling）
     within_bucket_sampling: uniform  # 全 buffer 均匀采样
     priority_type: uniform       # CLEAR 不用 priority

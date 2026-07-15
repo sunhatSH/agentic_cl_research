@@ -74,24 +74,24 @@ $$ L_{reg} = ||\theta - \theta_{prev}||^2 \quad \text{（弃用，权重 0）} $
 
 ### 9 桶结构
 
-按**能力/领域**分桶，不按难度分桶（难度随模型能力提升漂移，非稳定依据；灾难性遗忘更常沿能力类型发生）。每桶保底配额，桶内按 priority 存留，桶间不直接竞争。Priority 不依赖 reward 绝对值（reward 整体上升会使旧轨迹系统性被淘汰，buffer 退化为滑动窗口）。
+> **完整算法规范见 [`doc/source/BucketAlgorithm.md`](BucketAlgorithm.md)**——本节仅列与实验设计直接相关的部分（桶名/任务数/quota 逻辑/回放比例），配额公式、优先级、采样、淘汰、权重持久化等完整细节以 BucketAlgorithm.md 为准。
 
-桶体系（2026-07-04）= ClawEval 官方 category 合并（去多模态），**单层、无子桶**。定义与官方 category 映射见 `runs/_analysis/capability_buckets/buckets.json`，配置见 `configs/base.yaml`。
+桶体系（2026-07-04）= ClawEval 官方 category 合并（去多模态），**单层、无子桶**。定义与官方 category 映射见 `runs/_analysis/capability_buckets/buckets.json`。
 
 ```text
-ReplayBuffer
-├── workflow      [55]  (workflow+productivity+organization)
-├── ops           [43]  (ops+operations+terminal+file_ops)
-├── qa            [31]  (what+knowledge+comprehension+memory)
-├── finance       [16]  (finance+procurement)
-├── office        [11]  (office_qa+data_analysis)
-├── communication [11]  (communication+content+rewriting)
-├── safety        [ 9]  (safety+security+compliance)
-├── coding        [ 2]  (coding)
-└── research      [ 5]  (research+synthesis)
+ReplayBuffer 9 桶 (详见 BucketAlgorithm.md §1)
+├── workflow      [56]
+├── ops           [44]
+├── qa            [36]
+├── finance       [20]
+├── office        [11]
+├── communication [11]
+├── safety        [ 9]
+├── coding        [ 2]
+└── research      [ 6]
 ```
 
-纯文本 buffer 总任务数 = 195（含12条user_agent多轮按首轮归桶，去多模态）。
+纯文本 buffer 总任务数 = 195。
 
 | 桶 | 任务数 | 核心能力 |
 |---|---:|---|
@@ -107,29 +107,18 @@ ReplayBuffer
 
 ### Quota 分配
 
-$$q_i = q_{min} + (C - B \cdot q_{min}) \cdot \frac{n_i^{\alpha}}{\sum_j n_j^{\alpha}}$$
+> 完整公式与 α 取值论证见 [`BucketAlgorithm.md` §2](BucketAlgorithm.md#2-配额分配allocate_quota)。
 
-- $C$：总 buffer 容量（轨迹条数）；$B$：桶数 $= 9$；$q_{min}$：每桶 hard floor；$n_i$：第 $i$ 桶任务数；$\alpha$：次线性指数，推荐 $0.5$（平方根分配）
+$$q_i = C \cdot \frac{n_i^{\alpha}}{\sum_j n_j^{\alpha}}, \qquad \alpha=0.5$$
 
-**含义**：$q_{min}$ 保证每桶最低生存空间；第二项将剩余容量按桶规模次线性分配。大桶容量更多但增长慢于任务数增长，兼顾主流与长尾能力。
+- $C$：总 buffer 容量（25,000 条轨迹）；$n_i$：第 $i$ 桶任务数
+- soft_target（超则加速淘汰）+ bucket_floors（= cap/30，不可跌破）双层控制
 
-**工程理解**：hard floor（不可跌破）+ soft target（超则加速淘汰，低则加速接纳）。
+回放比例：`replay_batch_size=512` 叠加在 `train_batch_size=1024` 上，每步 1536 样本中 512 是回放（**33%**）。
 
-**示例**（$C = 25{,}000$, $q_{min} = 2{,}000$, $\alpha = 0.5$）：
+### Priority（抗遗忘）
 
-| 桶 | 任务数 | quota 近似值 |
-|---|---:|---:|
-| workflow | 55 | 3,410 |
-| ops | 43 | 3,246 |
-| qa | 31 | 3,058 |
-| finance | 16 | 2,760 |
-| office | 11 | 2,630 |
-| communication | 11 | 2,630 |
-| safety | 9 | 2,570 |
-| research | 5 | 2,425 |
-| coding | 2 | 2,269 |
-
-### Priority 定义（抗遗忘）
+> 完整 4 信号公式与权重见 [`BucketAlgorithm.md` §5](BucketAlgorithm.md#5-priority4-信号融合)。
 
 训练推进时 reward 整体上升，按 reward 绝对值排序会使新轨迹系统性压制旧轨迹。Priority 反映的是**轨迹对防止遗忘的重要性**，而非**当时取得多高 reward**。
 
@@ -138,20 +127,14 @@ $$q_i = q_{min} + (C - B \cdot q_{min}) \cdot \frac{n_i^{\alpha}}{\sum_j n_j^{\a
 | **Forgetting Risk** | 0.5 | 当前模型在该轨迹上是否出现性能回退 |
 | **Rarity** | 0.25 | 桶内低频模式/模板，防热门模板占满 |
 | **Difficulty** | 0.25 | 桶内相对难度，覆盖边界/复杂场景 |
-| ~~Diversity~~ | v1 禁用 | 每 query 仅 2 条轨迹，后续版本启用 |
+| ~~Diversity~~ | v1 禁用 | 无 trajectory embedding 管线 |
 
-### 淘汰规则：桶内淘汰
+### 淘汰与采样
 
-**禁止跨桶挤出**。新轨迹按能力映射进入所属桶 → 桶未满直接接纳 → 桶已满仅在该桶内部淘汰最低 priority 轨迹 → 不允许跨桶挤出。
+> 完整规则见 [`BucketAlgorithm.md` §4, §6](BucketAlgorithm.md)。
 
-### 采样规则：两级采样
-
-1. **采桶**：混合策略——部分按 soft target 比例 + 部分按均匀，兼顾大桶覆盖与长尾能力
-2. **桶内采轨迹**：按 priority **加权随机**采样，**非 top-k 贪心**，避免只重复"明星轨迹"
-
-### Buffer 组织与检索
-
-**轨迹级元数据**：`trajectory_id` / `record_id` / `query_index` / `slot_idx` / `bucket` / `priority` / `insert_step` / `last_replay_step` / `replay_count` / `token_length` / `pattern_id`。
+- **淘汰**：桶内竞争，禁止跨桶挤出；bucket_floors（cap/30）以下永不淘汰
+- **采样**：两级——桶级 70% 按 soft_target 比例 + 30% 均匀 + 饥饿惩罚；桶内 priority 加权随机（非 top-k）
 
 **主存储 + 轻量索引**，支持：按 ID / 按 bucket / 按 priority 排序 / 按 pattern 访问。精确查询（调试/诊断）与训练采样（概率抽样）分开。
 
