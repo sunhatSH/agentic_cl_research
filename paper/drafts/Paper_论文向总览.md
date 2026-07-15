@@ -13,11 +13,11 @@
 本工作提出一套**端到端可训练的持续学习方案**，由四个相互独立又彼此咬合的设计构成：
 
 1. **四项 CL Loss** $L_{cl}=\lambda_1 L_{rl}+\lambda_2 L_{kl}+\lambda_3 L_{replay}+\lambda_4 L_{ent}$，以零源码改动注入 verl/GRPO；
-2. **7 桶能力划分的 Replay Buffer**，按"抗遗忘价值"而非 reward 绝对值排优先级，桶内淘汰、禁止跨桶挤出；
+2. **9 桶能力划分的 Replay Buffer**，按"抗遗忘价值"而非 reward 绝对值排优先级，桶内淘汰、禁止跨桶挤出；
 3. **U 形块权重的 Reweighted Replay**，按动作块给 replay token 赋权，首尾重、中间轻；
 4. **沙箱 rollout + winner-sync 会话调度 + 模拟用户在线生成多轮 query**，从源头保证组内 advantage 不被环境噪声污染、并根除静态多轮数据的"前提漂移"。
 
-我们在 **Qwen3.6-27B** 上以 64 卡（40 推理 + 24 训练，Fully Async）部署，用 **ClawEval**（Pass³）量化遗忘与新任务习得，设计了 **21 个受控消融实验**逐项验证每个组件的边际贡献。
+我们在 **Qwen3.6-29B** 上以 64 卡（40 推理 + 24 训练，Fully Async）部署，用 **ClawEval**（Pass³）量化遗忘与新任务习得，设计了 **21 个受控消融实验**逐项验证每个组件的边际贡献。
 
 ---
 
@@ -35,10 +35,10 @@
 | # | 贡献 | 对应章节 |
 |---|------|---------|
 | C1 | 一个把抗遗忘正则与经验回放统一进 GRPO 的 **CL Loss**，零 fork 注入 verl | §3 |
-| C2 | 按**能力/领域**而非难度划分、以**抗遗忘价值**排序的 **7 桶 Replay Buffer**；论证为何不能用 reward 绝对值排序 | §4 |
+| C2 | 按**能力/领域**而非难度划分、以**抗遗忘价值**排序的 **9 桶 Replay Buffer**；论证为何不能用 reward 绝对值排序 | §4 |
 | C3 | **U 形动作块权重**的 reweighted replay：首端（早期高方差决策）与末端（结论生成段）同时受重视 | §5 |
 | C4 | **沙箱 winner-sync 会话调度**：组内 8 槽位级一致，保证 advantage 只反映策略差异 | §6 |
-| C5 | **模拟用户在线生成多轮 query**（观察/出题/奖励三 agent）：根除静态多轮数据的前提漂移，构成弱对抗自适应课程 | §7 |
+| C5 | **模拟用户在线生成多轮 query**（观察/出题/奖励三 agent）：根除静态多轮数据的前提漂移，构成弱对抗自适应课程 | §9 |
 
 > **数据归属边界（实现说明）**：本工作的输入为 **taskspec**（每个 task = 1 份声明 `taskspec.yaml` + 1 份初始文件系统 `files/`，含 `seed_query` / `hidden_goal` / `verifier` 判分 rubric / `user_profile`）。**多轮后续 query 的在线生成、rollout 轨迹采集、以及最终入桶/训练消费的 rollout 数据结构，均为本系统（C4/C5）的产出**——"信号产出"这一半从 taskspec 开始、到结构化轨迹结束，都在本工作范围内。1 个 seed → fork 8 容器跑同一 `seed_query`（GRPO 8 路、位级一致起点）。冷启动采集阶段先跑 C5 的 **observer + questioner 子集（不含奖励模型、不做 GRPO 组，单 query 单 rollout）**；完整训练态再启用奖励与 8 槽。
 
@@ -50,10 +50,10 @@ RFT 天然比 SFT 抗遗忘（B2/C1），但**仍会遗忘**；CLEAR（A2）证�
 
 ## 2. 问题设定（Problem Setup）
 
-- **基座**：Qwen3.6-27B；**算法**：GRPO（无 critic），每 query rollout $M=8$ 条轨迹，组内归一化得 advantage $A_i=\frac{r_i-\mathrm{mean}(r)}{\mathrm{std}(r)+\epsilon}$。
-- **数据**：纯文本 195 任务，跨 7 个能力域；多轮会话（每会话多条顺序 query，共享上下文）。
+- **基座**：Qwen3.6-29B；**算法**：GRPO（无 critic），每 query rollout $M=8$ 条轨迹，组内归一化得 advantage $A_i=\frac{r_i-\mathrm{mean}(r)}{\mathrm{std}(r)+\epsilon}$。
+- **数据**：纯文本 195 任务，跨 9 个能力域；多轮会话（每会话多条顺序 query，共享上下文）。
 - **目标**：最大化 **CL Score = New Task Perf − $\alpha$·Old Task Forgetting**（$\alpha=1.0$）。
-- **隐含前提（贯穿全文）**：GRPO 组内归一化只在"$M$ 条轨迹差异纯来自策略采样随机性"时才无偏——任何环境噪声 / 数据前提错位都会污染 advantage。§6/§7 即从源头守住这个前提。
+- **隐含前提（贯穿全文）**：GRPO 组内归一化只在"$M$ 条轨迹差异纯来自策略采样随机性"时才无偏——任何环境噪声 / 数据前提错位都会污染 advantage。§6/§9 即从源头守住这个前提。
 
 ---
 
@@ -77,11 +77,11 @@ $$L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_
 
 ---
 
-## 4. 方法二：7 桶 Replay Buffer（Method · Memory）
+## 4. 方法二：9 桶 Replay Buffer（Method · Memory）
 
 ### 4.1 为什么按能力分桶、按抗遗忘排序
 
-- **按能力/领域分桶，不按难度**：难度随模型能力漂移，难度桶会不断重新分类；能力是稳定的划分轴。7 桶 = Workflow[54] / SysOps[52] / Dialogue[38] / Finance[18] / Communication[12] / Knowledge[11] / OfficeQA[10]（OfficeQA 单独成桶，避免并入 Knowledge 被稀释）。论证见 [`BucketDesign.md`](../../doc/BucketDesign.md)。
+- **按能力/领域分桶，不按难度**：难度随模型能力漂移，难度桶会不断重新分类；能力是稳定的划分轴。9 桶 = 工作流编排[56] / 系统操作[44] / 问答检索[36] / 财务金融[20] / 办公文档[11] / 沟通表达[11] / 安全合规[9] / 代码[2] / 研究综合[6]
 - **Priority 不用 reward 绝对值**：训练推进 reward 整体上升，按 reward 排序会系统性淘汰旧轨迹，buffer 退化成滑动窗口、丧失 CL 意义。改用**抗遗忘价值**：
 
 $$priority_i = f(\text{forgetting\_risk}_i,\ \text{rarity}_i,\ \text{diversity}_i,\ \text{within\_bucket\_difficulty}_i)$$
@@ -94,6 +94,17 @@ $$priority_i = f(\text{forgetting\_risk}_i,\ \text{rarity}_i,\ \text{diversity}_
 - **桶内淘汰、禁止跨桶挤出**：保证不同能力不互相侵占——这是"按能力分桶"主张的执行保障。
 - **两级采样**：先采桶（soft target 比例 + 均匀混合 + starvation_boost）→ 桶内按 priority 加权随机（非 top-k，避免只刷明星轨迹）。
 - **冷启动**：训练前用预采集的多轮轨迹预填 buffer（`warmup_buffer.py` → `buffer.load(sqlite)` → `_preload_warmup()`），使 $L_{replay}$ 从 step 0 就有旧经验可用。冷启动数据需求见 [`Buffer_冷启动数据需求.md`](../../doc/Buffer_冷启动数据需求.md)。
+
+### 4.3 桶间距离与跨桶回放权重
+
+以上机制处理了桶内排序，但**跨桶回放强度**应取决于能力域之间的距离：训练代码桶时，距代码最远的沟通表达类比相邻的系统操作类更易遗忘，需要更高回放权重。
+
+- **5 维能力空间**：工具调用强度、推理链深度、结构刚性、领域知识浓度、多步骤程度。每个桶 $B_i$ 映射到坐标 $c_i\in\mathbb{R}^5$。
+- **坐标由 LLM 评分**：根据桶内 5 条真实采样轨迹的查询文本、消息数、工具调用统计和多轮轮数，由 LLM 在 5 维上打出分值。不做归一化上限——不同维度天然散布范围不同（如 tool_intensity 跨桶差异大、knowledge_domain 多数桶低）。
+- **欧氏距离**：$d(B_i, B_j)=\|c_i-c_j\|_2$。回放权重乘子 = $d(B_{\text{cur}}, B_j)/\bar{d}$。
+- **为什么用桶级坐标而非逐轨迹评分**：(1) 冷启动阶段桶内数据尚未采样，轨迹级坐标不可得；(2) 上线后轨迹量过大，逐条 LLM 评分不现实；(3) 桶级近似抓住了能力差异这一遗忘的主要来源。
+
+> 坐标生成脚本：`scripts/score_bucket_coords.py`；坐标输出：`configs/bucket_coords.json`。
 
 > 实现：`replay_buffer/`（纯 Python，与 verl 完全解耦，可独立单测）。
 
@@ -120,7 +131,7 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 
 ### 6.1 动作在内、推理在外
 
-推理（27B 前向/采样/logprob）在沙箱外的 GPU 集群（vLLM）；动作（装包、写文件、跑命令）在腾讯云沙箱内（OpenClaw agent harness）。128 个沙箱不可能各带一份 27B，而动作必须落到"那台用户机器"的磁盘上。详见 [`Sandbox_Agent架构.md`](../../doc/sandbox/Sandbox_Agent架构.md)。
+推理（29B 前向/采样/logprob）在沙箱外的 GPU 集群（vLLM）；动作（装包、写文件、跑命令）在腾讯云沙箱内（OpenClaw agent harness）。128 个沙箱不可能各带一份 29B，而动作必须落到"那台用户机器"的磁盘上。详见 [`Sandbox_Agent架构.md`](../../doc/sandbox/Sandbox_Agent架构.md)。
 
 ### 6.2 16×8 + winner-sync
 
@@ -136,13 +147,13 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \tfra
 
 ---
 
-## 7. 方法五：模拟用户在线生成多轮 Query（Method · Data）
+## 9. 方法五：模拟用户在线生成多轮 Query（Method · Data）
 
-### 7.1 前提漂移问题
+### 9.1 前提漂移问题
 
 静态多轮数据把 $q_{k+1}$ 写死，但它通常引用 $q_k$ 的执行结果（"这个 PPT 第 3 页数据有问题"）。rollout 随机 → 前提 $\Pr[\phi(q_{k+1})(e_k)]<1$ 且随策略漂移，导致错误梯度（对不存在的问题硬编修复 / 惩罚诚实）与 GRPO 信号稀释。
 
-### 7.2 三 agent 在线构造
+### 9.2 三 agent 在线构造
 
 真实回流数据**只保留首条 query 作种子**，后续 query 在 winner-sync 边界由三 agent 协作在线生成（前提由构造保证成立）：
 
@@ -192,14 +203,14 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 
 | 维度 | 方案 |
 |------|------|
-| 部署 | 64×H800，**分离 40 推理 + 24 训练**（Deep Research tool exec 4–8s/turn 下比 Colocate 快 3–7%）；Colocate 64 为后备 |
+| 部署 | 64×H800，**分离 40 推理 + 24 训练**（Deep Research tool exec 4–8s/turn 下比 Colocate 快 3–9%）；Colocate 64 为后备 |
 | 异步 | **Fully Async Policy**（verl），`staleness_threshold=0.3` 严格控制；可平滑退化为同步 |
 | 精度 | **BF16 全栈** + FP32 主权重 + FP32 Adam m/v；FP8 不进主路径（Phase 5 可选 FP8 rollout-only） |
 | 训练框架 | verl 0.8.0，pip 安装不 fork，唯一注入点 `actor.set_loss_fn(cl_loss)` |
 | 工程解耦 | `replay_buffer/` 不 import verl/Ray，可独立单测 |
 | 沙箱厂商无关 | rollout 沙箱走**接口/实现解耦的注册表**（`SandboxClient` 协议 + `register_backend`）：后端 `local`（dev）/ `e2b`（腾讯）/ `aliyun`（Alibaba AgentBay，留空待实现）按名互换、rollout loop 零改动；三 Agent 配 `scripts/agents_harness.py` **离线 harness**（无 GPU 跑通 observer/questioner/reward 回路，利于复现） |
 
-> ⚠️ `CL_Update_Sunhao.md` 中按 70B 估算的显存/耗时数字待按 27B 重算（标记 C2）。落地施工图见 [`Plan_训练链路补齐.md`](../../doc/Plan_训练链路补齐.md)，状态见 [`Progress.md`](../../doc/Progress.md)。
+> ⚠️ `CL_Update_Sunhao.md` 中按 90B 估算的显存/耗时数字待按 29B 重算（标记 C2）。落地施工图见 [`Plan_训练链路补齐.md`](../../doc/Plan_训练链路补齐.md)，状态见 [`Progress.md`](../../doc/Progress.md)。
 
 ---
 
@@ -210,7 +221,7 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 - **观察 grounding 强度 = 取证能力**：反 reward-hacking 的强度上限 = observer 能取到的证据强度。**已落地 diff-driven、observer 模型只看 state**（2026-06-19）：observer 以沙箱 before/after **内容级 diff**（含二进制格式提取 + SysOps 状态）为 ground truth，**不接收 actor 轨迹**（结构性反 hacking——声称从不进入观察判断与 completion）；轨迹仅 pass-through 给 reward 判 safety/robustness。详见 [`Observer_DiffDriven_技术报告.md`](../refs/Observer_DiffDriven_技术报告.md)。**残余局限**：二进制提取的真值核对需库 + 真实文件（本机仅验 fallback）；瞬态/被覆盖的中间产物需 `watch_dir` 事件流（当前只看净变化）；真实 e2b/aliyun 后端连通 + 8 槽 FS/SYS baseline 正确性待集群验证。
 - **winner-sync 进程态保真**：平台若只支持磁盘快照，替补槽的进程/内存态可能与 winner 不一致（头号 PoC）。
 - **judge 选型未定**：须用 ClawEval 人工 rubric 一致率校准；外部 judge API 地址待提供（reward 走 `JudgeClient` env 注入，代码零改动）。
-- **27B 成本数字待重算**；**全栈 64 卡 smoke 未跑**——Loss 链路三处接线 bug 已审计修复且纯逻辑单测通过（约 200 测试函数），但 replay 行真过 verl forward + log_probs 选回 + packing 断言不触发，仍待集群 1-step 全栈验证。`inference/VerlRolloutGenerateFn` 为占位（接 verl 原生 generate 是 Gap D）。
+- **29B 成本数字待重算**；**全栈 64 卡 smoke 未跑**——Loss 链路三处接线 bug 已审计修复且纯逻辑单测通过（约 200 测试函数），但 replay 行真过 verl forward + log_probs 选回 + packing 断言不触发，仍待集群 1-step 全栈验证。`inference/VerlRolloutGenerateFn` 为占位（接 verl 原生 generate 是 Gap D）。
 
 ---
 
@@ -220,7 +231,7 @@ Output Entropy 曲线（前 100 step 降 >50% 即调大 $\lambda_4$）、Traject
 |---------|---------|
 | 方法·CL Loss / 实验路线 / GPU / 精度 / 文献 | [`CL_Update_Sunhao.md`](../../doc/CL_Update_Sunhao.md)（**主文档**） |
 | **模型选型**（actor / observer / questioner / judge） | [`模型选型.md`](../../doc/模型选型.md)（**单一信源**） |
-| 方法·7 桶 Buffer 论证 | [`BucketDesign.md`](../../doc/BucketDesign.md)（+ `_compressed` 速查） |
+| 方法·9 桶 Buffer 论证 | [`BucketDesign.md`](../../doc/BucketDesign.md)（+ `_compressed` 速查） |
 | 方法·环境/调度 | [`Sandbox_管理调度指南.md`](../../doc/sandbox/Sandbox_管理调度指南.md)、[`SandboxRollout.md`](../../doc/SandboxRollout.md)、[`Sandbox_Agent架构.md`](../../doc/sandbox/Sandbox_Agent架构.md) |
 | 方法·多轮数据 | [`UserSim_多轮Query在线生成.md`](../../doc/UserSim_多轮Query在线生成.md) |
 | **方法·三 agent 论文摘要** | [`Paper_ThreeAgent_Summary_CN.md`](Paper_ThreeAgent_Summary_CN.md) |
