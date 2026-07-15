@@ -127,6 +127,8 @@ print("[selfcheck] ALL PASS — lightllm 训练镜像就绪")
 PY
 
 # ---- Codex CLI（容器内 debug / 交互）----
+# base 镜像无 Node.js，先通过 conda 安装
+RUN conda install -y -c conda-forge nodejs=22
 RUN npm install -g @openai/codex
 
 WORKDIR /workspace
