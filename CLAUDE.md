@@ -442,6 +442,17 @@ $$w_t^{(i)} = \text{normalize}\Big(\text{clip}\big(\text{priority}_i \cdot \frac
 - `configs/sandbox_tool.json` 实测创建 Tool 必需字段补齐：`CustomConfiguration.Command=["/init"]`、`Probe.HttpGet.Scheme="HTTP"`、`Memory` 2Gi→4Gi、端口收敛为单 `envd:49983`（参考已有 `node-python-openclaw` Tool）。修复后 `create_sandbox_via_api.sh custom` 成功建 Tool `sdt-f4ygdu0a` + 起 RUNNING 实例。
 - 企业版 TCR 实例信息：实例 `tcr-rl`（`tcr-hxya4oi8`，公网 `tcr-rl.tencentcloudcr.com`），命名空间 `agentos-cl-namespace`（base + 产物镜像同命名空间；2026-06-26 从 `agentos-cl-sandbox` 切换而来，旧 Tool `sdt-f4ygdu0a` 仍指向旧地址）。docker login 用 `tccli tcr CreateInstanceToken` 拿临时 Token（默认 1 小时有效）。
 
+---
+
+## 数据质量过滤（后续切换）
+
+当前 `scripts/qc_trajectory.py`（porter 自 tongronglei）保留不动，后续数据质量应切换为：
+
+| 负责 | 仓库 | 用途 |
+|------|------|------|
+| 郑乃榕 | `git@gitlab.sh.sensetime.com:agent_data/agent_data_tools.git` | 数据整体规则过滤 |
+| 琚晓龙 | `agent_data/LLMChecker.git`（GitLab） | 数据模型过滤 |
+
 
 ---
 
