@@ -8,6 +8,7 @@ Output : train.parquet + val.parquet，verl rl_dataset 列:
            prompt        list[{role,content}]  -- system + 首个 user query(rollout 起点)
            data_source   str                   -- "agentic_cl"
            reward_model   {ground_truth}        -- 空(judge 在线打分)
+           bucket        str                   -- 9 桶能力标签（top-level，供 trajectory_adapter 读取）
            extra_info    {record_id, bucket, queries, persona, available_tools,
                           missing_info_slots, safety_constraints, difficulty}
 
@@ -69,6 +70,7 @@ def _to_row(rec: dict) -> dict | None:
         "prompt": prompt,
         "data_source": DATA_SOURCE,
         "reward_model": {"ground_truth": ""},
+        "bucket": bucket,
         "extra_info": {
             "record_id": rid,
             "bucket": bucket,
