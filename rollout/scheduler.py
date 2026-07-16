@@ -5,10 +5,10 @@ in parallel; each session is a SessionSandboxPool (8 slots, sequential queries
 with winner-sync between them). Total concurrent instances = sessions × slots
 (default 16 × 8 = 128). Sessions are independent: no cross-session sync.
 
-This layer owns the 16×8 + winner-sync ORCHESTRATION. Per-step generation is
-delegated to ``agent_fn`` (in real training: a thin wrapper over verl's rollout
-generate / agent_loop so token+logprob come from the framework natively — see
-doc/sandbox/Sandbox_Agent架构.md §3, NOT an HTTP proxy).
+Two modes:
+  static    – each session runs its seed queries through agent_fn (original).
+  simulated – each session runs one seed query through the full Questioner +
+              Observer loop (run_simulated_session), generating follow-ups online.
 """
 
 from __future__ import annotations
@@ -44,6 +44,12 @@ class RolloutScheduler:
         pool_factory: Callable[..., SessionSandboxPool] | None = None,
         max_session_workers: int | None = None,
         seed: int = 0,
+        # ── simulated-session mode ──
+        simulated: bool = False,
+        observer: Any = None,
+        questioner: Any = None,
+        k_max: int = 3,
+        score_followups: bool = True,
     ) -> None:
         self.agent_fn = agent_fn
         self.sessions_per_step = sessions_per_step
@@ -53,6 +59,11 @@ class RolloutScheduler:
         self._pool_factory = pool_factory or self._default_pool
         self._max_session_workers = max_session_workers or sessions_per_step
         self.seed = seed
+        self.simulated = simulated
+        self.observer = observer
+        self.questioner = questioner
+        self.k_max = k_max
+        self.score_followups = score_followups
 
     def _default_pool(self, spec: SessionSpec, seed: int) -> SessionSandboxPool:
         return SessionSandboxPool(
@@ -66,12 +77,41 @@ class RolloutScheduler:
 
     def run_session(self, spec: SessionSpec, seed: int) -> list[Trajectory]:
         pool = self._pool_factory(spec, seed)
-        trajs = pool.run_session(spec.queries, self.agent_fn)
+        if self.simulated and self.observer is not None and self.questioner is not None:
+            trajs = self._run_simulated_session(pool, spec, seed)
+        else:
+            trajs = pool.run_session(spec.queries, self.agent_fn)
         for t in trajs:
             t.meta.setdefault("session_id", spec.session_id)
-            # namespace per session so ids are globally unique (avoid buffer overwrite)
             t.trajectory_id = f"{spec.session_id}-{t.trajectory_id}"
         return trajs
+
+    def _run_simulated_session(
+        self, pool: SessionSandboxPool, spec: SessionSpec, seed: int
+    ) -> list[Trajectory]:
+        from rollout.simulated_session import run_simulated_session
+        from agents.personas import sample_persona
+
+        rng = __import__("random").Random(seed)
+        persona = sample_persona(rng)
+
+        seed_query = spec.queries[0] if spec.queries else ""
+        result = run_simulated_session(
+            pool=pool,
+            seed_query=seed_query,
+            agent_fn=self.agent_fn,
+            persona=persona,
+            observer=self.observer,
+            questioner=self.questioner,
+            k_max=self.k_max,
+            seed=seed,
+            score_followups=self.score_followups,
+        )
+        for t in result.trajectories:
+            t.meta.setdefault("persona_name", persona.name)
+            t.meta.setdefault("session_turns", result.num_turns)
+            t.meta.setdefault("ended_by", result.ended_by)
+        return result.trajectories
 
     def run_step(self, specs: Sequence[SessionSpec]) -> list[Trajectory]:
         """Run up to ``sessions_per_step`` sessions in parallel; collect all trajectories."""

@@ -186,22 +186,38 @@ def make_cl_scheduler_manager_cls():
     from rollout.scheduler import RolloutScheduler, SessionSpec
 
     class CLSchedulerAgentLoopManager(_Base):
-        """Route rollout through our 16×8 + winner-sync scheduler."""
+        """Route rollout through our 16×8 + winner-sync scheduler.
+
+        With Questioner + Observer support: each session runs one seed query
+        through the full simulated-session loop (run_simulated_session), generating
+        follow-up queries online and observing winner state via diff.
+        """
 
         def _build_scheduler(self) -> Any:
+            from agents.observer import Observer
+            from agents.questioner import Questioner
+
             rcfg = self.rollout_config
             agent_cfg = rcfg.get("agent", {}) or {}
+
             agent_fn = make_hermes_agent_fn(
                 model=str(agent_cfg.get("model", "qwen3-8b")),
                 model_base=str(agent_cfg.get("model_base", "")),
                 max_turns=int(rcfg.get("multi_turn", {}).get("max_turns", 16)),
                 timeout=int(agent_cfg.get("timeout", 600)),
             )
+            observer = Observer(use_llm=False)  # deterministic diff-driven, no model call
+            questioner = Questioner()
             return RolloutScheduler(
                 agent_fn,
                 sessions_per_step=int(agent_cfg.get("sessions_per_step", 16)),
                 slots=int(rcfg.get("n", 8)),
                 backend=agent_cfg.get("sandbox_backend", "e2b"),
+                simulated=True,
+                observer=observer,
+                questioner=questioner,
+                k_max=int(agent_cfg.get("k_max", 3)),
+                score_followups=bool(agent_cfg.get("score_followups", True)),
             )
 
         async def generate_sequences(self, prompts):  # type: ignore[override]
