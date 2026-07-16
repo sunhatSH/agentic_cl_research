@@ -242,7 +242,7 @@ agentic_cl_research/
 
 | 文件 | 内容 |
 |------|------|
-| `doc/source/CL_Design.md` | **主文档**：CL Loss / Replay Buffer（9桶+quota+priority+冷启动数据需求）/ 实验路线（含 Phase 0）/ 评测 / GPU / 精度 / 文献 |
+| `doc/source/CL_Design.md` | **主文档**：CL Loss / Replay Buffer（9桶+quota+priority+冷启动数据需求）/ 实验路线 / 评测 / GPU / 精度 / 文献 |
 | `doc/source/usersim.md` | **UserSim 单一信源**：模型选型 + 三 agent 架构（observer/questioner/reward）+ 多轮 query 在线生成 + 42 人设表 |
 | `doc/source/训练与推理流程.md` | 训练循环 + 推理全链路 + verl 0.8.0 集成（不 fork，外挂注入）+ 数据 pipeline |
 | `doc/source/ClawEval_Metadata.md` | 评测基准数据 |

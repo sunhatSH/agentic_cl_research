@@ -97,23 +97,28 @@ We organize the buffer into $B=9$ buckets aligned with capability domains
 (Workflow, SysOps, QA, Finance, Office, Communication, Safety, Coding, Research).
 Difficulty is an unstable partition axis---as the policy improves, the difficulty
 of a task drifts, forcing continual re-classification---whereas capability is
-stable. Each bucket receives a quota under a square-root, floor-protected
+stable. Each bucket receives a quota under a pure square-root proportional
 allocation,
 \begin{equation}
-  q_i = q_{min} + (C - B\,q_{min})\cdot \frac{n_i^{0.5}}{\sum_j n_j^{0.5}},
+  q_i = C\cdot \frac{n_i^{0.5}}{\sum_j n_j^{0.5}},
 \end{equation}
-where $n_i$ is the number of ClawEval evaluation tasks in bucket $i$ and $C$
-is the total capacity. The base parameter $q_{\mathrm{min}}$ now serves as the
-allocation floor (shared across buckets for computing the cap), while the actual
-per-bucket hard floor---below which eviction is disabled---is derived from the
-cap ($q_i^{\mathrm{floor}} = \lceil q_i / 30 \rceil$, typically 42--151
-trajectories). The square-root exponent gives larger buckets more room without
-letting them grow proportionally, and the hard floor prevents small but distinct
-capabilities from being squeezed out. Crucially, \textbf{eviction
+where $n_i$ is the number of evaluation tasks in bucket $i$ and $C$ is the total
+capacity. The square-root exponent dampens the dominance of large buckets without
+suppressing them entirely. Per-bucket hard floors (separate from the quota formula)
+prevent eviction from dropping any bucket below a minimum size, protecting small
+but distinct capabilities from being squeezed out. Crucially, \textbf{eviction
 is bucket-local}: a full bucket only evicts its own lowest-priority trajectory,
 and new tasks can never evict trajectories from another bucket. This is the
 mechanism that makes the ``partition by capability'' claim operational---capabilities
 cannot cannibalize one another.
+
+Bucket-level sampling uses \textbf{capability-space distance weighting}. Each
+bucket is mapped to a 5-dimensional coordinate (tool intensity, reasoning depth,
+structure rigidity, knowledge domain, multi-step nature). When training on bucket
+$k$, replay samples from other buckets are weighted by their Euclidean distance
+$d(k, j)$ from $k$ in this space---farther buckets receive proportionally higher
+sampling weight, prioritizing replay of the capabilities most different from the
+current training distribution and thus most at risk of interference-based forgetting.
 
 \paragraph{Prioritize by anti-forgetting value, not by reward.}
 Within a bucket, trajectories are retained by a priority that combines four

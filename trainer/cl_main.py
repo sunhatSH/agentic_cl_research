@@ -26,7 +26,36 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Path to experiment yaml.")
     parser.add_argument("--resume-from", type=str, default=None, help="Optional checkpoint to resume.")
+    # Hydra-style key=value overrides, e.g. trainer.total_training_steps=50
+    parser.add_argument(
+        "overrides", nargs="*", default=[],
+        help="Config overrides in key=value format (e.g. data.train_files=/path/to/file.parquet).",
+    )
     return parser.parse_args()
+
+
+def _apply_overrides(cfg, overrides: list[str]):
+    for ov in overrides:
+        if "=" not in ov:
+            print(f"[cl] WARNING: skipping malformed override '{ov}' (missing '=')")
+            continue
+        key, _, value = ov.partition("=")
+        # coerce int/float/bool
+        v = value.strip()
+        if v.lower() == "true":
+            v = True
+        elif v.lower() == "false":
+            v = False
+        else:
+            try:
+                v = int(v)
+            except ValueError:
+                try:
+                    v = float(v)
+                except ValueError:
+                    v = value  # keep as string
+        OmegaConf.update(cfg, key.strip(), v, force_add=True)
+        print(f"[cl] override: {key.strip()}={v!r}")
 
 
 def load_config(config_path: str):
@@ -131,6 +160,7 @@ def _preload_warmup(buffer, warmup_path) -> None:
 def main():
     args = parse_args()
     cfg = load_config(args.config)
+    _apply_overrides(cfg, args.overrides)
     from trainer.verl_runner import run_cl_ppo
 
     run_cl_ppo(cfg, resume_from=args.resume_from)

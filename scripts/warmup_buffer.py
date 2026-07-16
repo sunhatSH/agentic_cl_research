@@ -38,9 +38,9 @@ from trainer.domain_tagging import DEFAULT_BUCKETS
 VALID_BUCKETS = tuple(DEFAULT_BUCKETS)  # 9 buckets from configs/base.yaml via trainer/domain_tagging
 FALLBACK_BUCKET = "qa"  # least-specific catch-all; evicted later if low value
 
-# Cold-start data-source tags (Phase 0, doc/Plan_冷启动数据来源消融.md).
-SRC_27B = "pi0_27b"  # on-policy: the training policy itself (Qwen3.6-27B)
-SRC_GPT5 = "gpt5"  # off-policy: the stronger model (openai/gpt-5)
+# Cold-start data-source tags — for trajectory provenance tracking.
+SRC_27B = "pi0_27b"  # on-policy: the training policy itself (reserved, not used in current cold-start)
+SRC_GPT5 = "gpt5"    # off-policy: stronger model (current cold-start source)
 
 
 def classify(traj: dict, session_msgs: list) -> str:
@@ -120,9 +120,9 @@ def main() -> None:
         "--ratio-27b",
         type=float,
         default=None,
-        help="Phase 0 cold-start source mix: fraction of 27B (pi0_27b) trajectories "
-        "per bucket in [0,1]; the rest are gpt5. E.g. 1.0=P0-A (all 27B), 0.0=P0-B "
-        "(all gpt5), 0.5=P0-C, 0.7=P0-D, 0.3=P0-E. Omit = ingest ALL (legacy behavior).",
+        help="Fraction of 27B trajectories per bucket in [0,1]. "
+        "0.0 = all GPT-5 (current default). Deprecated: 27B collection no longer performed. "
+        "Omit = ingest ALL (legacy behavior).",
     )
     ap.add_argument("--mix-seed", type=int, default=0, help="seed for reproducible per-bucket source sampling")
     ap.add_argument(

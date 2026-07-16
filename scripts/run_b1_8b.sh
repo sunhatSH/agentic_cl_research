@@ -3,6 +3,19 @@
 # Sets up: py310_base conda env + PYTHONPATH (LightLLM/verl/project) + .env creds.
 set -euo pipefail
 
+cleanup() {
+    local exit_code=$?
+    echo "[cleanup] training exited with code=$exit_code, killing GPU processes..."
+    if [ -n "${_TRAIN_PID:-}" ] && kill -0 "$_TRAIN_PID" 2>/dev/null; then
+        kill -- -$(ps -o pgid= -p "$_TRAIN_PID" 2>/dev/null | tr -d ' ') 2>/dev/null || true
+    fi
+    for pid in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | sort -u); do
+        kill -9 "$pid" 2>/dev/null || true
+    done
+    echo "[cleanup] done"
+}
+trap cleanup EXIT
+
 PROJECT_DIR=/mnt/afs_toolcall/sunhao4/agentic_cl_research
 LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/Documents/LightLLM
 VERL_DIR=/mnt/afs_toolcall/sunhao4/Documents/verl
@@ -28,6 +41,7 @@ fi
 # --- HF cache to local disk (AFS doesn't support flock) ---
 export HF_DATASETS_CACHE=/tmp/hf_datasets_cache
 export HF_HOME=/tmp/hf_home
+export HF_HUB_OFFLINE=1              # 模型在本地，不走 hub 校验
 export TOKENIZERS_PARALLELISM=false
 
 # --- Training credentials (.env: SWANLAB_API_KEY + SUFY_API_KEY + TOKENHUB_API_KEY) ---
@@ -54,4 +68,6 @@ echo "[run_b1_8b] gpus: $(python -c 'import torch;print(torch.cuda.device_count(
 echo "[run_b1_8b] swanlab key: ${SWANLAB_API_KEY:+present}"
 echo "[run_b1_8b] starting training..."
 
-python -m trainer.cl_main --config configs/run/b1_8b.yaml 2>&1 | tee "$PROJECT_DIR/logs/experiments/run/qwen3_8b_b1/train.log"
+python -m trainer.cl_main --config configs/run/b1_8b.yaml 2>&1 | tee "$PROJECT_DIR/logs/experiments/run/qwen3_8b_b1/train.log" &
+_TRAIN_PID=$!
+wait $_TRAIN_PID || true

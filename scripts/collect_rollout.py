@@ -68,13 +68,10 @@ def iter_seeds(queries_path, limit):
 
 
 def _actor_policy_tag(actor: str) -> str:
-    """Map the --actor route to a cold-start data-source tag (Phase 0 ablation).
+    """Map the --actor route to a data-source tag for trajectory provenance.
 
-    This is the ONLY handle for the cold-start data-source ablation
-    (doc/Plan_冷启动数据来源消融.md): warmup_buffer.py mixes the two sources by
-    ratio and per-source forensics/attribution all key off this tag.
-        local  -> pi0_27b   (on-policy: the training policy itself, Qwen3.6-27B)
-        remote -> gpt5      (off-policy: the stronger model, openai/gpt-5)
+    local  -> pi0_27b  (on-policy: the training policy itself)
+    remote -> gpt5     (off-policy: stronger model, used for cold-start buffer)
     """
     return "pi0_27b" if actor == "local" else "gpt5"
 
@@ -95,7 +92,7 @@ def _traj_to_dict(t, no_clean=False, policy=None):
         "num_turns": t.meta.get("num_turns"),
         "prompt_tokens": t.meta.get("prompt_tokens", 0),
         "completion_tokens": t.meta.get("completion_tokens", 0),
-        # Cold-start data-source tag (Phase 0). warmup_buffer.py reads this to
+        # Data-source tag for trajectory provenance. warmup_buffer may use this.
         # mix 27B/gpt-5 trajectories by ratio; kept in buffer meta for attribution.
         "policy": policy,
     }
@@ -139,7 +136,7 @@ def run_one_session(args, generate_fn, observer, questioner, record_id, seed, id
         "generated_queries": res.generated_queries,
         "trajectories": trajs,
         "reports": [r.__dict__ for r in res.reports],
-        "policy": policy,  # cold-start data-source tag (Phase 0)
+        "policy": policy,  # data-source tag
     }
 
 

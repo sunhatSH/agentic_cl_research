@@ -41,7 +41,7 @@ actor_rollout_ref:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.85
+    gpu_memory_utilization: 0.75
     n: 8                         # GRPO group size (traj/query)
     load_format: auto            # 加载真权重（非 dummy 随机权重）
     max_model_len: 32768
@@ -105,8 +105,8 @@ trainer:
   nnodes: 1
   n_gpus_per_node: 8
   total_epochs: 1
-  total_training_steps: 100
-  save_freq: 25
+  total_training_steps: 50
+  save_freq: 5
   test_freq: 25
   critic_warmup: 0
   logger: console

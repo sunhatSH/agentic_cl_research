@@ -152,7 +152,7 @@ $$q_i = C \cdot \frac{n_i^{\alpha}}{\sum_j n_j^{\alpha}}, \qquad \alpha=0.5$$
 
 **验收清单**：轨迹总数 ≥ 18k；每桶 ≥ 2k；多轮会话无单 query；每条含 messages+token+logprob+bucket；`reward=null` 不计入配额；硬失败 session 无脏数据。
 
-**数据来源配比（Phase 0）**：每条带 `meta.policy` 来源标记；两来源分目录存；`warmup_buffer.py --ratio-27b` 按桶内配比混合；**红线**：gpt-5 数据只进 buffer 做 replay，绝不 SFT 蒸馏 27B。
+**冷启动数据来源**：只用 GPT-5（off-policy 强模型）采集轨迹填 buffer。Replay Buffer 冷启动不要求使用后续训练的 Actor——只需覆盖初始能力分布即可；之后由在线 Actor 持续更新 Buffer。**红线**：gpt-5 数据只进 buffer 做 replay，绝不 SFT 蒸馏 27B。
 
 ---
 
@@ -281,11 +281,6 @@ $$\frac{1^b + 1^{K_i - 1 - b}}{2} = \frac{1 + 1}{2} = 1 \quad \forall\, b$$
 | $\lambda_4$ | $L_{ent}$ 权重 | **所有 Phase 固定 0.001，防 Echo Trap，不参与 ablation** |
 | $L_{reg}$ | 参数 L2 正则 | **弃用，权重为 0** |
 
-### 全局实验路线
-
-```
-Phase 0 (P0-A..E)     冷启动数据来源配比预实验（独立，不进 21；选最佳配比固定为 buffer 预热来源）
-   │
 Phase 1 (B1)          建立纯 RL 遗忘基线
    │
    ├── Phase 2 (K1-K5, K2-R)             KL 单独验证 → top-2 KL 配置
@@ -299,7 +294,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
                            └── Phase 6 (X1-X7)  按需探索
 ```
 
-实验总数：**B 系列 1 + K 系列 6 + R 系列 8 + C 系列 4 + S 系列 2 = 21 个独立训练**。Phase 6 X 系列按需触发。**Phase 0（P0-A..E）是冷启动前置预实验，不计入 21**（选出最佳 27B:gpt5 配比后固定为所有正式实验的 buffer 预热来源），详见 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)。
+实验总数：**B 系列 1 + K 系列 6 + R 系列 8 + C 系列 4 + S 系列 2 = 21 个独立训练**。Phase 6 X 系列按需触发。冷启动只用 GPT-5，不设来源配比预实验。
 （R 系列 8 = R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K；R0 拆两档隔离"容量 vs 桶结构"。）
 
 ---
@@ -321,58 +316,6 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 - 8 机并行：**~5 天**；16 机并行：**~2.5 天**
 
 > **⚠️ 待重算（C2）**：上述 16 GPU-day / 320 GPU-day 是按 **70B 基座 + 8 卡** 的旧估算。实际部署为 **Qwen3.6-27B + 64 卡（40 推理 + 24 训练）**：单卡算力相同但模型更小（27B vs 70B，前向/反向约 0.4×）、卡数更多（64 vs 8）。等拿到 27B 模型 config（hidden_size / num_layers / num_kv_heads）后，按本节 § GPU 资源分配（1024×8，约 3.1 steps/hr）重算单实验 wall-clock 与 GPU-day。在此之前这些数字仅作上界参考。
-
----
-
-### Phase 0：冷启动数据来源配比预实验（独立，不进 21）
-
-**验证目标**：冷启动填 9 桶 replay buffer 时，actor 用 Qwen3.6-27B（on-policy，分布同源）还是更强的 gpt-5（off-policy，质量高）还是按比例混合，对下游 CL 训练最好？选出最佳配比后**固定**为所有 21 个正式实验的 buffer 预热来源。完整设计与代码落点见 [`CL_Update_Sunhao.md`](CL_Update_Sunhao.md)。
-
-| 编号 | 27B : gpt-5 | 角色 |
-|---|---|---|
-| P0-A | 100 : 0 | 纯 on-policy（分布同源基线） |
-| P0-B | 0 : 100 | 纯 off-policy（强模型质量上界） |
-| P0-C | 50 : 50 | 平分折中 |
-| P0-D | 70 : 30 | 偏 27B（"27B 为主"假设） |
-| P0-E | 30 : 70 | 偏 gpt-5（"质量为主"假设） |
-
-**唯一变量** = 每桶内 27B/gpt5 轨迹配比（配比落在桶内、跨桶一致）；其余锁死为 R4 配置（$\lambda_3=0.5$ + 抗遗忘 priority + 两级采样，$\lambda_2=0$）。
-
-**验收标准（双轨判定链：冷启动自身指标先筛 → 下游短RL 裁决；任一臂自身指标不达 gate 直接淘汰、不进短RL）**
-
-*轨 1 — 冷启动自身指标（无 GPU，采集后即测，硬 gate）*：
-
-| 指标 | 验收 gate |
-|---|---|
-| 桶配额达标率（各桶 `size ≥ q_min=2000`） | **= 9/9** |
-| tool-call 合法率 | **≥ 90%** |
-| judge 有效分命中率（非 `judge_error`） | **≥ 95%** |
-| 轨迹多样性（`eval.metrics.trajectory_diversity`） | distinct_4 **≥ 0.6** 且 self_bleu_4 **≤ 0.5** |
-| 平均 judge 分 | 报告值（非 gate；gpt-5 臂预期更高，不作淘汰依据） |
-
-*轨 2 — 下游短RL（占 GPU，通过轨 1 的臂才跑；5 臂唯一变量 = buffer 来源，固定新任务种子 + 同随机 seed，9 桶拆旧/新两组）*：
-
-| 指标 | 判定 |
-|---|---|
-| **CL Score**（`new_perf − α·forgetting`，α=1.0） | **主裁决**：最高者胜；差 < 2% 时选 Forgetting 更低且 L_replay 更稳者 |
-| Old Task Forgetting（旧桶） | 越低越好；报告 |
-| New Task Performance（新桶） | 报告（诊断质量-同源权衡） |
-| L_replay / L_rl 稳定性 | 无发散/剧烈震荡为通过 |
-| Output Entropy（前 20 step 降幅） | **下降 > 50% 判该臂不稳定**（Echo Trap 预警，B4） |
-
-**前置改动（采集侧）**：关键前提 = 采集一次性，五臂共享抽样（不重采）。两侧数据在所有配比实验**前一次性采好**，之后每臂只从固定两个池子按不同比例抽样——不重跑采集、不重调模型：
-
-```
-【全实验前，一次性采集】
-  27B(on-policy, sufy qwen3.6-27b) → data/rollouts/local/*.jsonl   (policy=pi0_27b)
-  gpt-5.5(off-policy, sufy)         → data/rollouts/remote/*.jsonl   (policy=gpt5)
-        │  两池采一次即固定，五臂共用
-        ▼
-【每臂：纯 CPU 抽样，秒级、零模型调用、零 GPU、可复现(--mix-seed)】
-  warmup_buffer.py --ratio-27b {1.0/0.0/0.5/0.7/0.3} → P0-{A..E} buffer
-```
-
-代码落点：`collect_rollout.py` 加 `meta.policy` 来源标记；`warmup_buffer.py` 加 `--ratio-27b` 桶内配比混合 + `*.manifest.json`；`configs/phase0/p0-{a..e}.yaml`；`scripts/phase0/{run.sh,gate_coldstart.py}`。**红线**：gpt-5 数据只进 buffer 做 replay，绝不拿去 SFT 蒸馏 27B。
 
 ---
 
@@ -589,7 +532,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 | 估算假设 | 训练 MFU=0.40，vLLM 单 TP8 replica 吞吐 ~1500 tok/s，多轮 KV 复用效率 0.80 |
 | Rollout 规模 | **`actor_rollout_ref.rollout.n=8`**，`train_batch_size=1024` → **8192 轨迹/step**（1024×8）；Phase 5 S2 为 4096×8 |
 
-> **⚠️ 本节及以下"GPU 资源分配 / 训练精度"中所有按 70B 估算的硬数字（显存预算、FSDP shard 大小、参数同步耗时等）需要按 Qwen3.6-27B 重算。**模型确定时间 2026-06-09，重算待办：等拿到模型 config（hidden_size / num_layers / num_kv_heads）后统一更新。在此之前：70B 数字仅作"上界参考"——27B 实际显存与同步耗时显著低于现有数字。
+> **⚠️ 27B 显存数值已更新**（基于实际配置计算，2026-07-16）。训练侧 24 卡 FSDP 后 ~36 GB/卡；推理侧 TP8 后 ~42 GB/卡。分离 40+24 方案显存余量充裕。
 
 ### Deep Research 场景下的一轮交互耗时
 
@@ -944,22 +887,88 @@ gantt
 
 ### 显存估算
 
-#### 分离 40+24
+本节对 CL 训练场景（训练 + rollout 并行，共享 GPU）做显存估算。所有计算基于 H800 80GB，精度 BF16（参数/激活）+ FP32（主权重/Adam）。
 
-| 组 | 组件 | 每卡显存 | 合计 |
-|---|------|---------|------|
-| 推理 (40卡, 5×TP8) | 模型 FP16 + KV cache | ~15 GB | 余量 ~65 GB ✓ |
-| 训练 (24卡, FSDP) | 参数 shard + optimizer + grad + act | ~33 GB | 余量 ~47 GB ✓ |
+#### 模型参数
 
-#### Colocate 64
+| 参数 | Qwen3-8B | Qwen3.6-27B | 说明 |
+|------|----------|-------------|------|
+| $d_{model}$ | 4096 | —* | 隐藏维度 |
+| $L$ | 36 | —* | Transformer 层数 |
+| $n_{heads}$ | 32 | —* | 注意力头数 |
+| $n_{kv}$ | 8 | —* | KV 头数（GQA） |
+| $d_{ff}$ | 12288 | —* | FFN 中间维度 |
+| $V$ | 151936 | —* | 词表大小 |
+| 参数量 | 8.19B | ~27B | |
+| BF16 权重 | 16.4 GB | ~54 GB | 参数量 × 2 bytes |
+| FP32 主权重 | 32.8 GB | ~108 GB | 参数量 × 4 bytes |
+| FP32 Adam (m+v) | 65.5 GB | ~216 GB | 2 × 主权重 |
 
-| 组件 | 每卡显存 | 说明 |
-|------|----------|------|
-| 参数 shard | ~0.8 GB | 27B / 64 (Colocate 模式下全 64 卡 FSDP) |
-| Optimizer | ~14.0 GB | Adam (m+v) FP32 |
-| 梯度 + Activations | ~12 GB | |
-| vLLM KV cache | ~5–10 GB | 推理阶段 |
-| **合计** | **~33–38 GB** | **80 GB 可行** |
+> \*27B 模型 config 待获取后填入；当前 27B 列按 ~27B 参数量估算，精度在 ±10% 内。
+
+#### 训练侧显存（FSDP，per-GPU）
+
+FSDP 将参数、梯度、优化器状态按 GPU 数均分。设训练卡数 $N_{train}$、FSDP world size = $N_{train}$。
+
+\[
+\begin{aligned}
+M_{weights} &= 2N_{params} / N_{train} \quad &\text{(BF16 参数分片)} \\
+M_{master}  &= 4N_{params} / N_{train} \quad &\text{(FP32 主权重)} \\
+M_{adam}    &= 8N_{params} / N_{train} \quad &\text{(m+v, FP32)} \\
+M_{grad}    &= 2N_{params} / N_{train} \quad &\text{(BF16 梯度)}
+\end{aligned}
+\]
+
+激活内存取决于 micro\_batch\_size $b_\mu$、序列长度 $S$、并行策略：
+
+\[
+M_{act} \approx b_\mu \cdot S \cdot d_{model} \cdot L \cdot c_{act} \quad\text{其中 } c_{act} \approx 34\text{--}40\text{ bytes/token/layer（BF16，含中间激活 + checkpoint 重计算开销）}
+\]
+
+FSDP 不同配置下的训练侧 per-GPU 显存：
+
+| 场景 | $N_{train}$ | $b_\mu$ | $S_{max}$ | $M_{weights}$ | $M_{master}$ | $M_{adam}$ | $M_{grad}$ | $M_{act}$ | **合计** | 余量 (80GB) |
+|------|-------------|---------|-----------|---------------|--------------|------------|------------|-----------|----------|-------------|
+| **8B / 8 GPU** | 8 | 4 | 32768 | 2.0 GB | 4.1 GB | 8.2 GB | 2.0 GB | ~12 GB | **~28 GB** | ✅ 52 GB |
+| 8B / 4 GPU | 4 | 4 | 32768 | 4.1 GB | 8.2 GB | 16.4 GB | 4.1 GB | ~12 GB | **~45 GB** | ✅ 35 GB |
+| 8B / 2 GPU | 2 | 4 | 32768 | 8.2 GB | 16.4 GB | 32.8 GB | 8.2 GB | ~12 GB | **~78 GB** | ⚠️ 2 GB |
+| **27B / 24 GPU** | 24 | 4 | 32768 | 2.3 GB | 4.5 GB | 9.0 GB | 2.3 GB | ~18 GB | **~36 GB** | ✅ 44 GB |
+| 27B / 16 GPU | 16 | 4 | 32768 | 3.4 GB | 6.8 GB | 13.5 GB | 3.4 GB | ~18 GB | **~45 GB** | ✅ 35 GB |
+| 27B / 8 GPU | 8 | 4 | 32768 | 6.8 GB | 13.5 GB | 27.0 GB | 6.8 GB | ~18 GB | **~72 GB** | ⚠️ 8 GB |
+
+> $b_\mu$ = `ppo_micro_batch_size_per_gpu`；$S_{max}$ = `ppo_max_token_len_per_gpu`（实际激活按 batch 内平均 seq\_len 计算，上表用最坏情况）。
+
+#### 推理侧显存（LightLLM，per-GPU）
+
+推理使用 TP（Tensor Parallelism），$N_{tp}$ 卡共享一份模型。每张推理卡：
+
+\[
+\begin{aligned}
+M_{model} &= 2N_{params} / N_{tp} \quad &\text{(BF16 权重分片)} \\
+M_{kv}    &= 2 \cdot n_{kv} \cdot d_{head} \cdot L \cdot S_{max} \cdot N_{tp} \cdot f_{util} \cdot 2\text{ bytes} \quad &\text{(KV cache，GQA)}
+\end{aligned}
+\]
+
+其中 $d_{head} = d_{model} / n_{heads}$，$f_{util}$ = `gpu_memory_utilization`（默认 0.75）。
+
+| 场景 | $N_{tp}$ | $N_{replicas}$ | $S_{max}$ | $M_{model}$ | $M_{kv}$ | **合计** | $N_{train}$ 占用 | 剩余推理卡 |
+|------|----------|----------------|-----------|-------------|----------|----------|------------------|-----------|
+| **8B / TP2×4** | 2 | 4 | 32768 | 8.2 GB | ~42 GB | **~50 GB** | 8 卡全占（colocate） | 0 |
+| 8B / TP4×2 | 4 | 2 | 32768 | 4.1 GB | ~21 GB | **~25 GB** | 占用 4 卡 | 4 卡 |
+| 8B / TP1×8 | 1 | 8 | 32768 | 16.4 GB | ~84 GB | **~100 GB** ❌ | — | — |
+| **27B / TP8×5** | 8 | 5 | 40960 | 6.8 GB | ~35 GB | **~42 GB** | 40 卡分离 | 0 |
+| 27B / TP4×6 | 4 | 6 | 40960 | 13.5 GB | ~70 GB | **~84 GB** ⚠️ | 24 卡分离 | 0 |
+
+> $N_{replicas}$ = 推理副本数（每个副本独立服务一部分 rollout 请求）。KV cache 按 $f_{util}=0.75$ 预分配，实际使用率见 LightLLM `token used ratio` 指标。
+
+#### 综合：当前部署方案
+
+| 模型 | 部署 | 训练 GPU | 推理 GPU | 训练显存/卡 | 推理显存/卡 | 状态 |
+|------|------|---------|---------|------------|------------|------|
+| **Qwen3-8B** | 单机 8 GPU, colocate | 8 (FSDP) | 0 (训练共享) | ~28 GB | ~50 GB (叠加) | ✅ 当前 B1 运行中 |
+| **Qwen3.6-27B** | 分离 40+24 | 24 (FSDP) | 40 (5×TP8) | ~36 GB | ~42 GB | 待集群部署 |
+
+> 8B colocate 模式下，训练和推理共享 8 张卡：训练 FSDP 占 ~28 GB，LightLLM TP2×4 再占 ~50 GB，单卡合计 ~78 GB≈H800 上限。实测中 GPU 0 的 WorkerDict 显存较低（~5.5 GB vs 8.6 GB），总占用约 60 GB，在安全范围内。
 
 ### $L_{replay}$ 计算频率
 
