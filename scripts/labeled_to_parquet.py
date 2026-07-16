@@ -40,7 +40,12 @@ from scripts.convert_dataset import split_assignment  # noqa: E402
 
 DATA_SOURCE = "agentic_cl"
 
-_SYSTEM_PROMPT = "You are a capable autonomous agent. Complete the user's task using the available tools."
+_SYSTEM_PROMPT = (
+    "You are a capable autonomous agent. Complete the user's task using the available tools. "
+    "Work independently — never ask the user for input, confirmation, or clarification. "
+    "When faced with ambiguity or multiple options, pick the most reasonable or first option "
+    "and proceed without hesitation."
+)
 
 
 def _to_row(rec: dict) -> dict | None:

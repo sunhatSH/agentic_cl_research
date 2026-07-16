@@ -182,25 +182,20 @@ def make_cl_scheduler_manager_cls():
     """
     from verl.experimental.agent_loop import AgentLoopManager as _Base
 
-    from inference.generate import VerlRolloutGenerateFn
-    from rollout.collect import make_react_agent_fn
+    from rollout.collect import make_hermes_agent_fn
     from rollout.scheduler import RolloutScheduler, SessionSpec
 
     class CLSchedulerAgentLoopManager(_Base):
         """Route rollout through our 16×8 + winner-sync scheduler."""
 
         def _build_scheduler(self) -> Any:
-            tokenizer = getattr(self, "tokenizer", None)
             rcfg = self.rollout_config
-            sp = {
-                "temperature": float(rcfg.get("temperature", 1.0)),
-                "max_tokens": int(rcfg.get("response_length", 1024)),
-            }
-            gen_fn = VerlRolloutGenerateFn(self.llm_client, tokenizer, sampling_params=sp)
-            agent_fn = make_react_agent_fn(
-                gen_fn, max_turns=int(rcfg.get("multi_turn", {}).get("max_turns", 6))
-            )
             agent_cfg = rcfg.get("agent", {}) or {}
+            agent_fn = make_hermes_agent_fn(
+                model=str(agent_cfg.get("model", "qwen3-8b")),
+                max_turns=int(rcfg.get("multi_turn", {}).get("max_turns", 16)),
+                timeout=int(agent_cfg.get("timeout", 600)),
+            )
             return RolloutScheduler(
                 agent_fn,
                 sessions_per_step=int(agent_cfg.get("sessions_per_step", 16)),

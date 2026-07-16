@@ -184,6 +184,76 @@ def make_react_agent_fn(
     return agent_fn
 
 
+def make_hermes_agent_fn(
+    model: str,
+    max_turns: int = 16,
+    timeout: int = 600,
+) -> AgentFn:
+    """Build an AgentFn that delegates to ``hermes chat -q --yolo`` inside the sandbox.
+
+    Unlike ``make_react_agent_fn`` which hand-rolls a ReAct loop, this runs the full
+    Hermes agent (tool routing, skills, session memory) with --yolo so every
+    permission / approval prompt is auto-bypassed.
+    """
+    from rollout.actor import CliStdoutActor
+
+    def _hermes_chat(sb, query, _model, _max_turns, _timeout, *, resume_sid=None):
+        """Run one ``hermes chat -q <query>`` in the sandbox."""
+        import shlex
+
+        cmd = (
+            f"hermes chat -q {shlex.quote(query)} -m {shlex.quote(_model)} "
+            f"--provider agent -Q --max-turns {_max_turns} --yolo"
+        )
+        if resume_sid:
+            cmd += f" --resume {shlex.quote(resume_sid)}"
+        try:
+            out = sb._sb.commands.run(cmd, timeout=_timeout)
+            stdout = (out.stdout or "").strip()
+            stderr = (out.stderr or "").strip()
+            import re
+
+            m = re.search(r"session[= ][\"']?([a-zA-Z0-9_-]+)", stderr)
+            sid = m.group(1) if m else None
+            return stdout, stderr, out.exit_code == 0, sid
+        except Exception as exc:
+            return "", f"{type(exc).__name__}: {exc}", False, None
+
+    actor = CliStdoutActor(chat_fn=_hermes_chat)
+
+    def agent_fn(client, query, state, slot_idx, history=None):
+        turn = actor.run_turn(
+            client,
+            query,
+            model=model,
+            base="",
+            max_turns=max_turns,
+            timeout=timeout,
+            resume_sid=None,
+        )
+        bucket = parse_domain("\n".join(m.get("content", "") for m in turn.messages)) or None
+        return Trajectory(
+            slot_idx=slot_idx,
+            trajectory_id=turn.session_id or "",
+            messages=turn.messages,
+            reward=None,
+            response_token_ids=[],
+            logprobs=[],
+            bucket=bucket,
+            next_state={},
+            meta={
+                "response_mask": [1] * len(turn.messages),
+                "num_turns": 1,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "ok": turn.ok,
+                "error": turn.error,
+            },
+        )
+
+    return agent_fn
+
+
 def trajectory_to_buffer_item(traj: Trajectory) -> tuple[dict[str, Any], str | None, dict[str, Any]]:
     """Map a collected Trajectory -> (payload, bucket, metadata) for buffer.add_trajectory.
 
