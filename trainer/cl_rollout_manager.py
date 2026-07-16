@@ -193,6 +193,7 @@ def make_cl_scheduler_manager_cls():
             agent_cfg = rcfg.get("agent", {}) or {}
             agent_fn = make_hermes_agent_fn(
                 model=str(agent_cfg.get("model", "qwen3-8b")),
+                model_base=str(agent_cfg.get("model_base", "")),
                 max_turns=int(rcfg.get("multi_turn", {}).get("max_turns", 16)),
                 timeout=int(agent_cfg.get("timeout", 600)),
             )

@@ -186,6 +186,7 @@ def make_react_agent_fn(
 
 def make_hermes_agent_fn(
     model: str,
+    model_base: str = "",
     max_turns: int = 16,
     timeout: int = 600,
 ) -> AgentFn:
@@ -194,12 +195,40 @@ def make_hermes_agent_fn(
     Unlike ``make_react_agent_fn`` which hand-rolls a ReAct loop, this runs the full
     Hermes agent (tool routing, skills, session memory) with --yolo so every
     permission / approval prompt is auto-bypassed.
+
+    Before the first call, writes ``~/.hermes/config.yaml`` inside the sandbox,
+    pointing the ``agent`` provider at *model_base* (falls back to
+    ``AGENT_MODEL_BASE`` from sandbox env). The model key is read from
+    ``AGENT_MODEL_KEY`` inside the sandbox so it never travels through the host.
     """
     from rollout.actor import CliStdoutActor
 
+    _HERMES_CONFIG = (
+        "import os, yaml\n"
+        "m = os.environ.get('AGENT_MODEL_NAME', {model!r})\n"
+        "b = os.environ.get('AGENT_MODEL_BASE', {base!r})\n"
+        "k = os.environ['AGENT_MODEL_KEY']\n"
+        "h = os.path.expanduser('~/.hermes')\n"
+        "os.makedirs(h, exist_ok=True)\n"
+        "cfg = {{'model': m, 'providers': {{'agent': "
+        "{{'base_url': b, 'api_key': k, 'kind': 'openai'}}}}}}\n"
+        "open(h + '/config.yaml', 'w').write(yaml.safe_dump(cfg, sort_keys=False))\n"
+        "open(h + '/.env', 'w').write('OPENAI_API_KEY=' + k + chr(10))\n"
+    )
+
+    # Build once then reuse; model/model_base never change within a run.
+    _config_code = _HERMES_CONFIG.format(model=model, base=model_base)
+
     def _hermes_chat(sb, query, _model, _max_turns, _timeout, *, resume_sid=None):
-        """Run one ``hermes chat -q <query>`` in the sandbox."""
-        import shlex
+        import shlex, re
+
+        # Write hermes config on first call (idempotent — config is identical).
+        if not getattr(sb, "_hermes_configured", False):
+            sb.run_code(_config_code)
+            try:
+                setattr(sb, "_hermes_configured", True)
+            except TypeError:
+                pass
 
         cmd = (
             f"hermes chat -q {shlex.quote(query)} -m {shlex.quote(_model)} "
@@ -211,8 +240,6 @@ def make_hermes_agent_fn(
             out = sb._sb.commands.run(cmd, timeout=_timeout)
             stdout = (out.stdout or "").strip()
             stderr = (out.stderr or "").strip()
-            import re
-
             m = re.search(r"session[= ][\"']?([a-zA-Z0-9_-]+)", stderr)
             sid = m.group(1) if m else None
             return stdout, stderr, out.exit_code == 0, sid
@@ -226,7 +253,7 @@ def make_hermes_agent_fn(
             client,
             query,
             model=model,
-            base="",
+            base=model_base,
             max_turns=max_turns,
             timeout=timeout,
             resume_sid=None,
