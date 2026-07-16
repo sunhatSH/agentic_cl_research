@@ -216,7 +216,7 @@ def make_cl_scheduler_manager_cls():
                 simulated=True,
                 observer=observer,
                 questioner=questioner,
-                k_max=int(agent_cfg.get("k_max", 3)),
+                k_max=int(agent_cfg.get("k_max", 8)),
                 score_followups=bool(agent_cfg.get("score_followups", True)),
             )
 
