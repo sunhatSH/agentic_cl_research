@@ -87,12 +87,14 @@ class Actor(Protocol):
         max_turns: int,
         timeout: int,
         resume_sid: str | None = None,
+        session_id: str | None = None,
     ) -> ActorTurn:
         """Run one query in the sandbox and return the turn's structured result.
 
         ``conversation_history`` is the prior structured messages (for multi-turn
         continuation); ``resume_sid`` is the CLI-mode hermes session id (legacy
-        continuation channel). Implementations use whichever they support.
+        continuation channel); ``session_id`` is the hermes persistent session id
+        for native resume across turns.
         """
         ...
 
@@ -150,6 +152,7 @@ class CliStdoutActor:
         max_turns: int,
         timeout: int,
         resume_sid: str | None = None,
+        session_id: str | None = None,  # noqa: ARG002 — CLI uses --resume, not session_id
     ) -> ActorTurn:
         stdout, stderr, ok, sid = self._chat_fn(
             sb, query, model, max_turns, timeout, resume_sid=resume_sid
@@ -216,21 +219,23 @@ class StructuredHermesActor:
         base: str,  # noqa: ARG002
         max_turns: int,
         timeout: int,
-        resume_sid: str | None = None,  # noqa: ARG002 — structured uses history, not --resume
+        resume_sid: str | None = None,  # noqa: ARG002 — structured uses session_id, not --resume
+        session_id: str | None = None,
     ) -> ActorTurn:
         try:
             self._ensure_script(sb)
             spec = {
                 "query": query,
-                "history": list(conversation_history or []),
+                "session_id": session_id,
                 "max_iterations": max_turns,
             }
             sb._sb.files.write_files(  # type: ignore[union-attr]
                 [{"path": _SANDBOX_INPUT_PATH, "data": json.dumps(spec, ensure_ascii=False)}]
             )
             out = sb._sb.commands.run(  # type: ignore[union-attr]
-                f"python {_SANDBOX_CAPTURE_PATH} {_SANDBOX_INPUT_PATH}",
+                f"python3 {_SANDBOX_CAPTURE_PATH} {_SANDBOX_INPUT_PATH}",
                 timeout=timeout,
+                cwd="/tmp",
             )
             stdout = out.stdout or ""
             payload = _extract_capture(stdout)
@@ -255,7 +260,7 @@ class StructuredHermesActor:
                 children=children,
                 ok=bool(payload.get("ok")),
                 error=str(payload.get("error") or ""),
-                session_id=None,
+                session_id=payload.get("session_id") or session_id,
                 system_prompt=payload.get("system_prompt") or "",
                 tools=payload.get("tools") or [],
                 api_calls=payload.get("api_calls", 0),

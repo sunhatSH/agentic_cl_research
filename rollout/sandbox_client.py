@@ -165,12 +165,10 @@ class E2BSandbox:
 
         if language != "python":
             return ExecResult("", f"E2BSandbox supports python only, got {language}", False)
-        # commands.run drives a shell; wrap the Python code with python3 -c.
-        # shlex.quote safely handles quotes / special chars in the code body.
         cmd = f"python3 -c {shlex.quote(code)}"
         try:
-            out = self._sb.commands.run(cmd, timeout=self._timeout)
-        except Exception as exc:  # noqa: BLE001 — surface network/SDK errors to rollout
+            out = self._sb.commands.run(cmd, timeout=self._timeout, cwd="/tmp")
+        except Exception as exc:
             return ExecResult("", str(exc), False)
         stdout = (out.stdout or "").strip()
         stderr = (out.stderr or "").strip()

@@ -150,8 +150,8 @@ def main() -> None:
     try:
         spec = json.load(open(in_path, encoding="utf-8"))
         query = spec["query"]
-        history = spec.get("history") or []
         max_iter = int(spec.get("max_iterations", 30))
+        session_id = spec.get("session_id") or None
 
         _install_patches()
         import inspect
@@ -179,10 +179,12 @@ def main() -> None:
             "max_iterations": max_iter,
             "save_trajectories": False,
             "quiet_mode": True,
-            "persist_session": False,
+            "persist_session": True,
             "skip_memory": True,
             "skip_context_files": True,
         }
+        if session_id:
+            want["session_id"] = session_id
         try:
             sig_params = set(inspect.signature(run_agent.AIAgent.__init__).parameters)
         except (TypeError, ValueError):
@@ -194,9 +196,10 @@ def main() -> None:
         with _CHILD_SINK_LOCK:
             _CHILD_SINK[run_token] = []
 
-        # Multi-turn continuation: pass prior structured messages as history.
+        # Session resume: pass session_id so hermes loads its own persistent state.
+        # conversation_history is NOT passed — hermes manages its own context.
         res = agent.run_conversation(
-            query, conversation_history=history or None, task_id=run_token
+            query, task_id=session_id or run_token
         )
 
         cap = getattr(agent, "_cap", None) or {}
@@ -208,6 +211,17 @@ def main() -> None:
         # independent fields (matching nairong/荣磊's schema) so downstream can
         # reassemble the full system context at training time.
         msgs = cap.get("messages") or (res or {}).get("messages") or []
+        # Rename hermes' "reasoning" to "reasoning_content" + parse tool_calls arguments.
+        for _m in msgs:
+            if _m.get("role") == "assistant" and "reasoning" in _m and "reasoning_content" not in _m:
+                _m["reasoning_content"] = _m.pop("reasoning")
+            for _tc in _m.get("tool_calls") or []:
+                _args = _tc.get("function", {}).get("arguments")
+                if isinstance(_args, str):
+                    try:
+                        _tc["function"]["arguments"] = json.loads(_args)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
         result_out["messages"] = msgs
         result_out["system_prompt"] = cap.get("system_prompt") or ""
         result_out["ephemeral_system_prompt"] = cap.get("ephemeral_system_prompt") or ""
@@ -217,6 +231,14 @@ def main() -> None:
         result_out["children"] = _child_messages(child_caps)
         result_out["ok"] = bool((res or {}).get("completed", True)) and not (res or {}).get("error")
         result_out["error"] = str((res or {}).get("error") or "")
+        # Surfacing session_id so the caller can pass it back for the next turn.
+        # hermes may return it in the result dict OR as an agent attribute.
+        _sid = (
+            (res or {}).get("session_id")
+            or getattr(agent, "session_id", None)
+            or session_id
+        )
+        result_out["session_id"] = _sid
     except Exception as exc:  # fail loud into the output payload
         result_out["ok"] = False
         result_out["error"] = f"{type(exc).__name__}: {exc}"

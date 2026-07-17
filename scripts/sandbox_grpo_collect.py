@@ -95,14 +95,45 @@ class SlotTrajectory:
     qc_codes: list[str] = field(default_factory=list)  # QC failure-mode codes tripped
 
     def to_jsonl(self) -> str:
-        raw = json.dumps(asdict(self), ensure_ascii=False)
-        # Hermes tool outputs can contain bytes that are not valid UTF-8
-        # (binary file fragments, corrupted terminal output). Python's
-        # "surrogateescape" error handler preserves these as lone surrogates,
-        # but json.dumps may then emit them as-is, breaking downstream parsers.
-        # We use "backslashreplace" so invalid bytes become \xNN sequences —
-        # the JSON stays valid AND the original byte values are recoverable
-        # (unlike "replace" which silently substitutes �).
+        # Standard OpenAI intermediate format (agent_data_tools compatible).
+        msgs = list(self.messages)
+        # Inject system_prompt as the first system message if present and not already in messages.
+        if self.system_prompt and not any(m.get("role") == "system" for m in msgs):
+            msgs.insert(0, {"role": "system", "content": self.system_prompt})
+        # Clean up tool messages and normalize assistant fields.
+        for m in msgs:
+            if m.get("role") == "tool":
+                if "success" not in m:
+                    m["success"] = True
+                m.pop("tool_name", None)
+            if m.get("role") == "assistant":
+                m.pop("finish_reason", None)
+            if m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    tc.pop("call_id", None)
+                    tc.pop("response_item_id", None)
+
+        obj = {
+            "status": "completed" if not self.error else "error",
+            "total_steps": sum(1 for m in msgs if m.get("role") in ("assistant", "tool")),
+            "enable_thinking": True,
+            "messages": msgs,
+            "tools": self.tools,
+            "metadata": {
+                "bucket": self.bucket,
+                "persona_name": self.persona_name,
+                "num_turns": self.num_turns,
+                "ended_by": self.ended_by,
+                "api_calls": self.api_calls,
+                "partial": self.partial,
+                "sandbox_id": self.sandbox_id,
+                "query_index": self.query_index,
+                "reward": self.reward,
+                "error": self.error,
+                "observer_reports": self.observer_reports,
+            },
+        }
+        raw = json.dumps(obj, ensure_ascii=False)
         try:
             raw.encode("utf-8")
         except UnicodeEncodeError:
@@ -138,7 +169,7 @@ def _write_hermes_config(sb: Any, model: str, base: str) -> ExecResult:
         "home  = os.path.expanduser('~')\n"
         "os.makedirs(home + '/.hermes', exist_ok=True)\n"
         # hermes config
-        "cfg = {'model': model, 'providers': {'agent': {'base_url': base, 'api_key': key, 'kind': 'openai'}}}\n"
+        "cfg = {'model': model, 'providers': {'agent': {'base_url': base, 'api_key': key}}}\n"
         "open(home + '/.hermes/config.yaml', 'w').write(yaml.safe_dump(cfg, sort_keys=False))\n"
         "open(home + '/.hermes/.env', 'w').write('OPENAI_API_KEY=' + key + chr(10))\n"
         # Serper search CLI — hermes doesn't natively support Serper, so we
@@ -371,7 +402,7 @@ def _run_one_collect_query(
     rng_seed: int = 0,
     workspace_dir: str | None = None,
     observer_log: Path | None = None,
-    actor_impl: str = "hermes_cli",
+    actor_impl: str = "hermes_structured",
 ) -> SlotTrajectory:
     """Full lifecycle for ONE query in collect mode (multi-turn, no reward/winner).
 
@@ -436,18 +467,16 @@ def _run_one_collect_query(
         turn = 0
         ended_by = "k_budget"
         cur_query: str | None = query
-        session_sid: str | None = None
+        session_sid: str | None = sid  # use sandbox_id as stable session key across turns
 
         while cur_query is not None:
             turn += 1
-            # Actor facade: run one turn. hermes_cli reproduces the prior
-            # `hermes chat` stdout behavior exactly; hermes_structured (P2) returns
-            # structured messages + sub-agent children. Loop code is impl-agnostic.
             aturn = actor_obj.run_turn(
-                sb, cur_query, conversation_history=all_messages,
+                sb, cur_query,
                 model=actor_model, base=actor_base,
                 max_turns=hermes_max_turns, timeout=slot_timeout,
                 resume_sid=session_sid,
+                session_id=session_sid,
             )
             if aturn.session_id:
                 session_sid = aturn.session_id
@@ -624,6 +653,13 @@ def run_session(
     if max_concurrent > 1:
         if actor != "hermes":
             raise ValueError("parallel mode requires --actor hermes")
+
+        # Dev-side agents for multi-turn (observer/questioner).
+        from agents.observer import Observer
+        from agents.questioner import Questioner
+        _observer = Observer(use_llm=False)  # deterministic, no LLM cost
+        _questioner = Questioner()
+
         total = len(tasks)
         done = 0
         t0 = time.time()
@@ -637,6 +673,7 @@ def run_session(
                 max_turns=max_turns, hermes_max_turns=hermes_max_turns,
                 slot_timeout=slot_timeout,
                 backend=backend, template=template,
+                observer=_observer, questioner=_questioner,
             )
             done += 1
             if done % max(1, total // 20) == 0:
@@ -824,7 +861,7 @@ def _load_queries(queries_path: str, num_queries: int | None) -> list[dict[str, 
                 "bucket": obj.get("bucket", ""),
                 "persona_name": obj.get("persona_name", "random"),
             })
-            if num_queries is not None and len(tasks) >= num_queries:
+            if num_queries and len(tasks) >= num_queries:
                 break
     return tasks
 
@@ -848,7 +885,7 @@ def main() -> None:
                     help="run_code = framework smoke (no model); hermes = real in-sandbox actor")
     ap.add_argument("--mode", choices=["grpo", "collect"], default="grpo",
                     help="grpo = full judge+winner; collect = pure trajectory collection (no judge/winner)")
-    ap.add_argument("--num-queries", type=int, default=2, help="N queries (sequential)")
+    ap.add_argument("--num-queries", type=int, default=0, help="0=all queries; N=first N queries only")
     ap.add_argument("--slots", type=int, default=8, help="parallel sandboxes per query (GRPO group size)")
     ap.add_argument("--backend", default="e2b", choices=["e2b", "local"])
     ap.add_argument("--template", default="agentic-cl-sandbox")
@@ -888,7 +925,7 @@ def main() -> None:
 
     tasks: list[dict[str, Any]]
     if args.queries:
-        tasks = _load_queries(args.queries, args.num_queries)
+        tasks = _load_queries(args.queries, args.num_queries or None)
         print(f"[grpo] loaded {len(tasks)} queries from {args.queries}", flush=True)
     else:
         tasks = _load_tasks(args.tasks, args.num_queries)
