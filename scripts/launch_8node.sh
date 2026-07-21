@@ -6,7 +6,7 @@
 # Node list (rank -> IP). Rank 0 = this current node (use its own IP or 127.0.0.1).
 # Edit NODES if the cluster changes.
 set -euo pipefail
-ROOT_DIR=/mnt/afs_toolcall/sunhao4/agentic_cl_research
+ROOT_DIR=/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research
 
 # rank0 first; these are the 8 pod IPs (rank0 = the node you launch from).
 NODES=(

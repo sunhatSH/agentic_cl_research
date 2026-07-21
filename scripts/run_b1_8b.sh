@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch B1 8B training on single-node 8 GPU (Qwen3-8B).
+# Launch B1 9B training on single-node 8 GPU (Qwen3.5-9B).
 # Sets up: py310_base conda env + PYTHONPATH (LightLLM/verl/project) + .env creds.
 set -euo pipefail
 
@@ -16,21 +16,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
-PROJECT_DIR=/mnt/afs_toolcall/sunhao4/agentic_cl_research
-LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/Documents/LightLLM
-VERL_DIR=/mnt/afs_toolcall/sunhao4/Documents/verl
-CONDA_ENV=/mnt/afs_toolcall/sunhao4/miniconda3/envs/py310_base
+PROJECT_DIR=/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research
+LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/workspace/LightLLM
+VERL_DIR=/mnt/afs_toolcall/sunhao4/workspace/verl
+CONDA_ENV=/opt/conda
 
-# --- Python env (py310_base has torch/ray/vllm/verl-deps installed) ---
+# --- Python env ---
 export PATH="$CONDA_ENV/bin:$PATH"
 export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$PROJECT_DIR"
-export PYTHONPATH="/tmp/flash_attn_shim_pkg:$PYTHONPATH"
 export PYTHON=$CONDA_ENV/bin/python
 
-# --- CUDA runtime libs (nvidia/*/lib) so lightllm rollout subprocesses can load
-#     libcudart.so.13 / cudnn / nccl. Without this, forked model procs die with
-#     "libcudart.so.13: cannot open shared object file" -> assert proc.is_alive() fails. ---
-_NV_LIB_ROOT="$CONDA_ENV/lib/python3.10/site-packages/nvidia"
+# --- CUDA runtime libs ---
+_NV_LIB_ROOT="$CONDA_ENV/lib/python3.11/site-packages/nvidia"
 if [ -d "$_NV_LIB_ROOT" ]; then
   for _d in "$_NV_LIB_ROOT"/*/lib; do
     [ -d "$_d" ] && LD_LIBRARY_PATH="$_d:${LD_LIBRARY_PATH:-}"
@@ -42,7 +39,6 @@ fi
 export HF_DATASETS_CACHE=/tmp/hf_datasets_cache
 export HF_HOME=/tmp/hf_home
 export HF_HUB_OFFLINE=1              # 模型在本地，不走 hub 校验
-export TOKENIZERS_PARALLELISM=false
 
 # --- Training credentials (.env: SWANLAB_API_KEY + SUFY_API_KEY + TOKENHUB_API_KEY) ---
 source "$PROJECT_DIR/scripts/load_training_env.sh"
@@ -52,9 +48,9 @@ source "$PROJECT_DIR/scripts/load_training_env.sh"
 export MODELING_BACKEND=hf
 
 # --- Checkpoint + log dirs ---
-export CKPT_DIR="$PROJECT_DIR/ckpts/qwen3_8b_b1"
-export ROLLOUT_DATA_DIR="$PROJECT_DIR/logs/experiments/run/qwen3_8b_b1/rollout"
-export VAL_DATA_DIR="$PROJECT_DIR/logs/experiments/run/qwen3_8b_b1/val"
+export CKPT_DIR="$PROJECT_DIR/ckpts/qwen35_9b_b1"
+export ROLLOUT_DATA_DIR="$PROJECT_DIR/logs/experiments/run/qwen35_9b_b1/rollout"
+export VAL_DATA_DIR="$PROJECT_DIR/logs/experiments/run/qwen35_9b_b1/val"
 mkdir -p "$CKPT_DIR" "$ROLLOUT_DATA_DIR" "$VAL_DATA_DIR"
 
 # --- Logger: console + swanlab (so we can watch loss live) ---
@@ -62,12 +58,12 @@ export VERL_LOGGER="[console,swanlab]"
 
 cd "$PROJECT_DIR"
 echo "[run_b1_8b] python: $(python --version)"
-echo "[run_b1_8b] model: /mnt/afs_toolcall/sunhao4/models/Qwen3-8B"
+echo "[run_b1_8b] model: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B"
 echo "[run_b1_8b] config: configs/run/b1_8b.yaml"
 echo "[run_b1_8b] gpus: $(python -c 'import torch;print(torch.cuda.device_count())')"
 echo "[run_b1_8b] swanlab key: ${SWANLAB_API_KEY:+present}"
 echo "[run_b1_8b] starting training..."
 
-python -m trainer.cl_main --config configs/run/b1_8b.yaml 2>&1 | tee "$PROJECT_DIR/logs/experiments/run/qwen3_8b_b1/train.log" &
+python -m trainer.cl_main --config configs/run/b1_8b.yaml 2>&1 | tee "$PROJECT_DIR/logs/experiments/run/qwen35_9b_b1/train.log" &
 _TRAIN_PID=$!
 wait $_TRAIN_PID || true

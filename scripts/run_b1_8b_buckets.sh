@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# B1 bucket-sequential training (8B): catastrophic forgetting baseline.
+# B1 bucket-sequential training (9B): catastrophic forgetting baseline.
 # Trains 9 buckets in order. Each bucket starts from the previous bucket's ckpt.
 # No KL, no replay — measures forgetting caused by sequential learning.
 set -euo pipefail
@@ -19,16 +19,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-PROJECT_DIR=/mnt/afs_toolcall/sunhao4/agentic_cl_research
-LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/Documents/LightLLM
-VERL_DIR=/mnt/afs_toolcall/sunhao4/Documents/verl
-CONDA_ENV=/mnt/afs_toolcall/sunhao4/miniconda3/envs/py310_base
+PROJECT_DIR=/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research
+LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/workspace/LightLLM
+VERL_DIR=/mnt/afs_toolcall/sunhao4/workspace/verl
+CONDA_ENV=/opt/conda
 
 export PATH="$CONDA_ENV/bin:$PATH"
 export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$PROJECT_DIR:$PROJECT_DIR/docker/qwen36-lightllm/flash_attn_shim"
 export PYTHON=$CONDA_ENV/bin/python
 
-_NV_LIB_ROOT="$CONDA_ENV/lib/python3.10/site-packages/nvidia"
+_NV_LIB_ROOT="$CONDA_ENV/lib/python3.11/site-packages/nvidia"
 if [ -d "$_NV_LIB_ROOT" ]; then
   for _d in "$_NV_LIB_ROOT"/*/lib; do
     [ -d "$_d" ] && LD_LIBRARY_PATH="$_d:${LD_LIBRARY_PATH:-}"
@@ -45,11 +45,11 @@ export VERL_LOGGER="[console,swanlab]"
 
 source "$PROJECT_DIR/scripts/load_training_env.sh"
 
-BASE_MODEL=/mnt/afs_toolcall/sunhao4/models/Qwen3-8B
+BASE_MODEL=/mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
 TEMPLATE="$PROJECT_DIR/configs/run/b1_8b.yaml"
 DATASETS_DIR="$PROJECT_DIR/datasets"
-CKPT_BASE="$PROJECT_DIR/ckpts/qwen3_8b_b1"
-LOG_DIR="$PROJECT_DIR/logs/experiments/run/qwen3_8b_b1"
+CKPT_BASE="$PROJECT_DIR/ckpts/qwen35_9b_b1"
+LOG_DIR="$PROJECT_DIR/logs/experiments/run/qwen35_9b_b1"
 
 # 9 buckets, steps proportional to data size (total 50)
 BUCKETS=(
@@ -87,7 +87,7 @@ for entry in "${BUCKETS[@]}"; do
     "trainer.save_freq=$STEPS" \
     "trainer.test_freq=$STEPS" \
     "trainer.default_local_dir=$BUCKET_CKPT" \
-    "trainer.experiment_name=qwen3_8b_b1_$BUCKET" \
+    "trainer.experiment_name=qwen35_9b_b1_$BUCKET" \
     2>&1 | tee "$LOG_DIR/$BUCKET/train.log" &
   _TRAIN_PID=$!
   wait $_TRAIN_PID || true

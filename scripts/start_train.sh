@@ -16,9 +16,9 @@ set -uo pipefail
 
 # 全部走 AFS 共享挂载（集群各节点都能访问）。verl/LightLLM 已拷至自己 AFS 目录
 # （含 lightllm_rollout + recipe_custom），与外部目录解耦。
-PROJECT_DIR=/mnt/afs_toolcall/sunhao4/agentic_cl_research
-LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/Documents/LightLLM
-VERL_DIR=/mnt/afs_toolcall/sunhao4/Documents/verl
+PROJECT_DIR=/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research
+LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/workspace/LightLLM
+VERL_DIR=/mnt/afs_toolcall/sunhao4/workspace/verl
 # SenseCore 多机变量映射(与 run_phases.sh 共用)。
 source "$(dirname "$0")/_sensecore_env.sh"
 # 默认先跑 b1（无 replay，最简单，仍走你的 CL loss）验证 mock 链路；

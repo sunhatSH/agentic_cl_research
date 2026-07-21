@@ -5,7 +5,7 @@
 #
 # Args (env): NODE_RANK (required), NUM_NODES (default 8)
 set -euo pipefail
-ROOT_DIR=/mnt/afs_toolcall/sunhao4/agentic_cl_research
+ROOT_DIR=/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research
 cd "$ROOT_DIR"
 
 NODE_RANK="${NODE_RANK:?NODE_RANK required}"

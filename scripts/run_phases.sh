@@ -21,9 +21,9 @@ set -uo pipefail
 
 # 全部走 AFS 共享挂载（集群各节点都能访问）。verl/LightLLM 已拷至自己 AFS 目录
 # （含 lightllm_rollout + recipe_custom），与外部目录解耦。
-PROJECT_DIR=/mnt/afs_toolcall/sunhao4/agentic_cl_research
-LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/Documents/LightLLM
-VERL_DIR=/mnt/afs_toolcall/sunhao4/Documents/verl
+PROJECT_DIR=/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research
+LIGHTLLM_DIR=/mnt/afs_toolcall/sunhao4/workspace/LightLLM
+VERL_DIR=/mnt/afs_toolcall/sunhao4/workspace/verl
 SRC_MODEL=/mnt/afs_agents/share_models/Qwen/Qwen3.6-27B
 
 # SenseCore 多机变量映射(RANK/MASTER_ADDR/MASTER_PORT/NNODES 兼容注入)。

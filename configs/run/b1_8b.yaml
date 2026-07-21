@@ -1,9 +1,9 @@
-# Phase 1 / B1 — 8B 单机 8GPU 可运行配置（Qwen3-8B）。
+# Phase 1 / B1 — 9B 单机 8GPU 可运行配置（Qwen3.5-9B）。
 # = verl 引擎默认 + base overlay + B1 语义（无 KL、无 replay）+ lightllm 引擎。
 # B1：纯 RL 遗忘基线，量化灾难性遗忘程度（遗忘下界）。
 #
 # 与 production_27b 共享 base.yaml 的算法默认值（train_batch=256, W0 flat weighting），
-# 仅在模型/硬件/并行度上分叉到 8B + 8 GPU。
+# 仅在模型/硬件/并行度上分叉到 9B + 8 GPU。
 #
 # 启动: bash scripts/train.sh configs/run/b1_8b.yaml
 #   (train.sh 自动 source load_training_env.sh；reward judge 走 sufy claude-4.8-opus)
@@ -12,10 +12,10 @@ defaults:
   - ../_generated_ppo_trainer
   - ../base
 
-# ── 模型（Qwen3-8B）──────────────────────────────────────────────────────────
+# ── 模型（Qwen3.5-9B）──────────────────────────────────────────────────────────
 actor_rollout_ref:
   model:
-    path: /mnt/afs_toolcall/sunhao4/models/Qwen3-8B
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
     use_fused_kernels: false
     override_config:
       attn_implementation: sdpa   # avoid flash_attn dep (not installed)
@@ -61,14 +61,16 @@ actor_rollout_ref:
     engine_kwargs:
       lightllm:
         batch_max_tokens: 8192
-        enable_multimodal: false     # Qwen3-8B 是纯文本模型
+        enable_multimodal: false     # Qwen3.5-9B 纯文本用 disable_vision/audio
         enable_torch_memory_saver: true
         graph_max_batch_size: 64
         running_max_req_size: 64
         sampling_backend: triton
+        disable_vision: true
+        disable_audio: true
 
   ref:
-    path: /mnt/afs_toolcall/sunhao4/models/Qwen3-8B
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
     log_prob_micro_batch_size_per_gpu: 4
     fsdp_config:
       param_offload: false
@@ -82,8 +84,8 @@ reward:
 
 # ── 数据：能力桶打标产物 ──────────────────────────────────────────────────────
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/agentic_cl_research/datasets/train.parquet
-  val_files: /mnt/afs_toolcall/sunhao4/agentic_cl_research/datasets/val.parquet
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
+  val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet
   train_batch_size: 256
   gen_batch_size: 256
   max_prompt_length: 4096
@@ -112,8 +114,8 @@ trainer:
   logger: console
   log_val_generations: 50
   project_name: agentic-cl
-  experiment_name: qwen3_8b_b1
-  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen3_8b_b1}
+  experiment_name: qwen35_9b_b1
+  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_b1}
 
 # ── Ray：单机本地集群 ─────────────────────────────────────────────────────────
 ray_kwargs:

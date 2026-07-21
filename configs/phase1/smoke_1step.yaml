@@ -13,7 +13,7 @@
 # 启动: bash scripts/phase1/run_smoke.sh   (或直接 python -m trainer.cl_main --config 本文件)
 
 defaults:
-  - /mnt/afs_toolcall/sunhao4/verl/verl/trainer/config/_generated_ppo_trainer.yaml
+  - /mnt/afs_toolcall/sunhao4/workspace/verl/verl/trainer/config/_generated_ppo_trainer.yaml
   - ../base
 
 # ---- B1 语义（与 b1.yaml 一致）-------------------------------------------------
@@ -37,9 +37,14 @@ cl:
 # ---- 模型 / 参考策略（覆盖 base.yaml 的 ???）----------------------------------
 actor_rollout_ref:
   model:
-    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.6-27B
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    use_fused_kernels: false
+    override_config:
+      attn_implementation: sdpa   # 绕过 veomni flash_attn patch 的并行状态校验
+                                  # (compute_log_prob 时 FSDP world_size=4 与
+                                  #  veomni 默认 sp=1 不兼容) — 与 b1_8b.yaml 对齐
   ref:
-    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.6-27B
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
     fsdp_config:
       param_offload: true
 
@@ -53,29 +58,46 @@ actor_rollout_ref:
     ppo_mini_batch_size: 4       # 必须 <= train_batch_size
     ppo_micro_batch_size_per_gpu: 1
     fsdp_config:
-      param_offload: true        # 27B 在 4 卡上 offload 省显存
-      optimizer_offload: true
+      param_offload: false        # 9B 模型分片仅 4.5G/卡，不卸载
+      optimizer_offload: true     # Adam state 9G/卡搬到 CPU，给训练腾空间
 
   rollout:
-    name: vllm                   # verl 默认是 None，必须显式指定
-    mode: sync                   # smoke 用 sync（避开 async server 复杂度）
-    tensor_model_parallel_size: 4  # 4 卡全给 vllm rollout 的 TP
-    gpu_memory_utilization: 0.45   # 与 FSDP actor colocate，留余量
+    name: lightllm               # 推理引擎
+    mode: async
+    tensor_model_parallel_size: 2  # TP=2：lightllm 只占 GPU0-1，GPU2-3 纯训练
+    gpu_memory_utilization: 0.20   # TP=2 时 GPU0-1 上 lightllm 模型 9G + KV~7G=16G
+                                   # FSDP backward 峰值 ~48G，合计 ~64G < 80G
     load_format: auto            # 加载真权重（dummy=随机权重）
     max_model_len: 2048
-    max_num_seqs: 8
+    max_num_batched_tokens: 8192
+    enable_chunked_prefill: false
+    calculate_log_probs: true
     n: 2                         # GRPO 组大小（base 是 8，smoke 压到 2）
     log_prob_micro_batch_size_per_gpu: 1  # rollout log_prob 重算 micro-batch（verl 必填）
-    # gdn triton fix：绕过 Qwen3.6 GDN FlashInfer 死锁（同任务1）
+    # smoke 不验沙箱多轮：不设 multi_turn（verl 默认 enable=False，走单轮 single_turn_agent），
+    # 只验引擎链路。cluster.yaml 的 multi_turn(qwen3_coder + max_turns) 是集群多轮沙箱用的。
+    checkpoint_engine:
+      # 8B 不存在 27B 的 colocate OOM 问题，naive backend 即可。
+      # nccl backend 与 lightllm_rollout 不兼容（rollout worker 无 execute_checkpoint_engine），勿用。
+      update_weights_bucket_megabytes: 3072
+    # lightllm 引擎参数（对齐 cluster.yaml engine_kwargs.lightllm.*，透传给 StartArgs）
     engine_kwargs:
-      vllm:
-        additional_config:
-          gdn_prefill_backend: triton
+      lightllm:
+        batch_max_tokens: 8192
+        enable_torch_memory_saver: false  # 关：colocate 权重同步 resume 阶段 OOM（cu_mem_create）
+        graph_max_batch_size: 8
+        running_max_req_size: 8
+        sampling_backend: sglang_kernel
+        # Qwen3.6 纯文本 smoke：关视觉+音频（两者都关 → enable_multimodal=False），
+        # 绕开加载 visualserver 时触发的 sgl_kernel/cutlass 版本错配崩溃
+        # (AttributeError: nvvm has no 'RoundingModeKind')。多模态本就不在训练目标内。
+        disable_vision: true
+        disable_audio: true
 
 # ---- 数据（覆盖 base.yaml 的 ???，用最小 parquet）----------------------------
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/agentic_cl_research/data/mock/datasets/train.parquet
-  val_files: /mnt/afs_toolcall/sunhao4/agentic_cl_research/data/mock/datasets/train.parquet
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
+  val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet
   train_batch_size: 4
   gen_batch_size: 4
   max_prompt_length: 1024
@@ -84,19 +106,20 @@ data:
   dataloader_num_workers: 1
   cache_dir: /tmp/verl_rlhf_cache
 
-# ---- trainer：1 step、不存 ckpt、不跑 val、不用 wandb ------------------------
+# ---- trainer：20 steps，5步存checkpoint，10步val ------------------------
 trainer:
   nnodes: 1
   n_gpus_per_node: 4
   total_epochs: 1
-  total_training_steps: 1        # 只跑 1 step
-  save_freq: -1                  # 不存 checkpoint
-  test_freq: -1                  # 不跑 val
+  total_training_steps: 20
+  save_freq: 10                 # 每 10 step 存 checkpoint
+  test_freq: 10                 # 每 10 step 跑 val
   val_before_train: false        # 跳过训练前 val（也需 judge/rollout）
   logger: ['console']            # 不用 wandb
   critic_warmup: 0
   project_name: cl_smoke
-  experiment_name: smoke_1step_b1
+  experiment_name: smoke_20step_b1
+  default_local_dir: /tmp/verl_checkpoints/smoke_20step_b1   # 本地 ext4，避 AFS 竞态
 
 # ---- Ray：强制本机新起 local 集群，不去探测/连接残留的旧集群 -----------------
 # 不传 address 时 ray.init() 会读 /tmp/ray/ray_current_cluster 自动连旧集群；

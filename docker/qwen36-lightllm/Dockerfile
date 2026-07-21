@@ -23,7 +23,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN python -m pip install -U "tensordict>=0.8.0,<=0.10.0"
 RUN python -m pip install -U \
         "accelerate==1.13.0" \
-        "nvidia-cutlass-dsl>=4.4.2" \
+        "nvidia-cutlass-dsl>=4.4.2,<4.6" \
         "transformers==5.12.0"
 RUN python -m pip install \
         "e2b==2.24.0" \
@@ -139,6 +139,12 @@ RUN npm install -g @openai/codex
 RUN python -m pip install flash-attn --no-build-isolation 2>&1 | grep -E "Successfully|error" || echo "flash-attn install failed (expected on CUDA 13.0), shim will cover"
 COPY docker/qwen36-lightllm/flash_attn_shim/ /opt/flash_attn_shim/
 ENV PYTHONPATH="/opt/flash_attn_shim:${PYTHONPATH}"
+
+# ---- vllm 文件权限修复（base 镜像个别 .py 为 640 root:root，非 root 不可读）----
+# routed_experts_capturer.py / qwen3_moe_mtp.py 出厂 o-x，import vllm 直接 PermissionError。
+# 正式训练走 lightllm 不用 vllm，但开发/调试 import 时会崩，补 o+r 兜底。
+RUN find /opt/conda/lib/python*/site-packages/vllm -name '*.py' ! -perm -o+r -exec chmod o+r {} + \
+    && echo "[docker] vllm permissions fixed"
 
 
 WORKDIR /workspace
