@@ -112,14 +112,13 @@ trainer:
   n_gpus_per_node: 4
   total_epochs: 1
   total_training_steps: 20
-  save_freq: 10                 # 每 10 step 存 checkpoint
+  save_freq: 20                 # 只在最后一步存 checkpoint
   test_freq: 10                 # 每 10 step 跑 val
   val_before_train: false        # 跳过训练前 val（也需 judge/rollout）
   logger: ['console']            # 不用 wandb
   critic_warmup: 0
   project_name: cl_smoke
   experiment_name: smoke_20step_b1
-  default_local_dir: /tmp/verl_checkpoints/smoke_20step_b1   # 本地 ext4，避 AFS 竞态
 
 # ---- Ray：强制本机新起 local 集群，不去探测/连接残留的旧集群 -----------------
 # 不传 address 时 ray.init() 会读 /tmp/ray/ray_current_cluster 自动连旧集群；

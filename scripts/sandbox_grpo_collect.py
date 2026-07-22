@@ -163,7 +163,12 @@ def _write_hermes_config(sb: Any, model: str, base: str) -> ExecResult:
     """
     code = (
         "import os, yaml, subprocess, stat\n"
-        f"model = os.environ.get('AGENT_MODEL_NAME', {model!r})\n"
+        # The passed model ({model!r}) takes priority over the sandbox's injected
+        # AGENT_MODEL_NAME. Earlier the env was read first, so --actor-model was
+        # silently overridden by runtime.env's model (e.g. deepseek-v4-pro request
+        # ran as openai/gpt-5.5 → no reasoning_content). Passed model wins; only
+        # fall back to the sandbox env when the caller passed an empty model.
+        f"model = {model!r} or os.environ.get('AGENT_MODEL_NAME', '')\n"
         f"base  = os.environ.get('AGENT_MODEL_BASE', {base!r})\n"
         "key   = os.environ['AGENT_MODEL_KEY']\n"  # MUST be injected, else fail loud
         "home  = os.path.expanduser('~')\n"
@@ -604,19 +609,11 @@ def _run_one_collect_query(
     t.slot_idx = 0
     t.sandbox_id = sid
     t.bucket = bucket
-    # Failure-mode QC (P3): audit the structured trajectory + sub-agent children.
-    # Only meaningful for structured actors (tool_calls present); on flattened
-    # trajectories the tool checks are inert. Marks qc_hard for the write path to
-    # drop (HARD = tool hallucination / truncation / loop / empty-turn / XML leak).
-    if not t.error:
-        try:
-            from scripts.qc_trajectory import audit_trajectory
-
-            _qc = audit_trajectory({"messages": t.messages, "children": t.children})
-            t.qc_hard = _qc["hard"]
-            t.qc_codes = _qc["codes"]
-        except Exception:  # noqa: BLE001 — QC must never break collection
-            pass
+    # QC is now a post-collection pipeline step, NOT inline during collection.
+    # Replaced qc_trajectory (project-internal) with quality-check/ external tools:
+    #   (1) agent_data_tools validate-openai  — rule-based filtering
+    #   (2) LLMChecker                          — LLM-based multi-round annotation
+    # See scripts/qc_cold_start.py / scripts/qc_cold_start.sh.
     return t
 
 

@@ -39,20 +39,94 @@ _PATCHED = False
 
 
 def _install_patches():
-    """Wrap run_conversation (stash structured result) + _run_single_child
-    (harvest each delegated child's trajectory). Idempotent."""
+    """Wrap run_conversation (stash structured result) + _build_assistant_message
+    (harvest reasoning_content per API response — the final result.messages
+    history strips it) + _run_single_child (harvest delegated child traj). Idempotent."""
     global _PATCHED
     if _PATCHED:
         return
     import run_agent
+
+    # ── reasoning_content capture ────────────────────────────────────────
+    # DeepSeek/thinking models return reasoning_content in the API response,
+    # but hermes' final result.messages strips it. We intercept the OpenAI SDK
+    # `Completions.create` and accumulate reasoning per API call (streaming:
+    # sum delta.reasoning_content across chunks; non-streaming: read directly).
+    # Reasonings are collected in call order, then re-attached to assistant
+    # messages in result.messages (same order) in _wrapped_run.
+    _REASONING_ORDER: list[str] = []   # one entry per assistant API response, in order
+    _REASONING_LOCK = threading.Lock()
+
+    def _extract_rc_from_message(msg_obj) -> str:
+        """Read reasoning_content from a non-streaming ChatCompletion message."""
+        rc = getattr(msg_obj, "reasoning_content", None)
+        if rc is None and hasattr(msg_obj, "model_extra"):
+            me = msg_obj.model_extra or {}
+            rc = me.get("reasoning_content")
+        return rc or ""
+
+    try:
+        from openai.resources.chat.completions import Completions
+
+        _orig_create = Completions.create
+
+        def _patched_create(self, *a, **k):
+            resp = _orig_create(self, *a, **k)
+            if k.get("stream"):
+                acc: list[str] = []
+
+                def _gen():
+                    for chunk in resp:
+                        try:
+                            for ch in getattr(chunk, "choices", []) or []:
+                                delta = getattr(ch, "delta", None)
+                                if delta is None:
+                                    continue
+                                rc = getattr(delta, "reasoning_content", None)
+                                if rc is None and hasattr(delta, "model_extra"):
+                                    rc = (delta.model_extra or {}).get("reasoning_content")
+                                if rc:
+                                    acc.append(rc)
+                        except Exception:
+                            pass
+                        yield chunk
+                    # record accumulated reasoning for this API call (may be "")
+                    with _REASONING_LOCK:
+                        _REASONING_ORDER.append("".join(acc))
+
+                return _gen()
+            else:
+                # non-streaming: read reasoning directly, record in order
+                try:
+                    msg0 = resp.choices[0].message
+                    with _REASONING_LOCK:
+                        _REASONING_ORDER.append(_extract_rc_from_message(msg0))
+                except Exception:
+                    pass
+                return resp
+
+        Completions.create = _patched_create
+    except Exception:
+        pass  # openai SDK layout changed → reasoning stays empty, not fatal
 
     _orig_run = run_agent.AIAgent.run_conversation
 
     def _wrapped_run(self, *a, **k):
         result = _orig_run(self, *a, **k)
         try:
+            msgs = (result or {}).get("messages") if isinstance(result, dict) else None
+            # Re-attach captured reasoning to assistant messages, in order.
+            if msgs:
+                with _REASONING_LOCK:
+                    order = list(_REASONING_ORDER)
+                    _REASONING_ORDER.clear()
+                assistants = [m for m in msgs
+                              if isinstance(m, dict) and m.get("role") == "assistant"]
+                for m, rc in zip(assistants, order):
+                    if rc and rc.strip() and not (m.get("reasoning_content") or "").strip():
+                        m["reasoning_content"] = rc
             self._cap = {
-                "messages": (result or {}).get("messages") if isinstance(result, dict) else None,
+                "messages": msgs,
                 "completed": (result or {}).get("completed") if isinstance(result, dict) else None,
                 "partial": (result or {}).get("partial") if isinstance(result, dict) else None,
                 "error": (result or {}).get("error") if isinstance(result, dict) else None,
@@ -159,12 +233,21 @@ def main() -> None:
         import run_agent
 
         # Resolve the endpoint the SAME way the working `hermes chat -q` (oneshot)
-        # path does: hermes_cli.runtime_provider.resolve_runtime_provider(requested=
-        # "agent") returns {base_url, api_key, provider, api_mode, credential_pool}
-        # from ~/.hermes/config.yaml providers.agent. Reusing hermes' own resolver
-        # avoids reconstructing the URL/api_mode by hand (earlier hand-rolls hit
-        # HTTP 404 then Connection error). Falls back to a plain config read, then env.
-        model = os.environ.get("AGENT_MODEL_NAME", "")
+        # Model priority: ~/.hermes/config.yaml top-level `model` (written by
+        # _write_hermes_config with the caller's --actor-model) FIRST, then the
+        # sandbox-injected AGENT_MODEL_NAME. Reading env first silently ran every
+        # request as runtime.env's model (openai/gpt-5.5) regardless of
+        # --actor-model → thinking models never engaged, reasoning_content empty.
+        model = ""
+        try:
+            import yaml as _yaml
+            _cfg = _yaml.safe_load(
+                open(os.path.expanduser("~/.hermes/config.yaml"), encoding="utf-8")) or {}
+            model = str(_cfg.get("model") or "")
+        except Exception:
+            pass
+        if not model:
+            model = os.environ.get("AGENT_MODEL_NAME", "")
         runtime = _resolve_runtime("agent", model)
         base = runtime.get("base_url") or os.environ.get("AGENT_MODEL_BASE", "")
         key = runtime.get("api_key") or os.environ.get("AGENT_MODEL_KEY", "")
