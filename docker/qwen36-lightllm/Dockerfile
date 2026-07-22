@@ -27,7 +27,7 @@ RUN python -m pip install -U \
         "transformers==5.12.0"
 RUN python -m pip install \
         "e2b==2.24.0" \
-        "e2b-code-interpreter<3" \
+        "e2b-code-interpreter==2.8.1" \
         "flash-linear-attention==0.4.2" \
         langchain-openai \
         "mistral-common==1.11.2" \
@@ -35,7 +35,7 @@ RUN python -m pip install \
         "TransferQueue==0.1.6"
 # e2b-code-interpreter: 冷启动沙箱采集必需（rollout/sandbox_client.py 里
 #   `from e2b_code_interpreter import Sandbox`）。base 镜像只带 e2b（2.24.0）不带
-#   code-interpreter → 新容器起采集会 ModuleNotFoundError。<3 解析到 2.8.1，与 e2b 2.24 兼容。
+#   code-interpreter → 新容器起采集会 ModuleNotFoundError。2.8.1 与 e2b 2.24 实测兼容。
 
 # ---- 补齐 verl 0.8.0 训练链路依赖（base 镜像未必全有，对照 pyproject.toml）----
 # 这些是 verl 训练 + 本项目代码硬依赖；泽寰 base 是 verl 训练镜像大概率已带，但
@@ -81,6 +81,7 @@ need = {
     "TransferQueue": "0.1.6",
     "accelerate": "1.13.0",
     "e2b": "2.24.0",
+    "e2b-code-interpreter": "2.8.1",
 }
 for p, v in need.items():
     got = m.version(p)
@@ -96,10 +97,6 @@ print("[selfcheck] transformers qwen3_5 + Mistral OK")
 # --- 3. fla 可 import（Qwen3.6 GDN kernel）---
 import fla  # noqa: F401
 print("[selfcheck] fla import OK")
-
-# --- 3b. e2b code-interpreter 可 import（冷启动沙箱采集必需）---
-from e2b_code_interpreter import Sandbox  # noqa: F401
-print("[selfcheck] e2b_code_interpreter import OK")
 
 # --- 4. verl 训练链路依赖（对照 pyproject.toml + 训练代码 import）---
 verl_deps = [
