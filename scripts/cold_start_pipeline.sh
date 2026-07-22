@@ -94,6 +94,9 @@ fi
 echo "[pipeline] tag=$TAG out=$OUT model=$ACTOR_MODEL floors=$FLOORS overshoot=$OVERSHOOT smoke=$SMOKE" | tee "$LOG"
 
 _smoke_flag=""; [ "$SMOKE" = "1" ] && _smoke_flag="--smoke"
+# 正式采集固定「1 seed + Questioner 多轮追问」，不加开关。
+# 冒烟(--smoke)才 --no-usersim：跳过 observer/questioner LLM，只验采集链路。
+_usersim_flag=""; [ "$SMOKE" = "1" ] && _usersim_flag="--no-usersim"
 _borrow_flag=""; [ "$NO_BORROW" = "1" ] && _borrow_flag="--no-borrow"
 
 # ── 1. 构造补采就绪 queries（按桶分块 + borrow 去重）────────────────────────
@@ -124,7 +127,7 @@ while [ "$round" -lt "$MAX_ROUNDS" ]; do
 
   # 采集（incremental 幂等：只补 MISSING/FAILED，同一 out_dir + 同一 queries 行序）
   "$PY" scripts/run_cold_start.py \
-    --single-turn --actor-impl hermes_structured --actor-model "$ACTOR_MODEL" \
+    $_usersim_flag --actor-impl hermes_structured --actor-model "$ACTOR_MODEL" \
     --num-queries "$CUR_N" --max-concurrent "$MAX_CONCURRENT" --slot-timeout 900 \
     --collect-mode incremental $_smoke_flag \
     --out-dir "$OUT" --queries "$TOPUP_Q" \

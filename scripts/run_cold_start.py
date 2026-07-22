@@ -300,7 +300,8 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
 
     Multi-turn (default): actor(hermes) + observer + questioner drive up to
     K=randint(1,max_turns) turns per query. NO reward / NO winner (that's the
-    training stage). Set multi_turn=False for single-turn smoke.
+    training stage). multi_turn=False (--no-usersim) skips observer/questioner
+    for smoke/debug (seed only, no follow-up).
 
     Modes (which query_index to (re)run; success rows are NEVER re-run except
     in overwrite):
@@ -326,7 +327,7 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
         questioner = Questioner()
         print("  multi-turn: observer + questioner enabled (no reward/winner)")
     else:
-        print("  single-turn: seed query only (smoke)")
+        print("  --no-usersim（调试）：跳过 observer/questioner，只跑单个 seed task，无追问")
 
     tasks = _load_queries(str(queries_path), num_queries)
     total = len(tasks)
@@ -491,8 +492,13 @@ def main() -> None:
     ap.add_argument("--slot-timeout", type=int, default=900, help="per-sandbox timeout (s)")
     ap.add_argument("--collect-mode", choices=["overwrite", "incremental", "retry"],
                     default="incremental")
-    ap.add_argument("--single-turn", action="store_true",
-                    help="seed query only, no observer/questioner")
+    # 正式采集固定「1 个真实 seed task + Questioner 多轮在线追问」，无开关。
+    # --no-usersim 仅调试/冒烟用：跳过 observer/questioner（不连 sufy LLM），只跑 seed 验采集链路。
+    ap.add_argument("--no-usersim", "--single-task", "--single-turn", action="store_true",
+                    dest="no_usersim",
+                    help="调试/冒烟：跳过 observer/questioner（不连 sufy），只跑单个 seed task 验采集链路。"
+                         "正式采集不要用——正式会话固定 1 seed + 多轮追问。"
+                         "旧名 --single-task/--single-turn 作别名兼容。")
     ap.add_argument("--out-dir", default=None,
                     help="override output BASE dir (default <ROLLOUTS_ROOT>/{real|smoke}); "
                          "trajectory/<model>/ and debug/observer_report/<model>/ are created under it")
@@ -529,7 +535,7 @@ def main() -> None:
             hermes_max_turns=args.hermes_max_turns,
             slot_timeout=args.slot_timeout,
             mode=args.collect_mode,
-            multi_turn=not args.single_turn,
+            multi_turn=not args.no_usersim,
             out_dir=Path(args.out_dir) if args.out_dir else None,
             workspace_dir=args.workspace_dir,
             model_tag=args.model_tag,

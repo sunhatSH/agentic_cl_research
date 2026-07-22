@@ -89,7 +89,7 @@ class SlotTrajectory:
     bucket: str = ""
     persona_name: str = ""       # session persona (multi-turn collect)
     num_turns: int = 0           # actual turns run (multi-turn collect)
-    ended_by: str = ""           # k_budget | end_session | agent_error (multi-turn)
+    ended_by: str = ""           # end_session | patience_exhausted | agent_error | no_usersim_single
     observer_reports: list[dict[str, Any]] = field(default_factory=list)  # per-turn debug
     qc_hard: bool = False        # failed hard QC (tool hallucination/truncation/loop/...) -> dropped
     qc_codes: list[str] = field(default_factory=list)  # QC failure-mode codes tripped
@@ -413,7 +413,8 @@ def _run_one_collect_query(
 
     Each query gets its OWN persistent sandbox. Flow per session:
         spawn → upload workspace → persona = sample_persona(rng)
-        for turn in 1..K  (K = randint(2, max_turns)):
+        for turn in 1..K  (K 无硬上下限：成功轮由 questioner 满意度决定是否 <end_session>，
+                           失败轮由 patience 决定 redo/放弃；轮数自然分布，不设 k_min/k_max）:
             actor (hermes) runs the current query in the sandbox
             observer.observe(sandbox diff) → report        [state-only, no judge]
             questioner.next_query(persona, report, history) → follow-up | end
@@ -470,7 +471,7 @@ def _run_one_collect_query(
         # "added" on turn 1. Only actor's own changes during the session count.
         baseline = observer.snapshot(sb) if multiturn else None
         turn = 0
-        ended_by = "k_budget"
+        ended_by = "incomplete"   # 被 end_session/patience_exhausted/agent_error/no_usersim_single 覆盖
         cur_query: str | None = query
         session_sid: str | None = sid  # use sandbox_id as stable session key across turns
 
@@ -519,7 +520,7 @@ def _run_one_collect_query(
                 break
 
             if not multiturn:
-                ended_by = "k_budget"
+                ended_by = "no_usersim_single"
                 break
 
             # Determine if this turn failed (no output, or error)
