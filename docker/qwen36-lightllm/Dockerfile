@@ -17,16 +17,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   - transformers==5.12.0           : verl ray_trainer.py import MistralForSequenceClassification
 #                                       需要 5.12+（5.8.0 缺该类，verl import 崩）
 #   - TransferQueue==0.1.6 / tensordict<=0.10.0 / accelerate==1.13.0 : verl 训练链路依赖
-#   - e2b==2.24.0                    : sandbox 采集
-#   - nvidia-cutlass-dsl>=4.4.2 / mistral-common / rapidfuzz / langchain-openai
+#   - e2b==2.34.0 + e2b-code-interpreter==2.8.1 : sandbox 采集（code-interpreter 需 e2b>=2.26）
+#   - nvidia-cutlass-dsl==4.6.1 / mistral-common / rapidfuzz / langchain-openai
 # 分三层 RUN，对应他脚本的三组命令，便于逐组定位失败。
 RUN python -m pip install -U "tensordict>=0.8.0,<=0.10.0"
 RUN python -m pip install -U \
         "accelerate==1.13.0" \
-        "nvidia-cutlass-dsl>=4.4.2,<4.6" \
+        "nvidia-cutlass-dsl==4.6.1" \
         "transformers==5.12.0"
 RUN python -m pip install \
-        "e2b==2.24.0" \
+        "e2b==2.34.0" \
         "e2b-code-interpreter==2.8.1" \
         "flash-linear-attention==0.4.2" \
         langchain-openai \
@@ -80,7 +80,7 @@ need = {
     "flash-linear-attention": "0.4.2",
     "TransferQueue": "0.1.6",
     "accelerate": "1.13.0",
-    "e2b": "2.24.0",
+    "e2b": "2.34.0",
     "e2b-code-interpreter": "2.8.1",
 }
 for p, v in need.items():
