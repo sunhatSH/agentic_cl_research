@@ -181,6 +181,7 @@ def make_cl_scheduler_manager_cls():
               agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
     """
     from verl.experimental.agent_loop import AgentLoopManager as _Base
+    from verl.utils.ray_utils import auto_await  # verl 基类用它让 async generate_sequences 可同步调
 
     from rollout.collect import make_hermes_agent_fn
     from rollout.scheduler import RolloutScheduler, SessionSpec
@@ -220,6 +221,7 @@ def make_cl_scheduler_manager_cls():
                 score_followups=bool(agent_cfg.get("score_followups", True)),
             )
 
+        @auto_await
         async def generate_sequences(self, prompts):  # type: ignore[override]
             # Decode the seed queries, run the winner-sync scheduler, assemble back.
             import asyncio
