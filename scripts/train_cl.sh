@@ -109,9 +109,10 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
-# ── 环境自检（缺依赖自动补装）──────────────────────────────────────────
-PY="$PY" bash "$ROOT_DIR/scripts/check_train_env.sh" || {
-  echo "[train_cl] 环境自检失败，中止" >&2; exit 5; }
+# ── 环境自检（缺依赖尽力自动补装；按策略【不终止训练】，见 check_train_env.sh）──
+# 多机时每个节点各自跑（各机 /opt/conda 独立），装完继续，不阻断后续 rendezvous。
+PY="$PY" bash "$ROOT_DIR/scripts/check_train_env.sh" || \
+  echo "[train_cl] WARN: 环境自检返回非零，仍继续启动（不因环境中止训练）"
 
 # ── judge：--smoke 用 mock，否则 agents.yaml sufy judge ─────────────────
 if [ "$SMOKE" = "1" ]; then
