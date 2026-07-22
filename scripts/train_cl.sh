@@ -127,6 +127,9 @@ if [ "$SMOKE" = "1" ]; then
 else
   # 真训练：judge 走 agents.yaml sufy；加载训练凭证（.env）
   [ -f "$ROOT_DIR/scripts/load_training_env.sh" ] && { set -a; source "$ROOT_DIR/scripts/load_training_env.sh"; set +a; }
+  # rollout 走沙箱 Hermes（agent_loop_manager, backend=e2b）时需要 E2B_API_KEY/E2B_DOMAIN
+  # 等沙箱凭证——它们在 docker/sandbox/tencent.env，由 load_tencent_env.sh 导出。
+  [ -f "$ROOT_DIR/scripts/load_tencent_env.sh" ] && { set -a; source "$ROOT_DIR/scripts/load_tencent_env.sh"; set +a; }
   export MODELING_BACKEND="${MODELING_BACKEND:-hf}"
 fi
 
