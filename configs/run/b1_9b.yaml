@@ -54,12 +54,12 @@ actor_rollout_ref:
     enable_chunked_prefill: false
     calculate_log_probs: true
     log_prob_micro_batch_size_per_gpu: 1
-    # 沙箱 Hermes rollout：verl 用我们的 AgentLoopManager 替换默认 batch rollout，
-    # 经 rollout/scheduler.py 走沙箱 + winner-sync（trajectory 由沙箱内 Hermes 产出）。
+    # 沙箱 Hermes rollout：verl 用我们的 AgentLoopManager 替换默认 batch rollout。
+    # 注意：verl 的 AgentLoopConfig 只认 agent_loop_manager_class；sessions_per_step/
+    # sandbox_backend 由 cl_rollout_manager 用 .get() 读默认（16 / e2b），不能写进这里
+    # （写了会 TypeError: unexpected keyword argument）。
     agent:
       agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
-      sessions_per_step: 16       # 16 sessions 并行（与冷采集共用 e2b，用户要求并发 16）
-      sandbox_backend: e2b        # 腾讯
     multi_turn:
       enable: false
       format: qwen3_coder
@@ -121,7 +121,7 @@ trainer:
   save_freq: 20
   test_freq: 20
   critic_warmup: 0
-  logger: ${oc.decode:${oc.env:VERL_LOGGER,[console,swanlab]}}
+  logger: [console, swanlab]         # 直接字面 list（oc.decode 在 verl_runner OmegaConf.resolve 阶段会炸）
   log_val_generations: 50
   project_name: agentic-cl
   experiment_name: qwen35_9b_b1
