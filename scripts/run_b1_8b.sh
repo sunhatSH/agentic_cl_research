@@ -26,6 +26,10 @@ export PATH="$CONDA_ENV/bin:$PATH"
 export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$PROJECT_DIR"
 export PYTHON=$CONDA_ENV/bin/python
 
+# --- 训练前环境自检（缺失/版本不符依赖自动补装，不过关直接中止）----------
+PY="$PYTHON" bash "$PROJECT_DIR/scripts/check_train_env.sh" || {
+  echo "[run_b1_8b] 环境自检失败，中止"; exit 5; }
+
 # --- CUDA runtime libs ---
 _NV_LIB_ROOT="$CONDA_ENV/lib/python3.11/site-packages/nvidia"
 if [ -d "$_NV_LIB_ROOT" ]; then

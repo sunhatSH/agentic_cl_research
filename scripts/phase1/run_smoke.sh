@@ -17,6 +17,10 @@ VERL_DIR="${VERL_DIR:-/mnt/afs_toolcall/sunhao4/workspace/verl}"
 LIGHTLLM_DIR="${LIGHTLLM_DIR:-/mnt/afs_toolcall/sunhao4/workspace/LightLLM}"
 export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$ROOT_DIR:${PYTHONPATH:-}"
 
+# --- 训练前环境自检（缺失/版本不符的依赖自动补装，不过关直接中止）----------
+PY="$PY" bash "$ROOT_DIR/scripts/check_train_env.sh" || {
+  echo "[smoke] 环境自检失败，中止（见上方 [env] FAIL）"; exit 5; }
+
 # --- mock judge (固定满分 reward) ------------------------------------------
 export REWARD_API_BASE="${REWARD_API_BASE:-http://127.0.0.1:8100/v1}"
 export REWARD_MODEL="${REWARD_MODEL:-mock-judge}"
