@@ -221,12 +221,23 @@ def make_cl_scheduler_manager_cls():
                 score_followups=bool(agent_cfg.get("score_followups", True)),
             )
 
+        def _get_tokenizer(self):
+            # verl 的 AgentLoopManager（本类的基类）不持有 tokenizer（它在 worker 层），
+            # self.tokenizer 恒为 None。从 model_config.path lazy 加载并缓存。
+            tk = getattr(self, "_cl_tokenizer", None)
+            if tk is None:
+                from transformers import AutoTokenizer
+                path = self.model_config.path
+                tk = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+                self._cl_tokenizer = tk
+            return tk
+
         @auto_await
         async def generate_sequences(self, prompts):  # type: ignore[override]
             # Decode the seed queries, run the winner-sync scheduler, assemble back.
             import asyncio
 
-            tokenizer = getattr(self, "tokenizer", None)
+            tokenizer = self._get_tokenizer()
             queries = extract_queries_from_prompts(prompts, tokenizer)
             scheduler = self._build_scheduler()
             specs = [SessionSpec(session_id=str(i), queries=[q]) for i, q in enumerate(queries)]
