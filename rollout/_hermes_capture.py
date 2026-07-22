@@ -70,7 +70,32 @@ def _install_patches():
 
         _orig_create = Completions.create
 
+        # Claude 系列（claude-4.6-opus 等，走原生 Anthropic 通道，id 不带 anthropic/ 前缀）
+        # 默认不吐 reasoning_content，必须显式带 thinking 参数才产生思考。DeepSeek 默认吐、
+        # 不需要；gpt 系列不认该参数。故仅对 claude 注入 thinking:{enabled,budget_tokens}，
+        # 让 claude 采集也带思考（数据质量对齐 ds 且更高）。budget < max_tokens 以留出答案预算。
+        #
+        # 注意：thinking 是 Anthropic 原生参数，OpenAI SDK 的 create() 不接受顶层 kwarg
+        # （会 TypeError: unexpected keyword argument 'thinking'），必须放 extra_body 透传。
+        def _maybe_inject_thinking(k):
+            model = str(k.get("model", "")).lower()
+            if "claude" not in model:
+                return
+            eb = k.get("extra_body") or {}
+            if "thinking" in eb or "reasoning_effort" in eb or "thinking" in k:
+                return  # 调用方已显式指定，尊重之
+            max_tok = k.get("max_tokens")
+            budget = 4096
+            if isinstance(max_tok, int) and max_tok > 0:
+                budget = max(1024, min(budget, max_tok - 512))  # 留 ≥512 给答案
+            elif not isinstance(max_tok, int) or max_tok <= budget:
+                # thinking 要求 max_tokens > budget_tokens；未设或过小则抬高
+                k["max_tokens"] = budget + 2048
+            eb["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            k["extra_body"] = eb
+
         def _patched_create(self, *a, **k):
+            _maybe_inject_thinking(k)
             resp = _orig_create(self, *a, **k)
             if k.get("stream"):
                 acc: list[str] = []

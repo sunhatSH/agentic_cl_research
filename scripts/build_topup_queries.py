@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
-"""构造「补采就绪」的 queries 文件：按桶分块排列 + finance/safety 从训练集 borrow 去重。
+"""冷启动 queries 构造：两种模式。
 
-冷启动 pipeline 的补采循环靠 run_cold_start 的 incremental 去重（query_index/行号 + 同一
-out_file）实现幂等 —— 前提是 queries 文件行序永不变，只单调提高 --num-queries。本脚本产出
-这样一份文件：
+冷启动 pipeline 的补采靠 run_cold_start 的 incremental 去重（query_index/行号 + 同一
+out_file）实现幂等 —— 前提是 queries 文件行序永不变，新增行只能【追加到尾部】。
 
-  - 按 DEFAULT_BUCKETS 顺序把 cold queries **分块排列**（桶1全部 → 桶2全部 → …），
-    这样「前 N 行」随 N 增大自然覆盖到后面的桶，间接给缺量桶补候选。
-  - 对每桶，若 cold 候选 < floor × overshoot（预留质检淘汰），从 queries_train **借足量候选**：
-    按 record_id 排除 cold 已含的、排除该桶 cold 已用的，追加到该桶块尾部（保持分块）。
-  - 输出 queries_topup.jsonl + bucket_offsets.json（每桶 [start,end) 行范围，供循环按桶定位/统计）。
+正确的 borrow 时机是「先采 cold、质检、确认真缺，才 borrow」，所以本脚本不再采集前预拼
+borrow。两种模式：
+
+  模式① cold-only（默认，无 --gaps）：
+    只把 cold queries 按 DEFAULT_BUCKETS 顺序【分块排列】（桶1全部 → 桶2全部 → …）输出。
+    不 borrow。这样「前 N 行」随 N 增大自然覆盖后面的桶。
+    输出：<out> + <out>同目录/bucket_offsets.json（每桶 [start,end) 行范围）。
+
+  模式② borrow 补缺（--gaps GAPS_JSON --append-to EXISTING）：
+    采集+质检后，用每桶缺口 {bucket: 还缺N} 只为【缺口桶】从 train borrow：
+      借 N×overshoot 条候选（留质检淘汰余量），record_id 去重排除 cold 已用 + 已 borrow
+      （已 borrow 记 <out>同目录/borrowed_ids.json，跨轮不重复借）。
+    borrow 行【追加到 EXISTING 文件尾部】（不改前面行 index，incremental 幂等成立）。
+    输出：追加写入 EXISTING；更新 borrowed_ids.json；打印本轮实际 borrow 数。
 
 用法：
-  python scripts/build_topup_queries.py \
-      --cold datasets/queries_cold.jsonl \
-      --borrow-from datasets/queries_train.jsonl \
-      --floors 163,145,131,97,72,72,65,30,53 \
-      --overshoot 1.4 \
+  # ① cold-only
+  python scripts/build_topup_queries.py --cold datasets/queries_cold.jsonl \
       --out <OUT>/queries_topup.jsonl
+  # ② 采集后按缺口 borrow，追加到已有 queries
+  python scripts/build_topup_queries.py --cold datasets/queries_cold.jsonl \
+      --borrow-from datasets/queries_train.jsonl --gaps <OUT>/gaps_roundN.json \
+      --append-to <OUT>/queries_topup.jsonl --overshoot 1.4
 """
 from __future__ import annotations
 
@@ -52,69 +61,101 @@ def _by_bucket(rows: list[dict]) -> dict[str, list[dict]]:
     return grouped
 
 
+def _build_cold_only(args) -> None:
+    """模式①：cold 按桶分块，不 borrow。"""
+    cold = _load(Path(args.cold))
+    cold_by_b = _by_bucket(cold)
+    floors = dict(zip(DEFAULT_BUCKETS, (int(x) for x in args.floors.split(","))))
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    offsets: dict[str, dict] = {}
+    line_no = 0
+    print(f"{'bucket':14} {'floor':>6} {'cold':>6}")
+    with open(out_path, "w") as w:
+        for b in DEFAULT_BUCKETS:
+            start = line_no
+            for r in cold_by_b[b]:
+                w.write(json.dumps(r, ensure_ascii=False) + "\n")
+                line_no += 1
+            offsets[b] = {"start": start, "end": line_no, "cold": len(cold_by_b[b]), "borrow": 0}
+            print(f"{b:14} {floors[b]:>6} {len(cold_by_b[b]):>6}")
+
+    off_path = out_path.with_name("bucket_offsets.json")
+    with open(off_path, "w") as w:
+        json.dump({"floors": floors, "total_rows": line_no, "offsets": offsets},
+                  w, ensure_ascii=False, indent=2)
+    # 初始化空的 borrowed_ids（供后续 --gaps 轮累积）
+    bid_path = out_path.with_name("borrowed_ids.json")
+    if not bid_path.exists():
+        json.dump([], open(bid_path, "w"))
+    print(f"\n[build_topup] cold-only {line_no} 行 → {out_path}")
+    print(f"[build_topup] offsets → {off_path}")
+
+
+def _append_borrow(args) -> None:
+    """模式②：按缺口只为缺口桶 borrow，追加到已有 queries 尾部（跨轮去重）。"""
+    gaps = json.load(open(args.gaps))          # {bucket: 还缺N}
+    if not gaps:
+        print("[build_topup] 无缺口，跳过 borrow"); return
+
+    existing_path = Path(args.append_to)
+    cold_ids = {r.get("record_id") for r in _load(Path(args.cold)) if r.get("record_id")}
+    bid_path = existing_path.with_name("borrowed_ids.json")
+    borrowed_ids = set(json.load(open(bid_path))) if bid_path.exists() else set()
+    used = cold_ids | borrowed_ids            # 已 cold 或已借过的，一律不再借
+
+    train_by_b = _by_bucket(_load(Path(args.borrow_from)))
+    new_rows: list[dict] = []
+    print(f"{'bucket':14} {'gap':>5} {'want':>6} {'got':>5}")
+    for b, gap in gaps.items():
+        want = int(round(gap * args.overshoot))   # 借 gap×overshoot，留质检淘汰余量
+        got = 0
+        for r in train_by_b.get(b, []):
+            rid = r.get("record_id")
+            if rid and rid in used:
+                continue
+            new_rows.append(r)
+            if rid:
+                used.add(rid); borrowed_ids.add(rid)
+            got += 1
+            if got >= want:
+                break
+        print(f"{b:14} {gap:>5} {want:>6} {got:>5}")
+
+    if not new_rows:
+        print("[build_topup] ⚠ train 无可借候选（缺口桶已借尽）"); return
+
+    # 追加到已有 queries 尾部（保持前面行 index 不变 → incremental 幂等）
+    with open(existing_path, "a") as w:
+        for r in new_rows:
+            w.write(json.dumps(r, ensure_ascii=False) + "\n")
+    json.dump(sorted(borrowed_ids), open(bid_path, "w"))
+    print(f"\n[build_topup] borrow {len(new_rows)} 行 → 追加至 {existing_path}")
+    print(f"[build_topup] 累计已借 {len(borrowed_ids)} → {bid_path}")
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="按桶分块 + borrow 去重构造补采 queries。")
+    ap = argparse.ArgumentParser(description="冷启动 queries：cold-only 或按缺口 borrow 补缺。")
     ap.add_argument("--cold", default="datasets/queries_cold.jsonl")
     ap.add_argument("--borrow-from", default="datasets/queries_train.jsonl")
     ap.add_argument("--floors", default=",".join(map(str, DEFAULT_FLOORS)),
                     help="逗号分隔，顺序同 DEFAULT_BUCKETS")
     ap.add_argument("--overshoot", type=float, default=1.4,
-                    help="每桶候选目标 = floor × overshoot（预留质检淘汰）")
-    ap.add_argument("--out", required=True, help="queries_topup.jsonl 输出路径")
-    ap.add_argument("--no-borrow", action="store_true", help="禁用 train borrow（只用 cold）")
+                    help="borrow 时每桶借 gap×overshoot（预留质检淘汰）")
+    ap.add_argument("--out", help="模式①：cold-only queries 输出路径")
+    ap.add_argument("--gaps", help="模式②：缺口 JSON（{bucket: 还缺N}）")
+    ap.add_argument("--append-to", help="模式②：把 borrow 行追加到这个已有 queries 文件")
     args = ap.parse_args()
 
-    floors = dict(zip(DEFAULT_BUCKETS, (int(x) for x in args.floors.split(","))))
-    cold = _load(Path(args.cold))
-    cold_by_b = _by_bucket(cold)
-    # 全局已用 record_id（跨桶去重：cold 里出现过的一律不从 train 借）
-    used_ids = {r.get("record_id") for r in cold if r.get("record_id")}
-
-    borrow_by_b: dict[str, list[dict]] = {b: [] for b in DEFAULT_BUCKETS}
-    if not args.no_borrow:
-        train_by_b = _by_bucket(_load(Path(args.borrow_from)))
-        for b in DEFAULT_BUCKETS:
-            target = int(round(floors[b] * args.overshoot))
-            have = len(cold_by_b[b])
-            need = target - have
-            if need <= 0:
-                continue
-            for r in train_by_b[b]:
-                rid = r.get("record_id")
-                if rid and rid in used_ids:
-                    continue  # 已在 cold 或已借过
-                borrow_by_b[b].append(r)
-                if rid:
-                    used_ids.add(rid)
-                if len(borrow_by_b[b]) >= need:
-                    break
-
-    # 按桶分块写出，记录每桶 [start,end) 行范围
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    offsets: dict[str, dict] = {}
-    line_no = 0
-    print(f"{'bucket':14} {'floor':>6} {'cold':>6} {'borrow':>7} {'total':>6} {'target':>7}")
-    with open(out_path, "w") as w:
-        for b in DEFAULT_BUCKETS:
-            start = line_no
-            block = cold_by_b[b] + borrow_by_b[b]
-            for r in block:
-                w.write(json.dumps(r, ensure_ascii=False) + "\n")
-                line_no += 1
-            offsets[b] = {"start": start, "end": line_no,
-                          "cold": len(cold_by_b[b]), "borrow": len(borrow_by_b[b])}
-            target = int(round(floors[b] * args.overshoot))
-            print(f"{b:14} {floors[b]:>6} {len(cold_by_b[b]):>6} "
-                  f"{len(borrow_by_b[b]):>7} {len(block):>6} {target:>7}")
-
-    off_path = out_path.with_name("bucket_offsets.json")
-    with open(off_path, "w") as w:
-        json.dump({"floors": floors, "overshoot": args.overshoot,
-                   "total_rows": line_no, "offsets": offsets}, w, ensure_ascii=False, indent=2)
-
-    print(f"\n[build_topup] {line_no} 行 → {out_path}")
-    print(f"[build_topup] offsets → {off_path}")
+    if args.gaps:
+        if not args.append_to:
+            ap.error("--gaps 需配 --append-to")
+        _append_borrow(args)
+    else:
+        if not args.out:
+            ap.error("模式① 需 --out")
+        _build_cold_only(args)
 
 
 if __name__ == "__main__":

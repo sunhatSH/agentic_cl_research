@@ -48,7 +48,7 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _to_row(rec: dict) -> dict | None:
+def _to_row(rec: dict, *, no_system: bool = False) -> dict | None:
     rid = rec.get("record_id", "")
     bucket = rec.get("bucket", "")
     queries = rec.get("queries") or []
@@ -67,10 +67,15 @@ def _to_row(rec: dict) -> dict | None:
     user_content = "".join(parts).strip()
     if not user_content:
         return None
-    prompt = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
-    ]
+    # 走沙箱 Hermes rollout 时 system 由沙箱内 Hermes 注入 → prompt 不带 system。
+    # verl 内置 rollout 才需要 parquet 自带 system。
+    if no_system:
+        prompt = [{"role": "user", "content": user_content}]
+    else:
+        prompt = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
     return {
         "prompt": prompt,
         "data_source": DATA_SOURCE,
@@ -95,6 +100,16 @@ def main() -> int:
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--val-fraction", type=float, default=0.02)
     ap.add_argument("--limit", type=int, default=0, help=">0: 只取前 N 条(测试用)")
+    ap.add_argument("--no-system", action="store_true",
+                    help="prompt 不带 system（走沙箱 Hermes rollout 时用，system 由沙箱注入）")
+    ap.add_argument("--per-bucket-out", action="store_true",
+                    help="每桶输出 train_<bucket>.parquet（供 train_cl.sh --buckets 按桶顺序训）")
+    ap.add_argument("--proportional", type=int, default=0,
+                    help=">0: 按桶比例抽样到总量 ~N；某桶不足其占比配额时用该桶全部（不足用其本身最多）")
+    ap.add_argument("--scale", type=float, default=0.0,
+                    help=">0: 每桶按该比例缩放取前 N×scale 条（如 0.0625=1/16）；与 --proportional 二选一")
+    ap.add_argument("--keep-full", default="",
+                    help="逗号分隔的桶名，这些桶不缩放、用全部（如 communication,qa）")
     args = ap.parse_args()
 
     try:
@@ -106,31 +121,84 @@ def main() -> int:
     if args.limit > 0:
         lines = lines[: args.limit]
 
-    train_rows, val_rows = [], []
-    skipped = 0
+    # 解析所有行为 row（无效跳过）
+    all_rows, skipped = [], 0
     for line in lines:
-        rec = json.loads(line)
-        row = _to_row(rec)
+        row = _to_row(json.loads(line), no_system=args.no_system)
         if row is None:
             skipped += 1
-            continue
-        if split_assignment(row["extra_info"]["record_id"], args.val_fraction) == "val":
-            val_rows.append(row)
         else:
-            train_rows.append(row)
+            all_rows.append(row)
+
+    # 按桶比例抽样：目标总量 N，各桶配额 = round(N × 桶占比)，不足配额用该桶全部。
+    if args.proportional > 0:
+        from collections import defaultdict
+        by_b: dict[str, list] = defaultdict(list)
+        for r in all_rows:
+            by_b[r["extra_info"]["bucket"]].append(r)
+        total = len(all_rows)
+        sampled = []
+        print(f"[parquet] 按比例抽样 目标~{args.proportional}（总 {total}）：")
+        for b, rows in sorted(by_b.items(), key=lambda x: -len(x[1])):
+            quota = max(1, round(args.proportional * len(rows) / total))
+            take = min(quota, len(rows))     # 不足配额 → 用该桶本身最多的（全部）
+            sampled.extend(rows[:take])
+            print(f"    {b:14s} 有 {len(rows):>5}  配额 {quota:>4}  取 {take:>4}")
+        all_rows = sampled
+        print(f"[parquet] 抽样后合计 {len(all_rows)}")
+
+    # 按固定比例缩放：每桶取 round(len×scale) 条；keep_full 里的桶用全部。
+    if args.scale > 0:
+        from collections import defaultdict
+        keep = {b.strip() for b in args.keep_full.split(",") if b.strip()}
+        by_b: dict[str, list] = defaultdict(list)
+        for r in all_rows:
+            by_b[r["extra_info"]["bucket"]].append(r)
+        scaled = []
+        print(f"[parquet] 按 scale={args.scale} 缩放（keep-full={sorted(keep)}）：")
+        for b, rows in sorted(by_b.items(), key=lambda x: -len(x[1])):
+            take = len(rows) if b in keep else max(1, round(len(rows) * args.scale))
+            scaled.extend(rows[:take])
+            tag = "  (全量)" if b in keep else ""
+            print(f"    {b:14s} 有 {len(rows):>5}  取 {take:>4}{tag}")
+        all_rows = scaled
+        print(f"[parquet] 缩放后合计 {len(all_rows)}")
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(train_rows).to_parquet(out_dir / "train.parquet", index=False)
-    pd.DataFrame(val_rows).to_parquet(out_dir / "val.parquet", index=False)
 
-    print(f"[parquet] 输入 {len(lines)} 行 | 跳过(unknown/空) {skipped} | "
-          f"train {len(train_rows)} + val {len(val_rows)} -> {out_dir}")
-    # 桶分布
-    from collections import Counter
-    c = Counter(r["extra_info"]["bucket"] for r in train_rows + val_rows)
-    for b, n in c.most_common():
-        print(f"    {b:14s} {n}")
+    def _split(rows):
+        tr, va = [], []
+        for r in rows:
+            (va if split_assignment(r["extra_info"]["record_id"], args.val_fraction) == "val"
+             else tr).append(r)
+        return tr, va
+
+    if args.per_bucket_out:
+        # 每桶一个 train_<bucket>.parquet（--buckets 顺序训用）+ 一份合并 val
+        from collections import defaultdict
+        by_b: dict[str, list] = defaultdict(list)
+        for r in all_rows:
+            by_b[r["extra_info"]["bucket"]].append(r)
+        all_val = []
+        print(f"[parquet] per-bucket 输出 → {out_dir}")
+        for b, rows in sorted(by_b.items(), key=lambda x: -len(x[1])):
+            tr, va = _split(rows)
+            pd.DataFrame(tr).to_parquet(out_dir / f"train_{b}.parquet", index=False)
+            all_val.extend(va)
+            print(f"    train_{b}.parquet  {len(tr)} (+{len(va)} val)")
+        pd.DataFrame(all_val).to_parquet(out_dir / "val.parquet", index=False)
+        print(f"[parquet] val.parquet {len(all_val)} | 跳过(unknown/空) {skipped} | no_system={args.no_system}")
+    else:
+        train_rows, val_rows = _split(all_rows)
+        pd.DataFrame(train_rows).to_parquet(out_dir / "train.parquet", index=False)
+        pd.DataFrame(val_rows).to_parquet(out_dir / "val.parquet", index=False)
+        print(f"[parquet] 输入 {len(lines)} | 跳过 {skipped} | train {len(train_rows)} + "
+              f"val {len(val_rows)} -> {out_dir} | no_system={args.no_system}")
+        from collections import Counter
+        c = Counter(r["extra_info"]["bucket"] for r in train_rows + val_rows)
+        for b, n in c.most_common():
+            print(f"    {b:14s} {n}")
     return 0
 
 

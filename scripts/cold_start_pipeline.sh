@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # 冷启动数据流水线：按桶 floor 补采循环 → warmup 灌桶 → parquet，一条脚本串完，tmux 后台跑。
 #
-# 五段（补采循环直到每桶「过质检的干净数」≥ floor，parquet 后置因为它不淘汰数据）：
-#   1. 构造：build_topup_queries.py → 按桶分块 queries + finance/safety 从训练集 borrow 去重
-#   2. 补采循环：{ run_cold_start(incremental,幂等) → qc_cold_start.sh(规则+LLM+purify) →
-#                 按桶统计干净数 }，不够就提高 num-queries 再来一轮；最多 N 轮 / 候选耗尽即停
+# 流程（补采直到每桶「过质检的干净数」≥ floor，parquet 后置因为它不淘汰数据）：
+#   1. 构造：build_topup_queries.py → 仅 cold queries 按桶分块（不 borrow）
+#   2. 补采 = 阶段A + 阶段B：
+#      阶段A(cold-only)：run_cold_start(incremental) → qc_cold_start.sh(规则+LLM+purify)
+#                        → 按桶统计干净数；不够就提高 num-queries，直到 cold 候选耗尽/全达标
+#      阶段B(缺了才 borrow)：cold 采完仍缺的桶 → build_topup_queries --gaps 只借缺口桶、
+#                        追加到 queries 尾部（record_id 跨轮去重）→ 继续采质检，直到达标/借尽
 #   3. warmup：warmup_buffer.py 把过质检干净集按桶灌进 buffer_dumps/warmup.sqlite（冷启动最终产物）
 #   4. parquet：trajectory_to_parquet.py 只转过质检的干净集（最后一步，不淘汰数据）
 #
@@ -97,38 +100,26 @@ _smoke_flag=""; [ "$SMOKE" = "1" ] && _smoke_flag="--smoke"
 # 正式采集固定「1 seed + Questioner 多轮追问」，不加开关。
 # 冒烟(--smoke)才 --no-usersim：跳过 observer/questioner LLM，只验采集链路。
 _usersim_flag=""; [ "$SMOKE" = "1" ] && _usersim_flag="--no-usersim"
-_borrow_flag=""; [ "$NO_BORROW" = "1" ] && _borrow_flag="--no-borrow"
+# NO_BORROW=1 时跳过阶段B（cold 缺就缺，记 warning），见段②守卫。
 
-# ── 1. 构造补采就绪 queries（按桶分块 + borrow 去重）────────────────────────
-echo "[pipeline] === 1/4 构造补采 queries ===" | tee -a "$LOG"
+# ── 1. 构造 cold-only queries（按桶分块，不 borrow）─────────────────────────
+echo "[pipeline] === 1/4 构造 cold-only queries ===" | tee -a "$LOG"
 TOPUP_Q="$OUT/queries_topup.jsonl"
 "$PY" scripts/build_topup_queries.py \
-  --cold "$COLD" --borrow-from "$BORROW_FROM" --floors "$FLOORS" \
-  --overshoot "$OVERSHOOT" $_borrow_flag --out "$TOPUP_Q" 2>&1 | tee -a "$LOG"
+  --cold "$COLD" --floors "$FLOORS" --out "$TOPUP_Q" 2>&1 | tee -a "$LOG"
 [ "${PIPESTATUS[0]}" -ne 0 ] && { echo "[pipeline] 构造 queries 失败，停止" | tee -a "$LOG"; exit 3; }
-TOTAL_ROWS=$(wc -l < "$TOPUP_Q")
 
-# 首轮 num-queries：各 floor×overshoot 之和的估计（够覆盖一遍达标所需候选）
-if [ "$START_NUM" -eq 0 ]; then
-  START_NUM="$("$PY" -c "
-fl=[int(x) for x in '$FLOORS'.split(',')]
-print(min($TOTAL_ROWS, int(round(sum(fl)*$OVERSHOOT))))
-")"
-fi
-
-# ── 2. 按桶补采循环 ─────────────────────────────────────────────────────
 QC_OUT="$OUT/qc"
 CLEAN=""
-CUR_N="$START_NUM"
-round=0
-while [ "$round" -lt "$MAX_ROUNDS" ]; do
-  round=$((round+1))
-  echo "[pipeline] === 2/4 补采循环 round=$round  num-queries=$CUR_N/$TOTAL_ROWS ===" | tee -a "$LOG"
+GAP_JSON=""
 
-  # 采集（incremental 幂等：只补 MISSING/FAILED，同一 out_dir + 同一 queries 行序）
+# 采集(incremental 幂等) → 质检 → 按桶算缺口。用 $CUR_N 控本轮覆盖行数。
+# 设 GAP_JSON / CLEAN 全局供后续用；返回码 0=全达标 7=仍有缺口。
+collect_qc_gap() {
+  local cur_n="$1" tag_round="$2"
   "$PY" scripts/run_cold_start.py \
     $_usersim_flag --actor-impl hermes_structured --actor-model "$ACTOR_MODEL" \
-    --num-queries "$CUR_N" --max-concurrent "$MAX_CONCURRENT" --slot-timeout 900 \
+    --num-queries "$cur_n" --max-concurrent "$MAX_CONCURRENT" --slot-timeout 900 \
     --collect-mode incremental $_smoke_flag \
     --out-dir "$OUT" --queries "$TOPUP_Q" \
     2>&1 | tee -a "$LOG"
@@ -138,15 +129,13 @@ while [ "$round" -lt "$MAX_ROUNDS" ]; do
   [ -z "$RAW" ] && { echo "[pipeline] 未找到 grpo_hermes.jsonl，停止" | tee -a "$LOG"; exit 3; }
   echo "[pipeline] 采集产物: $RAW ($(wc -l < "$RAW") 行)" | tee -a "$LOG"
 
-  # 质检（每轮重跑：LLMChecker resume 会复用已成功的轮次，只补新增/失败的）
   CONCURRENCY="$MAX_CONCURRENT" bash scripts/qc_cold_start.sh "$RAW" "$QC_OUT" 2>&1 | tee -a "$LOG"
   [ "${PIPESTATUS[0]}" -ne 0 ] && { echo "[pipeline] 质检失败，停止（不 warmup/parquet）" | tee -a "$LOG"; exit 4; }
 
   CLEAN=$(find "$QC_OUT" -name "*_llmchecked.jsonl" 2>/dev/null | head -1)
   [ -z "$CLEAN" ] && { echo "[pipeline] 未找到质检干净集，停止" | tee -a "$LOG"; exit 4; }
 
-  # 按桶统计干净数，与 floor 比，算缺口
-  GAP_JSON="$OUT/gaps_round${round}.json"
+  GAP_JSON="$OUT/gaps_${tag_round}.json"
   "$PY" - "$CLEAN" "$FLOORS" "$GAP_JSON" <<'PYEOF' 2>&1 | tee -a "$LOG"
 import json, sys
 from collections import Counter
@@ -166,26 +155,55 @@ for b in buckets:
     print(f"  {b:14} {have:>6} {floors[b]:>6} {('-'+str(g)) if g else 'OK':>6}")
 json.dump(gaps, open(gap_out,'w'))
 print(f"  未达标桶: {gaps if gaps else '无（全部达 floor）'}")
-sys.exit(0 if not gaps else 7)   # 7 = 仍有缺口
+sys.exit(0 if not gaps else 7)
 PYEOF
-  gap_rc="${PIPESTATUS[0]}"
+  return "${PIPESTATUS[0]}"
+}
 
-  if [ "$gap_rc" -eq 0 ]; then
-    echo "[pipeline] ✓ 所有桶达 floor（round=$round）" | tee -a "$LOG"
-    break
-  fi
-  if [ "$CUR_N" -ge "$TOTAL_ROWS" ]; then
-    echo "[pipeline] ⚠ 候选已耗尽（num=$CUR_N=total）仍有缺口，见 $GAP_JSON —— 停止补采" | tee -a "$LOG"
-    break
-  fi
-  # 扩大覆盖：分块排列 → 提高 num-queries 自然覆盖缺量桶的更多候选
+# ── 2. 补采：阶段 A（cold-only 循环）→ 阶段 B（缺了才 borrow）───────────────
+# 阶段 A：只采 cold，提高 num-queries 直到 cold 候选耗尽或全达标。
+echo "[pipeline] === 2/4 阶段A：cold-only 采集循环 ===" | tee -a "$LOG"
+TOTAL_ROWS=$(wc -l < "$TOPUP_Q")
+[ "$START_NUM" -eq 0 ] && START_NUM="$("$PY" -c "
+fl=[int(x) for x in '$FLOORS'.split(',')]; print(min($TOTAL_ROWS, int(round(sum(fl)*$OVERSHOOT))))")"
+CUR_N="$START_NUM"
+gap_rc=7
+roundA=0
+while [ "$roundA" -lt "$MAX_ROUNDS" ]; do
+  roundA=$((roundA+1))
+  echo "[pipeline] 阶段A round=$roundA  num=$CUR_N/$TOTAL_ROWS(cold)" | tee -a "$LOG"
+  collect_qc_gap "$CUR_N" "A${roundA}"; gap_rc=$?
+  [ "$gap_rc" -eq 0 ] && { echo "[pipeline] ✓ cold 阶段全桶达 floor" | tee -a "$LOG"; break; }
+  [ "$CUR_N" -ge "$TOTAL_ROWS" ] && { echo "[pipeline] cold 候选耗尽，仍缺 → 进入阶段B borrow" | tee -a "$LOG"; break; }
   CUR_N=$(( CUR_N + TOPUP_STEP )); [ "$CUR_N" -gt "$TOTAL_ROWS" ] && CUR_N="$TOTAL_ROWS"
 done
 
-if [ "$round" -ge "$MAX_ROUNDS" ]; then
-  echo "[pipeline] ⚠ 达到 max-rounds=$MAX_ROUNDS，若仍有缺口见 $OUT/gaps_round${round}.json（不 fail，交人工决定）" | tee -a "$LOG"
+# 阶段 B：cold 采完仍缺 → 按缺口只为缺口桶 borrow，追加到 queries 尾部，继续采。
+if [ "$gap_rc" -ne 0 ] && [ "$NO_BORROW" != "1" ]; then
+  echo "[pipeline] === 2/4 阶段B：按缺口 borrow 补缺 ===" | tee -a "$LOG"
+  roundB=0
+  while [ "$roundB" -lt "$MAX_ROUNDS" ]; do
+    roundB=$((roundB+1))
+    prev_rows="$TOTAL_ROWS"
+    # 只为缺口桶从 train borrow，追加到 TOPUP_Q 尾部（record_id 跨轮去重）
+    "$PY" scripts/build_topup_queries.py \
+      --cold "$COLD" --borrow-from "$BORROW_FROM" --gaps "$GAP_JSON" \
+      --append-to "$TOPUP_Q" --overshoot "$OVERSHOOT" 2>&1 | tee -a "$LOG"
+    TOTAL_ROWS=$(wc -l < "$TOPUP_Q")
+    if [ "$TOTAL_ROWS" -le "$prev_rows" ]; then
+      echo "[pipeline] ⚠ train 无可借候选（缺口桶已借尽），停止 borrow" | tee -a "$LOG"; break
+    fi
+    echo "[pipeline] 阶段B round=$roundB  borrow 后 total=$TOTAL_ROWS" | tee -a "$LOG"
+    collect_qc_gap "$TOTAL_ROWS" "B${roundB}"; gap_rc=$?
+    [ "$gap_rc" -eq 0 ] && { echo "[pipeline] ✓ borrow 后全桶达 floor" | tee -a "$LOG"; break; }
+  done
+fi
+
+if [ "$gap_rc" -ne 0 ]; then
+  echo "[pipeline] ⚠ 仍有缺口，见 $GAP_JSON（不 fail，交人工决定）" | tee -a "$LOG"
 fi
 echo "[pipeline] 过质检干净集: $CLEAN ($(wc -l < "$CLEAN" 2>/dev/null) 行)" | tee -a "$LOG"
+
 
 # ── 3. warmup 灌桶（冷启动最终产物）────────────────────────────────────────
 if [ "$NO_WARMUP" = "1" ]; then
