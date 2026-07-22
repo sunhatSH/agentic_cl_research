@@ -684,3 +684,35 @@ generated_tasks(task.json) → adapter → taskspecs_w3
 - 沙箱hermes v2026.6.5 ≠ 荣磊0.11.0
 - AIAgent kwargs按inspect.signature过滤 (persist_session removed)
 - resolve_runtime_provider("agent")复制CLI的oneshot路径 (非手搓base_url)
+
+---
+
+## 2026-07-22 4卡 9B baseline 训练规格（评估中，未启动）
+
+### 实际生效规模（train_4gpu.sh 命令行覆盖 + b1_8b.yaml config 合并后）
+| 项 | config(b1_8b) | 4gpu 脚本覆盖 | 实际生效 |
+|----|------|------|------|
+| 模型 | Qwen3.5-9B | — | Qwen3.5-9B（不是 27B）|
+| 卡数 / 并行 | — | 1×4, rollout-tp2, ulysses-sp1 | SP1→DP4, rollout TP2 |
+| train_batch_size | 256 | 8 | 8（8%DP4=0 ✓）|
+| ppo_mini_batch | 32 | 8 | 8 |
+| micro_batch/gpu | 4 | — | 4 |
+| max_prompt_len | 4096 | — | 4096 |
+| max_response_len | 8192 | — | 8192 |
+| total_epochs | 1 | — | 1 |
+| total_training_steps | 50 | — | 50 |
+| save_freq | 5 | — | 每 5 步 |
+| lr | 1e-6 | — | 1e-6 |
+| gpu_mem_util | — | 0.20 | 0.20 |
+
+### 核实结论（基于实测）
+- 4 卡全空闲；冷采集(tmux cold_opus)不占 GPU（走沙箱+sufy API，纯 CPU/网络）→ 训练与采集不冲突。
+- 旧 datasets/train.parquet = 2794 条 prompt-only（system+user，response 靠 rollout 在线生成）。
+  实测 prompt token: p50=98 p99=228 max=493 → 【无一条超 4096】(0%)。max_prompt=4096 远超需要、浪费显存，可降到 ~1024。
+- batch 256→8 后 steps 语义乱：batch8 时 1 epoch=2794/8≈350 步，而 total_steps=50 只用 400/2794 条(14%)。
+  steps=50 是给 batch256 配的（50×256=12800）。→ batch8 需重算 steps + save_freq 等比放大。
+
+### 用户决策（2026-07-22）
+1. baseline 不需要等冷采集数据 —— baseline 无桶（不做防遗忘分桶，是无 CL 对照）。
+2. 先在 9B 上跑训练，27B 以后再说，现在就 9B。
+3. 训练数据只用 query（prompt-only，response 在线 rollout 生成）。
