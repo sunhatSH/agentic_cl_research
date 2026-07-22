@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 本机开发环境：把 PYTHONPATH 指向 AFS 共享盘的 verl / LightLLM 源码 + 项目根，
-# 与集群 scripts/start_train.sh 的 PYTHONPATH 同源、同序。
+# 与 train_cl.sh 的 PYTHONPATH 同源、同序。
 #
 # 用法：
 #   source scripts/dev_env.sh
@@ -30,7 +30,7 @@ if [[ ! -d "$_LIGHTLLM_DIR" ]]; then
   echo "[dev_env] WARN: $_LIGHTLLM_DIR 不存在 —— LightLLM 源码缺失（lightllm rollout 需要）" >&2
 fi
 
-# 顺序与 start_train.sh 一致：LightLLM : verl : 项目根
+# 顺序与 train_cl.sh 一致：LightLLM : verl : 项目根
 export PYTHONPATH="$_LIGHTLLM_DIR:$_VERL_DIR:$_ROOT:${PYTHONPATH:-}"
 
 echo "[dev_env] PYTHONPATH set:"

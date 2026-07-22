@@ -6,9 +6,12 @@
 
 | 脚本 | 说明 |
 |------|------|
-| [`train.sh`](train.sh) | 单实验入口，`bash scripts/train.sh configs/phase3/r4.yaml` |
-| [`start_train.sh`](start_train.sh) | 集群训练启动（64 卡 = 8×8），不依赖 run_phases |
-| [`run_phases.sh`](run_phases.sh) | 按顺序跑多个实验（默认 b1 + r4），rank0 起 ray head |
+| [`train.sh`](train.sh) | 通用 python -m 入口（被 train_cl.sh 复用） |
+| [`train_cl.sh`](train_cl.sh) | **参数化训练基础脚本**：GPU/机器/集群参数全为命令行参数（环境自检 + 4D 并行整除自检 + 单机/多机 + --smoke + --buckets + 任意 --config） |
+| [`train_4gpu.sh`](train_4gpu.sh) | 4 卡开发机（SP1/DP4/TP2）；`--smoke` 跑 1-step 验证 |
+| [`train_8gpu.sh`](train_8gpu.sh) | 单机 8 卡（SP1/DP8/TP2） |
+| [`train_32gpu.sh`](train_32gpu.sh) | 4 节点集群（SP4/DP8/TP4） |
+| [`train_64gpu.sh`](train_64gpu.sh) | 8 节点集群正式训练（SP4/DP16/TP4） |
 | [`launch_8node.sh`](launch_8node.sh) | 8 节点冷启动采集（ssh 到各节点） |
 | [`_node_worker.sh`](_node_worker.sh) | `launch_8node.sh` 的每节点 worker |
 | [`load_training_env.sh`](load_training_env.sh) | 导入训练凭证（.env → 环境变量） |
@@ -71,4 +74,4 @@
 ## 注意
 
 - `scripts/phase<N>/` 中的 `run.sh` 通过相对路径调用 `scripts/train.sh`，因此执行时必须在项目根目录。
-- 集群配置（环境变量、AFS 路径、凭证注入）详见 `run_phases.sh` 和 `start_train.sh`，非集群本地运行只需 `train.sh` + 对应 phase config。
+- 集群配置（环境变量、AFS 路径、凭证注入）详见 `train_cl.sh`，用对应规格 wrapper（train_4gpu/8gpu/32gpu/64gpu.sh）启动。

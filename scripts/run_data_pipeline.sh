@@ -9,7 +9,7 @@
 #   4. collect_cold          : queries + fs-seeds → trajectory（需集群+沙箱+GPU）
 #   5. warmup_buffer         : trajectory → buffer.sqlite 预热
 #   6. trajectory_to_parquet : trajectory → train/val.parquet（新增脚本）
-#   7. (填 cluster.yaml + start_train.sh，不在本脚本内)
+#   7. (填 cluster.yaml，训练用 train_Ngpu.sh)
 #
 # 用法：
 #   bash scripts/run_data_pipeline.sh --offline      # Step 1-3,6（离线，本机/开发机，无 GPU）
@@ -118,4 +118,4 @@ echo "================ Pipeline 完成 ================"
 echo "Step 7（手动）: 在 configs/cluster.yaml 填 data.train_files / val_files 指向："
 echo "  $DATASETS_DIR/train.parquet"
 echo "  $DATASETS_DIR/val.parquet"
-echo "然后: bash scripts/start_train.sh"
+echo "然后: bash scripts/train_8gpu.sh（或 train_32gpu/64gpu）"
