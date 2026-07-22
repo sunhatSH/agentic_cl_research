@@ -69,9 +69,8 @@ for pkg in "${NEEDED[@]}"; do
 done
 
 # ── 安装缺失/版本不符 ──
-# 原则：尽力装，但【永不因环境问题终止训练】——排队/集群训练里 check 主动 exit
-# 会让整个排队任务白排。装不上只 WARNING，把最终决定权交给训练本身（真缺依赖
-# 训练会自己报错，但不是 check 杀掉它）。CHECK_ONLY=1（人工预检）才报非零。
+# 逻辑：① 检查（上面）② 不符就装/改版本 ③ 训练。只有【第二步安装失败】才停止
+# （快速失败，不带缺依赖硬跑白费算力/排队）。检查发现缺 → 进安装，不算失败。
 if [ "${#TO_INSTALL[@]}" -gt 0 ]; then
   if [ "$CHECK_ONLY" = "1" ]; then
     echo "[env] CHECK_ONLY=1：以下需安装但未装：${TO_INSTALL[*]}"
@@ -79,8 +78,9 @@ if [ "${#TO_INSTALL[@]}" -gt 0 ]; then
   else
     echo "[env] === 安装 ${#TO_INSTALL[@]} 个包 ==="
     echo "  ${TO_INSTALL[*]}"
-    "$PY" -m pip install -i "$PIP_INDEX" "${TO_INSTALL[@]}" \
-      || echo "[env] WARN: pip 安装失败（继续，不终止训练；缺的包训练时会自暴）"
+    "$PY" -m pip install -i "$PIP_INDEX" "${TO_INSTALL[@]}" || {
+      echo "[env] ERROR: pip 安装失败 —— 停止（环境修不好，快速失败好过带缺依赖硬跑）" >&2
+      exit 4; }
   fi
 fi
 
@@ -119,12 +119,9 @@ print(f'  OK   torch {torch.__version__} | CUDA available | {n} GPU')
 " || FAIL=1
 
 if [ "$FAIL" -ne 0 ]; then
-  if [ "$CHECK_ONLY" = "1" ]; then
-    echo "[env] ✗ 环境自检未通过（见上方 FAIL）"; exit 5   # 人工预检：报非零便于感知
-  fi
-  # 训练模式：绝不终止训练（排队/集群任务被 check 杀掉 = 白排）。只警告，
-  # 让训练自己去撞真正缺的依赖 —— 至少不是 check 主动中止。
-  echo "[env] ⚠ 环境自检有 FAIL 项（见上方），但按策略【不终止训练】，继续启动"
-  exit 0
+  # 装完关键能力仍 FAIL（import 不了 / GPU 不可用）= 环境修不好，停止（快速失败）。
+  # 检查阶段发现缺不算 FAIL —— 那些已进上面的安装步；只有装了还不行才到这。
+  echo "[env] ✗ 环境自检未通过（见上方 FAIL）—— 停止" >&2
+  exit 5
 fi
 echo "[env] ✓ 环境自检通过"
