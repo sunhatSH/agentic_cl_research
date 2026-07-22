@@ -61,10 +61,12 @@ data_format: openai
 concurrency: $CONCURRENCY
 endpoints:
   - base_url: https://openai.sufy.com/v1
-    api_key: "$SUFY_KEY"
-    model: openai/gpt-5-mini
+    model: qwen3-max
     rpm: 30
     tpm: 500000
+    keys:
+      - key: "$SUFY_KEY"
+max_retries: 2
 YAML
 
 echo "  config: $LLM_CONFIG"
@@ -76,7 +78,8 @@ echo "  stage 2 done."
 echo ""
 echo "=== Stage 3: purify ==="
 "$PY" "$QC_ROOT/LLMChecker/scripts/postprocess/purify.py" \
-    --output-dir "$OUT_DIR/llmchecker"
+    --output-dir "$OUT_DIR/llmchecker" \
+    --input "$INPUT"
 echo "  stage 3 done."
 
 echo ""

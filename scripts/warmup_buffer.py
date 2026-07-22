@@ -114,6 +114,9 @@ def _mix_by_ratio(
 def main() -> None:
     ap = argparse.ArgumentParser(description="Warm-start 9-bucket buffer from rollout JSONL.")
     ap.add_argument("--in-dir", default="data/mock/rollouts", help="dir with {actor}/rollouts_*.jsonl")
+    ap.add_argument("--input", default=None,
+                    help="single jsonl to ingest directly (e.g. QC purified *_llmchecked.jsonl); "
+                         "bypasses --in-dir glob when set")
     ap.add_argument("--out", default="data/mock/buffer_dumps/warmup.sqlite")
     ap.add_argument("--total-capacity", type=int, default=25000)
     ap.add_argument(
@@ -131,19 +134,40 @@ def main() -> None:
         default=True,
         help="skip trajectories whose assistant content is all empty (dead-vllm garbage)",
     )
+    ap.add_argument("--floors", default=None,
+                    help="CSV per-bucket hard floors (order = DEFAULT_BUCKETS); "
+                         "default reads bucket_floors from configs/base.yaml")
     args = ap.parse_args()
 
     if args.ratio_27b is not None and not (0.0 <= args.ratio_27b <= 1.0):
         print(f"[warmup] --ratio-27b must be in [0,1], got {args.ratio_27b}", flush=True)
         sys.exit(2)
 
-    files = sorted(glob.glob(str(Path(args.in_dir) / "*" / "rollouts_*.jsonl")))
+    if args.input:
+        files = [args.input]
+    else:
+        files = sorted(glob.glob(str(Path(args.in_dir) / "*" / "rollouts_*.jsonl")))
     if not files:
         print(f"[warmup] no rollout files under {args.in_dir}", flush=True)
         sys.exit(1)
     print(f"[warmup] {len(files)} files: {[Path(f).name for f in files]}", flush=True)
 
-    buffer = BucketReplayBuffer(total_capacity=args.total_capacity)
+    # bucket_floors（Required）：CLI CSV 优先，否则从 configs/base.yaml 读 bucket_floors
+    if args.floors:
+        floors = [int(x) for x in args.floors.split(",")]
+    else:
+        import re
+        floors = None
+        cfg = Path(__file__).resolve().parents[1] / "configs" / "base.yaml"
+        for line in open(cfg):
+            m = re.search(r"bucket_floors:\s*\[([0-9,\s]+)\]", line)
+            if m:
+                floors = [int(x) for x in m.group(1).split(",")]
+                break
+        if floors is None:
+            print("[warmup] bucket_floors 未在 base.yaml 找到，用 --floors 指定", flush=True)
+            sys.exit(2)
+    buffer = BucketReplayBuffer(total_capacity=args.total_capacity, bucket_floors=floors)
 
     sessions = trajs = added = empty = 0
     per_bucket: dict[str, int] = {}
@@ -161,7 +185,14 @@ def main() -> None:
                 continue
             sessions += 1
             seed_msgs = [{"role": "user", "content": row.get("seed_query", "")}]
-            for t in row.get("trajectories", []):
+            # 两种输入结构：
+            #  (a) session 级（旧 mock）：{seed_query, trajectories:[{messages,...}]}
+            #  (b) trajectory 级（冷采集 grpo_hermes / QC 干净集）：每行直接 {messages, metadata:{bucket}}
+            #      —— 无 trajectories 数组时，把 row 自己当一条 traj，bucket 优先取 metadata.bucket。
+            row_trajs = row.get("trajectories")
+            if not row_trajs and row.get("messages"):
+                row_trajs = [row]
+            for t in row_trajs or []:
                 trajs += 1
                 msgs = t.get("messages") or []
                 # skip dead-vllm empty garbage (assistant all blank)
@@ -170,7 +201,10 @@ def main() -> None:
                     if not any((c or "").strip() for c in asst):
                         empty += 1
                         continue
-                bucket = classify(t, seed_msgs)
+                # bucket：trajectory 级数据已带 metadata.bucket（权威），否则回退 classify
+                bucket = ((t.get("metadata") or {}).get("bucket")) or classify(t, seed_msgs)
+                if bucket not in VALID_BUCKETS:
+                    bucket = classify(t, seed_msgs)
                 source = _source_tag(t, row, f)
                 payload = {
                     "messages": msgs,

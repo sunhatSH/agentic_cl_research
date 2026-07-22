@@ -33,11 +33,16 @@ PINNED=(
   "e2b-code-interpreter==2.8.1"
   "nvidia-cutlass-dsl==4.6.1"
   "mistral-common==1.11.2"
+  # omegaconf 2.3.0 才有 oc.decode resolver（configs/base.yaml:195 logger 靠它把
+  # env 里的 "[console,swanlab]" 解析成 list）；旧版 import 得过但解析会挂 → 训练时
+  # 只能退回 logger:[console]，丢 swanlab。hydra-core 组装 config 一起 pin 防连带。
+  "omegaconf==2.3.0"
+  "hydra-core==1.3.2"
 )
 
 # ── 只需存在、版本不 pin 的包（verl 训练链路 transitive）──
 NEEDED=(
-  omegaconf pyyaml pydantic uvicorn cachetools wandb swanlab
+  pyyaml pydantic uvicorn cachetools wandb swanlab
   aiohttp httpx tensordict ray msgpack torchdata protobuf tqdm
 )
 
@@ -107,6 +112,18 @@ fi
 # fla（Qwen3.6 GDN kernel）
 "$PY" -c "import fla" >/dev/null 2>&1 \
   && echo "  OK   fla" || { echo "  FAIL fla import"; FAIL=1; }
+
+# oc.decode resolver 能把 env 里的 "[console,swanlab]" 解析成 list（configs/base.yaml:195
+# 的 logger 靠 oc.env→oc.decode 这层嵌套；旧 omegaconf 会解析失败 → 训练只能退回
+# logger:[console] 丢 swanlab）。探针须与 base.yaml:195 同款嵌套（oc.env 先转字符串）。
+VERL_LOGGER='[console,swanlab]' "$PY" -c "
+from omegaconf import OmegaConf
+c = OmegaConf.create({'logger': '\${oc.decode:\${oc.env:VERL_LOGGER,[console,swanlab]}}'})
+r = OmegaConf.to_container(c, resolve=True)['logger']
+assert r == ['console', 'swanlab'], r
+" >/dev/null 2>&1 \
+  && echo "  OK   oc.decode 解析 logger list" \
+  || { echo "  FAIL oc.decode 无法解析 [console,swanlab]（omegaconf 版本过旧？）"; FAIL=1; }
 
 # ── 4. GPU / torch CUDA ──
 echo "[env] === 4. GPU ==="

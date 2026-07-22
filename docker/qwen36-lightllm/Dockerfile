@@ -48,8 +48,13 @@ RUN python -m pip install \
 #   - torchdata          : verl ray_trainer.py:33 `from torchdata.stateful_dataloader import StatefulDataLoader`
 #   - protobuf>=5.0      : swanlab 需要 protobuf.runtime_version（4.x 缺该 API）
 #   - pyyaml>=6.0.2      : verl/transformers 版本比较需要 pyyaml>=5.1，6.0.1 的 dist-info 会损坏
+#   - omegaconf==2.3.0   : oc.decode resolver（configs/base.yaml:195 靠它把 env 的
+#                          "[console,swanlab]" 解析成 list）；2.3 前无此 resolver，会退回
+#                          logger:[console] 丢 swanlab。与 scripts/check_train_env.sh 同款 pin。
+#   - hydra-core==1.3.2  : verl 组装 config，与 omegaconf 配套 pin。
 RUN python -m pip install \
-        "omegaconf>=2.3" \
+        "omegaconf==2.3.0" \
+        "hydra-core==1.3.2" \
         "pyyaml>=6.0.2" \
         "pydantic>=2.0" \
         "uvicorn>=0.30" \
