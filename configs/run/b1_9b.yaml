@@ -121,7 +121,7 @@ trainer:
   save_freq: 20
   test_freq: 20
   critic_warmup: 0
-  logger: [console, swanlab]         # 直接字面 list（oc.decode 在 verl_runner OmegaConf.resolve 阶段会炸）
+  logger: [console]                  # 只 console（swanlab api 422，去掉）；指标/rollout/val 全落本地文件
   log_val_generations: 50
   project_name: agentic-cl
   experiment_name: qwen35_9b_b1
