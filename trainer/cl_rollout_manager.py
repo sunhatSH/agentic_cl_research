@@ -255,6 +255,15 @@ def make_cl_scheduler_manager_cls():
             # scheduler.run_step is sync (thread pool of sessions); run off the loop.
             trajectories = await asyncio.to_thread(scheduler.run_step, specs)
 
+            # verl 期望 generate_sequences 给固定 N=n_queries×n 条轨迹（GRPO 组）。
+            # scheduler 多轮追问产 k×8 条/query，对其截尾取齐。（FIXME: 未来应逐 query 取最后一轮）
+            expected_n = len(prompts.batch)
+            if len(trajectories) > expected_n:
+                trajectories = trajectories[-expected_n:]
+            elif len(trajectories) < expected_n and trajectories:
+                pad_n = expected_n - len(trajectories)
+                trajectories = trajectories + [trajectories[-1]] * pad_n
+
             def _safe_tokenize(messages):
                 ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
                 # Qwen3.5 返回 BatchEncoding（非 dict 子类），需提取 input_ids
