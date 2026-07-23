@@ -79,7 +79,7 @@ RUN python -m pip install \
 RUN python - <<'PY'
 import importlib.metadata as m
 
-# --- 1. 泽寰栈：版本严格对齐（他已验证的组合）---
+# --- 1. 泽寰栈：版本严格对齐（与 scripts/check_train_env.sh 的 PINNED 一致）---
 need = {
     "transformers": "5.12.0",
     "flash-linear-attention": "0.4.2",
@@ -87,6 +87,10 @@ need = {
     "accelerate": "1.13.0",
     "e2b": "2.34.0",
     "e2b-code-interpreter": "2.8.1",
+    "nvidia-cutlass-dsl": "4.6.1",
+    "mistral-common": "1.11.2",
+    "omegaconf": "2.3.0",       # oc.decode/resolve；旧版 logger list 解析会挂
+    "hydra-core": "1.3.2",
 }
 for p, v in need.items():
     got = m.version(p)
@@ -102,6 +106,16 @@ print("[selfcheck] transformers qwen3_5 + Mistral OK")
 # --- 3. fla 可 import（Qwen3.6 GDN kernel）---
 import fla  # noqa: F401
 print("[selfcheck] fla import OK")
+
+# --- 3b. OmegaConf 能把 logger 字面 list 正常 resolve（复刻 verl_runner 流程）---
+# configs/*.yaml 的 trainer.logger 是字面 [console, swanlab]；旧 omegaconf resolve 对
+# ListConfig 报 UnsupportedValueType。校验镜像里的 omegaconf 能过这条流程。
+from omegaconf import OmegaConf as _OC
+_c = _OC.create({"trainer": {"logger": ["console", "swanlab"]}})
+_c = _OC.create(_OC.to_container(_c, resolve=False))
+_OC.resolve(_c)
+assert list(_c.trainer.logger) == ["console", "swanlab"], _c.trainer.logger
+print("[selfcheck] omegaconf logger list resolve OK")
 
 # --- 4. verl 训练链路依赖（对照 pyproject.toml + 训练代码 import）---
 verl_deps = [
