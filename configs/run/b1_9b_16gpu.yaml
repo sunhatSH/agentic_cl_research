@@ -1,0 +1,123 @@
+# 16 卡 9B 定制训练配置（2 节点 × 8 卡）。
+# = b1_9b.yaml 同款 9B 引擎（沙箱 Hermes rollout + baseline 无 CL 防遗忘）+ 16 卡硬件覆盖。
+#
+# 规模（用户 2026-07-23 确认）：
+#   train_batch=64 query × n8 = 512 轨迹/step；total_training_steps=500；save_freq=100
+#   max_prompt=2048（实测 max 708）；max_response=53886（claude opus 轨迹 p90）；
+#   micro=1（9B+56k序列+16卡安全）；ppo_mini=64（全 batch 单次更新）
+#
+# 启动：bash scripts/train_16gpu.sh --buckets --config configs/run/b1_9b_16gpu.yaml
+
+defaults:
+  - ../_generated_ppo_trainer
+  - ../base
+
+# ── 模型（Qwen3.5-9B）──────────────────────────────────────────────────────────
+actor_rollout_ref:
+  model:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    use_fused_kernels: false
+    override_config:
+      attn_implementation: sdpa
+
+  # ── 训练引擎（16 GPU FSDP, micro=1）─────────────────────────────────────────
+  actor:
+    strategy: fsdp
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+    entropy_coeff: 0.001
+    optim:
+      lr: 1.0e-6
+    ppo_mini_batch_size: 64             # 对齐 train_batch=64
+    ppo_micro_batch_size_per_gpu: 1
+    ppo_max_token_len_per_gpu: 65536
+    ulysses_sequence_parallel_size: 2   # SP=2 → DP=8（16卡÷2）
+    fsdp_config:
+      param_offload: true
+      optimizer_offload: true
+
+  # ── rollout：沙箱 Hermes（lightllm 后端，TP2）────────────────────────────────
+  rollout:
+    name: lightllm
+    mode: async
+    tensor_model_parallel_size: 2
+    gpu_memory_utilization: 0.30
+    n: 8
+    load_format: auto
+    max_model_len: 65536
+    max_num_batched_tokens: 8192
+    enable_chunked_prefill: false
+    calculate_log_probs: true
+    log_prob_micro_batch_size_per_gpu: 1
+    agent:
+      agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
+    multi_turn:
+      enable: false
+      format: qwen3_coder
+      reasoning_format: qwen3
+      max_assistant_turns: 20
+    checkpoint_engine:
+      update_weights_bucket_megabytes: 2048
+    engine_kwargs:
+      lightllm:
+        batch_max_tokens: 8192
+        enable_multimodal: false
+        enable_torch_memory_saver: true
+        graph_max_batch_size: 64
+        running_max_req_size: 64
+        sampling_backend: triton
+        disable_vision: true
+        disable_audio: true
+
+  ref:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    log_prob_micro_batch_size_per_gpu: 1
+    fsdp_config:
+      param_offload: true
+
+reward:
+  reward_model:
+    enable: false
+    rollout:
+      name: vllm
+
+# ── 数据 ──────────────────────────────────────────────────────────────────────
+# train_files 由 train_cl.sh --buckets 逐桶覆盖。
+data:
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/baseline_9b/train_office.parquet
+  val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/baseline_9b/val.parquet
+  train_batch_size: 64                # 64 query/step × n8 = 512 轨迹/step
+  gen_batch_size: 64
+  max_prompt_length: 2048
+  max_response_length: 53886
+  return_raw_chat: true
+  filter_overlong_prompts: true
+  trust_remote_code: true
+  dataloader_num_workers: 4
+  cache_dir: /tmp/verl_rlhf_cache
+
+# ── baseline 语义（无 KL、无 replay/buffer）──────────────────────────────────────
+cl:
+  lambda_replay: 0.0
+  buffer:
+    enabled: false
+
+# ── trainer：16 GPU 2 节点 ────────────────────────────────────────────────────
+trainer:
+  nnodes: 2
+  n_gpus_per_node: 8
+  total_epochs: 1
+  total_training_steps: 500
+  save_freq: 100
+  test_freq: 100
+  critic_warmup: 0
+  logger: [console]
+  log_val_generations: 50
+  project_name: agentic-cl
+  experiment_name: qwen35_9b_b1_16gpu
+  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_b1_16gpu}
+
+ray_kwargs:
+  ray_init:
+    address: local
+    num_cpus: null

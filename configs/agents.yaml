@@ -51,5 +51,5 @@ reward:
       api_base: "https://openai.sufy.com/v1"
       key_env: "SUFY_API_KEY"
       models:
-        - "anthropic/claude-4.8-opus"
-        - "anthropic/claude-4.6-sonnet"  # 同厂商备用
+        - "deepseek-v4-pro"
+        - "qwen/qwen3.6-plus"  # 备用
