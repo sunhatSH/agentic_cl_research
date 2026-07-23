@@ -162,18 +162,25 @@ _run_buckets() {  # 9 桶顺序训练：每桶从上一桶 ckpt 续训
   local buckets=(office research coding ops safety workflow finance communication qa)
   local data_dir="$ROOT_DIR/datasets/baseline_9b"
   local prev="$base_model"
+  local _resume=""                              # 首桶不 resume，后续 resume 上一桶最后一个 ckpt
   for b in "${buckets[@]}"; do
-    local bckpt="$ckpt_base/$b" logdir="$ROOT_DIR/logs/experiments/$exp/$b"
-    mkdir -p "$bckpt" "$logdir/rollout" "$logdir/val"
-    export CKPT_DIR="$bckpt" ROLLOUT_DATA_DIR="$logdir/rollout" VAL_DATA_DIR="$logdir/val"
-    echo "[train_cl] 桶 $b model=$prev"
-    "$PY" -m trainer.cl_main --config "$CONFIG" \
-      "actor_rollout_ref.model.path=$prev" "actor_rollout_ref.ref.path=$base_model" \
-      "data.train_files=$data_dir/train_$b.parquet" \
-      "trainer.default_local_dir=$bckpt" "trainer.experiment_name=${exp}_$b" \
-      2>&1 | tee "$logdir/train.log"
-    local latest; latest=$(ls -dt "$bckpt"/global_step_* 2>/dev/null | head -1)
-    [ -n "$latest" ] && prev="$latest/actor" || echo "[train_cl] WARN: 桶 $b 无 ckpt，续用 $prev"
+    local logdir="$ROOT_DIR/logs/experiments/$exp/$b"
+    mkdir -p "$ckpt_base" "$logdir/rollout" "$logdir/val"
+    export CKPT_DIR="$ckpt_base" ROLLOUT_DATA_DIR="$logdir/rollout" VAL_DATA_DIR="$logdir/val"
+  echo "[train_cl] 桶 $b model=$prev resume=${_resume}"
+  "$PY" -m trainer.cl_main --config "$CONFIG" \
+    "actor_rollout_ref.model.path=$prev" "actor_rollout_ref.ref.path=$base_model" \
+    "data.train_files=$data_dir/train_$b.parquet" \
+    "trainer.default_local_dir=$ckpt_base" "trainer.resume_from_path=$_resume" \
+    2>&1 | tee "$logdir/train.log"
+    local latest; latest=$(ls -dt "$ckpt_base"/global_step_* 2>/dev/null | head -1)
+    if [ -n "$latest" ]; then
+      prev="$latest/actor"
+      _resume="$latest"                         # 下一桶从这 resume
+    else
+      echo "[train_cl] WARN: 桶 $b 无 ckpt，续用 $prev"
+      _resume=""                                # 没 ckpt 就不 resume
+    fi
   done
   echo "[train_cl] 9 桶全部完成"
 }
