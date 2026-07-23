@@ -41,7 +41,7 @@ questioner:
       # rotate_every 轮换 + 人设 + 每轮报告变化保证，不依赖 thinking 模型。
       models:
         - "qwen/qwen3.7-max"
-        - "qwen3-max"
+        - "qwen/qwen3.6-plus"
         - "openai/gpt-5.4-mini"
 
 reward:
@@ -51,5 +51,5 @@ reward:
       api_base: "https://openai.sufy.com/v1"
       key_env: "SUFY_API_KEY"
       models:
-        - "deepseek-v4-pro"
+        - "deepseek-v4-pro-202606"
         - "qwen/qwen3.6-plus"  # 备用

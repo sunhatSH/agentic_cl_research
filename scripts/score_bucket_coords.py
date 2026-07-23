@@ -186,7 +186,7 @@ def _load_api_key() -> str:
     raise SystemExit("ERROR: SUFY_API_KEY or AGENT_MODEL_KEY not found.")
 
 
-def score(api_base: str = "https://openai.sufy.com/v1", model: str = "qwen3-max") -> dict:
+def score(api_base: str = "https://openai.sufy.com/v1", model: str = "deepseek-v4-pro-202606") -> dict:
     import urllib.request
 
     api_key = _load_api_key()
@@ -217,7 +217,7 @@ def score(api_base: str = "https://openai.sufy.com/v1", model: str = "qwen3-max"
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--output", "-o", default=None, help="output JSON path (default: stdout)")
-    ap.add_argument("--model", default="qwen3-max", help="LLM model for scoring")
+    ap.add_argument("--model", default="deepseek-v4-pro-202606", help="LLM model for scoring")
     args = ap.parse_args()
 
     coords = score(model=args.model)
