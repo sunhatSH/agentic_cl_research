@@ -40,9 +40,9 @@ questioner:
       # 故彻底移除两个 thinking 模型；跨风格多样性靠 sonnet/qwen/gpt-mini 三家 +
       # rotate_every 轮换 + 人设 + 每轮报告变化保证，不依赖 thinking 模型。
       models:
-        - "claude-4.6-sonnet"
-        - "qwen3-max"                # was qwen/qwen3.7-max (persistent 502 on sufy 2026-07-08)
-        - "openai/gpt-5.4-mini"      # 非 thinking、稳定；替下架的 thinking 模型保多样性
+        - "qwen/qwen3.7-max"
+        - "qwen3-max"
+        - "openai/gpt-5.4-mini"
 
 reward:
   temperature: 0.0                   # 冻结 reward，一致性
