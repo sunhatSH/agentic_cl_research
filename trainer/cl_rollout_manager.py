@@ -255,10 +255,19 @@ def make_cl_scheduler_manager_cls():
             # scheduler.run_step is sync (thread pool of sessions); run off the loop.
             trajectories = await asyncio.to_thread(scheduler.run_step, specs)
 
-            prompt_ids = [
-                list(tokenizer.apply_chat_template(t.messages[:1], tokenize=True, add_generation_prompt=True))
-                for t in trajectories
-            ]
+            def _safe_tokenize(messages):
+                ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+                # Qwen3.5 返回 BatchEncoding（非 dict 子类），需提取 input_ids
+                if hasattr(ids, "get") and "input_ids" in ids:
+                    ids = ids["input_ids"]
+                elif isinstance(ids, dict):
+                    ids = ids["input_ids"]
+                ids = list(ids)
+                if ids and isinstance(ids[0], (list, tuple)):
+                    ids = list(ids[0])
+                return ids
+
+            prompt_ids = [_safe_tokenize(t.messages[:1]) for t in trajectories]
             pad_id = getattr(tokenizer, "pad_token_id", 0) or 0
             return trajectories_to_dataproto(trajectories, prompt_ids, pad_token_id=pad_id)
 
