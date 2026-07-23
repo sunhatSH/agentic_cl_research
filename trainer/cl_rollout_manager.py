@@ -183,7 +183,7 @@ def make_cl_scheduler_manager_cls():
     from verl.experimental.agent_loop import AgentLoopManager as _Base
     from verl.utils.ray_utils import auto_await  # verl 基类用它让 async generate_sequences 可同步调
 
-    from rollout.collect import make_hermes_agent_fn
+    from rollout.collect import make_react_agent_fn
     from rollout.scheduler import RolloutScheduler, SessionSpec
 
     class CLSchedulerAgentLoopManager(_Base):
@@ -201,11 +201,21 @@ def make_cl_scheduler_manager_cls():
             rcfg = self.rollout_config
             agent_cfg = rcfg.get("agent", {}) or {}
 
-            agent_fn = make_hermes_agent_fn(
-                model=str(agent_cfg.get("model", "qwen3-8b")),
-                model_base=str(agent_cfg.get("model_base", "")),
+            # 训练 rollout：agent 在沙箱里跑 ReAct，但每步生成走 verl 的 LLM server
+            # （lightllm 后端）→ token_ids + log_probs 原生带回（GRPO 必需）。不能用
+            # make_hermes_agent_fn（那是冷采集的 CLI stdout 路径，response_token_ids=[]）。
+            from inference.generate import VerlRolloutGenerateFn
+            gen_fn = VerlRolloutGenerateFn(
+                self.llm_client,
+                self._get_tokenizer(),
+                sampling_params={
+                    "temperature": float(rcfg.get("temperature", 1.0)),
+                    "max_tokens": int(rcfg.get("response_length", 1024) or 1024),
+                },
+            )
+            agent_fn = make_react_agent_fn(
+                gen_fn,
                 max_turns=int(rcfg.get("multi_turn", {}).get("max_turns", 16)),
-                timeout=int(agent_cfg.get("timeout", 600)),
             )
             observer = Observer(use_llm=False)  # deterministic diff-driven, no model call
             questioner = Questioner()
