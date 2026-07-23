@@ -39,9 +39,17 @@ class VerlRolloutGenerateFn:
         from uuid import uuid4
 
         prompt_ids = self.tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
-        if isinstance(prompt_ids, dict):
+        # apply_chat_template 可能返回 BatchEncoding / dict（含 input_ids）而非纯 int list。
+        # BatchEncoding 不是 dict 子类，isinstance(_, dict) 判 False，直接 list() 会拿到
+        # key 字符串 ['input_ids','attention_mask'] → lightllm "prompt format error"。
+        if hasattr(prompt_ids, "get") and "input_ids" in prompt_ids:
+            prompt_ids = prompt_ids["input_ids"]
+        elif isinstance(prompt_ids, dict):
             prompt_ids = prompt_ids["input_ids"]
         prompt_ids = list(prompt_ids)
+        # 若仍是嵌套（batch 维 [[...]]），取第一条。
+        if prompt_ids and isinstance(prompt_ids[0], (list, tuple)):
+            prompt_ids = list(prompt_ids[0])
 
         async def _gen():
             return await self.llm_client.generate(
