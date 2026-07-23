@@ -92,14 +92,16 @@ reward:
       name: vllm
 
 # ── 数据：能力桶打标产物（无 system，走沙箱 Hermes）──────────────────────────────
-# train_files 由 train_cl.sh --buckets 逐桶覆盖为 datasets/baseline_9b/train_<bucket>.parquet。
+# train_files 用按桶序合并的 parquet + shuffle=false → 一次 cl_main 跑完 9 桶，
+# 无需 _run_buckets 多次调 / resume / per-bucket ckpt 目录。
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/baseline_9b/train_office.parquet
-  val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/baseline_9b/val.parquet
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/baseline_9b/train_all.parquet
+  val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/baseline_9b/val_all.parquet
   train_batch_size: 32               # 32 query × rollout.n8 = 256 轨迹/step（GRPO 统计量下限）
   gen_batch_size: 32
   max_prompt_length: 2048            # 数据实测 max 708
   max_response_length: 53886         # 冷采集 claude opus 轨迹 p90；OOM 退路 → 10399（p50）
+  shuffle: false                     # 按文件序（桶序排列）训，保证按桶顺序 → 可测遗忘
   return_raw_chat: true
   filter_overlong_prompts: true
   trust_remote_code: true
