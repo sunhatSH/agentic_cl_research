@@ -157,22 +157,19 @@ _run_buckets() {  # 9 桶顺序训练：每桶从上一桶 ckpt 续训
   local base_model; base_model=$(grep -E "^[[:space:]]*path:" "$CONFIG" 2>/dev/null | head -1 | sed -E "s/.*path:[[:space:]]*//;s/[[:space:]\"']*//g")
   local exp; exp=$(_exp_name)
   local ckpt_base="$ROOT_DIR/ckpts/$exp"
-  # 桶:steps —— steps = ceil(该桶条数/32)（train_batch=32 query×n8=256 轨迹/step，跑满 1 epoch）。
-  # office1492→47 research989→31 coding204→7 ops44→2 safety27→1 workflow17→1
-  # finance10→1 communication8→1 qa2→1。桶序 = 训练组间序（评测须同序对齐，防遗忘方案）。
-  local buckets=(office:47 research:31 coding:7 ops:2 safety:1 workflow:1 finance:1 communication:1 qa:1)
+  # 桶序 = 训练组间序（评测须同序对齐，防遗忘方案）。
+  # total_training_steps/save_freq/test_freq 来自 config（不按桶数据量覆盖）。
+  local buckets=(office research coding ops safety workflow finance communication qa)
   local data_dir="$ROOT_DIR/datasets/baseline_9b"
   local prev="$base_model"
-  for entry in "${buckets[@]}"; do
-    local b="${entry%%:*}" steps="${entry##*:}"
+  for b in "${buckets[@]}"; do
     local bckpt="$ckpt_base/$b" logdir="$ROOT_DIR/logs/experiments/$exp/$b"
     mkdir -p "$bckpt" "$logdir/rollout" "$logdir/val"
     export CKPT_DIR="$bckpt" ROLLOUT_DATA_DIR="$logdir/rollout" VAL_DATA_DIR="$logdir/val"
-    echo "[train_cl] 桶 $b steps=$steps model=$prev"
+    echo "[train_cl] 桶 $b model=$prev"
     "$PY" -m trainer.cl_main --config "$CONFIG" \
       "actor_rollout_ref.model.path=$prev" "actor_rollout_ref.ref.path=$base_model" \
       "data.train_files=$data_dir/train_$b.parquet" \
-      "trainer.total_training_steps=$steps" "trainer.save_freq=$steps" "trainer.test_freq=$steps" \
       "trainer.default_local_dir=$bckpt" "trainer.experiment_name=${exp}_$b" \
       2>&1 | tee "$logdir/train.log"
     local latest; latest=$(ls -dt "$bckpt"/global_step_* 2>/dev/null | head -1)
