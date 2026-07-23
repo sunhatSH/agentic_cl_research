@@ -252,40 +252,21 @@ def make_cl_scheduler_manager_cls():
             scheduler = self._build_scheduler()
             specs = [SessionSpec(session_id=str(i), queries=[q]) for i, q in enumerate(queries)]
 
-            # 逐 query 跑 scheduler，每个 slot 的所有 turn 合成一条长轨迹。
-            # response_mask: assistant=1（可训）、user/observation=0（不可训，仅上下文）。
-            # 每 query 固定 n=8 条，全部轮数据不丢。
-            import dataclasses as _dc
+            # 逐 query 跑 scheduler。每轮的 8 条轨迹各自独立训练（不合并），GRPO 组 n=8
+            # 保留。query 数=K×N，pad/trim 到 verl 期望的 batch_size。
+            n_per_query = int(rcfg.get("n", 8))
+            expected_n = len(prompts.batch)
             all_trajs = []
 
             for i, q in enumerate(queries):
                 spec = SessionSpec(session_id=str(i), queries=[q])
                 q_trajs = await asyncio.to_thread(scheduler.run_step, [spec])
-                by_slot: dict[int, list] = {}
-                for t in q_trajs:
-                    by_slot.setdefault(t.slot_idx, []).append(t)
-                for s in sorted(by_slot):
-                    turns = by_slot[s]
-                    if len(turns) == 1:
-                        all_trajs.append(turns[0])
-                    else:
-                        merged_msgs = []
-                        merged_ids = []
-                        merged_lps = []
-                        merged_mask = []
-                        for t in turns:
-                            merged_msgs.extend(t.messages)
-                            merged_ids.extend(list(t.response_token_ids))
-                            merged_lps.extend(list(t.logprobs or []))
-                            merged_mask.extend(list(t.meta.get("response_mask") or [1] * len(t.response_token_ids)))
-                        merged = _dc.replace(
-                            turns[0],
-                            messages=merged_msgs,
-                            response_token_ids=merged_ids,
-                            logprobs=merged_lps,
-                            meta={**turns[0].meta, "response_mask": merged_mask, "num_turns": len(turns)})
-                        all_trajs.append(merged)
-            trajectories = all_trajs
+                all_trajs.extend(q_trajs)
+
+            # pad/trim to verl's expected batch size
+            if len(all_trajs) < expected_n:
+                all_trajs += [all_trajs[-1]] * (expected_n - len(all_trajs))
+            trajectories = all_trajs[:expected_n]
 
             def _safe_tokenize(messages):
                 ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
