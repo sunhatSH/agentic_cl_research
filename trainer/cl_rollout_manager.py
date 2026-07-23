@@ -252,16 +252,15 @@ def make_cl_scheduler_manager_cls():
             scheduler = self._build_scheduler()
             specs = [SessionSpec(session_id=str(i), queries=[q]) for i, q in enumerate(queries)]
 
-            # 逐 query 跑 scheduler，按 slot 聚合所有 turn 的长轨迹。
-            # 每个 query 产固定 n=8 条（每 slot 一条长轨迹），全部 query 合计 N×n 条。
-            n_per_query = int(rcfg.get("n", 8))
+            # 逐 query 跑 scheduler，每个 slot 的所有 turn 合成一条长轨迹。
+            # response_mask: assistant=1（可训）、user/observation=0（不可训，仅上下文）。
+            # 每 query 固定 n=8 条，全部轮数据不丢。
             import dataclasses as _dc
             all_trajs = []
 
             for i, q in enumerate(queries):
                 spec = SessionSpec(session_id=str(i), queries=[q])
                 q_trajs = await asyncio.to_thread(scheduler.run_step, [spec])
-                # 按 slot_idx 分组
                 by_slot: dict[int, list] = {}
                 for t in q_trajs:
                     by_slot.setdefault(t.slot_idx, []).append(t)
@@ -269,26 +268,23 @@ def make_cl_scheduler_manager_cls():
                     turns = by_slot[s]
                     if len(turns) == 1:
                         all_trajs.append(turns[0])
-                        continue
-                    merged_messages = []
-                    merged_ids = []
-                    merged_lps = []
-                    merged_mask = []
-                    for t in turns:
-                        merged_messages.extend(t.messages)
-                        merged_ids.extend(list(t.response_token_ids))
-                        merged_lps.extend(list(t.logprobs or []))
-                        merged_mask.extend(list(t.meta.get("response_mask") or [1] * len(t.response_token_ids)))
-                    merged = _dc.replace(
-                        turns[0],
-                        messages=merged_messages,
-                        response_token_ids=merged_ids,
-                        logprobs=merged_lps,
-                        meta={**turns[0].meta,
-                              "response_mask": merged_mask,
-                              "num_turns": len(turns)},
-                    )
-                    all_trajs.append(merged)
+                    else:
+                        merged_msgs = []
+                        merged_ids = []
+                        merged_lps = []
+                        merged_mask = []
+                        for t in turns:
+                            merged_msgs.extend(t.messages)
+                            merged_ids.extend(list(t.response_token_ids))
+                            merged_lps.extend(list(t.logprobs or []))
+                            merged_mask.extend(list(t.meta.get("response_mask") or [1] * len(t.response_token_ids)))
+                        merged = _dc.replace(
+                            turns[0],
+                            messages=merged_msgs,
+                            response_token_ids=merged_ids,
+                            logprobs=merged_lps,
+                            meta={**turns[0].meta, "response_mask": merged_mask, "num_turns": len(turns)})
+                        all_trajs.append(merged)
             trajectories = all_trajs
 
             def _safe_tokenize(messages):
