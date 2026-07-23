@@ -33,7 +33,7 @@ actor_rollout_ref:
     entropy_coeff: 0.001         # lambda_4, FIXED (anti Echo Trap)
     optim:
       lr: 1.0e-6
-    ppo_mini_batch_size: 8
+    ppo_mini_batch_size: 32             # 对齐 train_batch=32（一次更新用满 256 轨迹）
     ppo_micro_batch_size_per_gpu: 1     # 4卡+9B+长序列：先 1，OOM 无退路只能降序列长度
     ppo_max_token_len_per_gpu: 65536    # 覆盖 prompt2048+response53886≈56k
     ulysses_sequence_parallel_size: 1
@@ -96,8 +96,8 @@ reward:
 data:
   train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/baseline_9b/train_office.parquet
   val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/baseline_9b/val.parquet
-  train_batch_size: 16               # 256×1/16
-  gen_batch_size: 16
+  train_batch_size: 32               # 32 query × rollout.n8 = 256 轨迹/step（GRPO 统计量下限）
+  gen_batch_size: 32
   max_prompt_length: 2048            # 数据实测 max 708
   max_response_length: 53886         # 冷采集 claude opus 轨迹 p90；OOM 退路 → 10399（p50）
   return_raw_chat: true

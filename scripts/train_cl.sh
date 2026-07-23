@@ -157,10 +157,10 @@ _run_buckets() {  # 9 桶顺序训练：每桶从上一桶 ckpt 续训
   local base_model; base_model=$(grep -E "^[[:space:]]*path:" "$CONFIG" 2>/dev/null | head -1 | sed -E "s/.*path:[[:space:]]*//;s/[[:space:]\"']*//g")
   local exp; exp=$(_exp_name)
   local ckpt_base="$ROOT_DIR/ckpts/$exp"
-  # 桶:steps —— steps = ceil(该桶条数/16)（batch=16 跑满 1 epoch）。数据见 datasets/baseline_9b/。
-  # office1492→94 research989→62 coding204→13 ops44→3 safety27→2 workflow17→2
+  # 桶:steps —— steps = ceil(该桶条数/32)（train_batch=32 query×n8=256 轨迹/step，跑满 1 epoch）。
+  # office1492→47 research989→31 coding204→7 ops44→2 safety27→1 workflow17→1
   # finance10→1 communication8→1 qa2→1。桶序 = 训练组间序（评测须同序对齐，防遗忘方案）。
-  local buckets=(office:94 research:62 coding:13 ops:3 safety:2 workflow:2 finance:1 communication:1 qa:1)
+  local buckets=(office:47 research:31 coding:7 ops:2 safety:1 workflow:1 finance:1 communication:1 qa:1)
   local data_dir="$ROOT_DIR/datasets/baseline_9b"
   local prev="$base_model"
   for entry in "${buckets[@]}"; do
