@@ -99,7 +99,7 @@ trainer:
   save_freq: 50
   test_freq: 50
   critic_warmup: 0
-  logger: ${oc.decode:${oc.env:VERL_LOGGER,[console,swanlab]}}   # DEBUG=1 → console; 正式 swanlab only
+  logger: [console, swanlab]   # 字面 list（oc.decode 返回 list 会在 verl resolve 阶段炸）
   log_val_generations: 50
   rollout_data_dir: ${oc.decode:${oc.env:ROLLOUT_DATA_DIR,null}}
   validation_data_dir: ${oc.decode:${oc.env:VAL_DATA_DIR,null}}

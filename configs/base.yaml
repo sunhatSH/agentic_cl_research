@@ -190,9 +190,10 @@ trainer:
   test_freq: 25
   project_name: agentic-cl        # swanlab 项目名（各实验在 swanlab.cn/@you/agentic-cl 下）
   # experiment_name: 各 phaseN/exp.yaml 覆盖（如 b1 / r4），verl 据此建 swanlab run
-  # logger 按模式切：正式训练 ['swanlab']（无 console 刷屏），DEBUG=1 时 run_phases.sh
-  # 会导出 VERL_LOGGER=[console,swanlab] 保留 console。默认（本地/直接调）含 console。
-  logger: ${oc.decode:${oc.env:VERL_LOGGER,[console,swanlab]}}   # SWANLAB_API_KEY via load_training_env.sh
+  # logger 用字面 list（不用 ${oc.decode:...} 插值）：oc.decode 按 OmegaConf 设计只能返回
+  # 标量，返回 list 会在 verl_runner 的 OmegaConf.resolve 阶段报 UnsupportedValueType。
+  # 想切后端就改这行；各实验 config 可覆盖（如 b1_9b 只留 [console]）。
+  logger: [console, swanlab]   # SWANLAB_API_KEY via load_training_env.sh
   # 全量记录（正式训练）：验证生成文本记 SwanLab + rollout/val 文本落盘。
   # 路径由 run_phases.sh 按实验注入 logs/experiments/<phase>/<exp>/{rollout,val}；
   # 不设 env 时为 null（本地 debug 不强制落盘）。
