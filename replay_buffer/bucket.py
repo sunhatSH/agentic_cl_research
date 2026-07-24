@@ -90,7 +90,7 @@ class BucketReplayBuffer:
         eviction_type: str = "priority",
         bucket_floors: Sequence[int] | None = None,
         within_bucket_sampling: str = "priority",
-        bucket_strategy: str = "quota",
+        bucket_strategy: str = "distance",
         seed: int | None = None,
     ):
         if bucket_names is None:
@@ -148,16 +148,24 @@ class BucketReplayBuffer:
             floors=self.bucket_floors,
         )
         # Persistent sampler so last-sample state survives across sample() calls.
-        from replay_buffer.sampler import BaselineSampler, TwoLevelSampler
+        from replay_buffer.sampler import BaselineSampler, DistanceStrategy, TwoLevelSampler
 
         if eviction_type == "reservoir" or within_bucket_sampling == "priority":
+            # Main path: distance-based bucket strategy + within-bucket priority.
+            # ``bucket_strategy`` is accepted for backward compat but ignored --
+            # distance is the only bucket-level strategy now (quota/uniform
+            # archived 2026-07-23). Pass a DistanceStrategy instance directly.
+            strategy = bucket_strategy if not isinstance(bucket_strategy, str) else DistanceStrategy()
             self._sampler = TwoLevelSampler(
                 self,
-                bucket_strategy=bucket_strategy,
+                bucket_strategy=strategy,
                 within_bucket_sampling=within_bucket_sampling,
                 rng=self._rng,
             )
         else:
+            # CLEAR baseline (Rolnick 2019): uniform over the whole pool, no
+            # bucket awareness. Used when within_bucket_sampling='uniform' and
+            # eviction is not reservoir (the no-CL-strategy control).
             self._sampler = BaselineSampler(self, rng=self._rng)
 
         self._step = 0
@@ -263,17 +271,35 @@ class BucketReplayBuffer:
     def set_current_bucket(self, bucket: str | None) -> None:
         """Notify the sampler which bucket is currently being trained.
 
-        When using ``bucket_strategy="distance"``, this causes farther buckets
-        to receive higher replay weights.
+        Convenience wrapper for the single-bucket case: builds a distribution
+        {bucket: 1.0} and forwards to ``set_current_distribution``. When the
+        training batch mixes buckets (multi-turn sessions expand to per-turn
+        GRPO groups, or the tail of one bucket blends into the next), call
+        ``set_current_distribution`` directly with the batch's bucket shares.
         """
-        if hasattr(self._sampler, "set_current_bucket"):
-            self._sampler.set_current_bucket(bucket)
+        if bucket is None:
+            self.set_current_distribution(None)
+            return
+        self.set_current_distribution({bucket: 1.0})
+
+    def set_current_distribution(self, distribution: dict[str, float] | None) -> None:
+        """Notify the sampler of the current training batch's bucket distribution.
+
+        ``distribution`` maps bucket name -> share (n_i / batch_size). Drives
+        the distance-based replay weights: the centroid of the trained buckets
+        is computed, and buckets far from it (higher forgetting risk) get higher
+        replay weight. None during cold-start / warmup (falls back to uniform).
+        """
+        if hasattr(self._sampler, "set_current_distribution"):
+            self._sampler.set_current_distribution(distribution)
 
     def sample(self, batch_size: int):
-        """Proportional-random sampling (BaselineSampler by default).
+        """Sample replay trajectories.
 
-        TwoLevelSampler used when ``within_bucket_sampling='priority'`` or
-        ``eviction_type='reservoir'`` (ablation / future).
+        TwoLevelSampler (distance bucket strategy + within-bucket priority) is
+        the main path. BaselineSampler (CLEAR, uniform over the whole pool) is
+        the no-CL-strategy control, used when ``within_bucket_sampling='uniform'``
+        and ``eviction_type`` is not reservoir.
         """
         return self._sampler.sample(batch_size)
 

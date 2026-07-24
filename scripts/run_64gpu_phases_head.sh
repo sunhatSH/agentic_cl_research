@@ -34,7 +34,7 @@ if [ "$WORKER_MODE" = "1" ]; then
   while true; do
     # 每轮重连 head 的 ray cluster，直到 head 发完所有实验
     ray start --address "$MASTER_ADDR:6379" 2>/dev/null || true
-    # 等 head 的 train_cl.sh 完成当前实验后 ray stop，worker 自动退出
+    # 等 head 的 train.sh 完成当前实验后 ray stop，worker 自动退出
     sleep 10
     if ! pgrep -f "ray.*start.*$MASTER_ADDR" >/dev/null 2>&1; then
       ray stop --force 2>/dev/null || true

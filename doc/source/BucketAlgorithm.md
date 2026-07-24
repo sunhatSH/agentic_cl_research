@@ -4,7 +4,7 @@
 > **代码**：`replay_buffer/`（`bucket.py`, `sampler.py`, `priority.py`, `eviction.py`, `weighting.py`, `store.py`）
 > **配置**：`configs/base.yaml` § `cl.buffer`
 > **引用本文件的文档**：`doc/source/CL_Design.md`, `doc/source/训练与推理流程.md`
-> **最后更新**：2026-07-15（移除 q_min，纯比例配额）
+> **最后更新**：2026-07-23（桶级采样改为 distance 距离加权；quota/uniform 归档；CLEAR 基线明确为全池均匀）
 
 ---
 
@@ -174,23 +174,38 @@ priority = 0.5 × forgetting_risk + 0.25 × rarity + 0.0 × diversity + 0.25 × 
 
 ## 6. 采样（TwoLevelSampler）
 
-### 6.1 桶级采样
+> **2026-07-23 重大变更**：桶级采样从"quota 比例 + 均匀 + 饥饿加成"改为 **distance 距离加权**。`UniformStrategy` / `QuotaStrategy` / `make_strategy` 注册表已删除归档，桶级只留 `DistanceStrategy`（主方案）与 `BaselineSampler`（CLEAR 基线）。原因见 §6.1。
+
+### 6.1 为什么改成 distance
+
+旧 quota 策略的桶级权重 = `0.7 × soft_target/C + 0.3 × 1/K + starvation`，**不感知当前在训哪个桶**——训 finance 时和训 ops 时回放分布一样。这违背防遗忘的核心：**训新桶时应多回放离它远（易忘）的旧桶**。
+
+distance 策略让回放权重随"当前训练位置"移动：训 finance 时，离 finance 远的桶（如 coding/research）权重高、多回放防遗忘；离 finance 近的桶权重低。这才是定向防遗忘。
+
+### 6.2 桶级采样（DistanceStrategy）
 
 ```
-bucket_weight(b) = 0.7 × soft_target[b]/C  +  0.3 × 1/K  +  starvation_boost
+centroid = Σ_i  share_i × coords[bucket_i]        # share_i = n_i / batch_size
+bucket_weight(b) = distance(b, centroid) / mean(distance)
 ```
 
-- **70% 按配额比例**：大桶更多被采，覆盖主流能力
-- **30% 均匀**：保障长尾桶也被采样
-- **starvation_boost**：超过 50 step 没被采过的桶 +0.1 额外权重
+- **当前 batch 的桶分布**：一个 batch 可能混桶（多轮 session 展开成单轮 GRPO 组，或一桶尾部混入下一桶头部）。"当前训练位置" = batch 内各桶按占比加权的**质心**，不是单一桶。
+- **距离**：每个桶有 5 维能力坐标（`configs/bucket_coords.json`，由 `scripts/score_bucket_coords.py` 产出）。回放桶 b 的权重 = b 到质心的欧氏距离 / 平均距离。
+- **远的桶权重高**：离当前训练位置远 = 遗忘风险高 = 多回放。
+- **当前桶权重≈0**：在质心上的桶距离 0，几乎不回放（正在 on-policy 训练，不需要回放自己）。
+- **冷启动**：`current_distribution=None`（buffer 还没数据/没跑过 batch）时退化为全桶均匀，保证每个非空桶都能被采到。
 
-### 6.2 桶内采样
+### 6.3 桶内采样
 
 按 priority **加权随机**采样（`rng.choices(ids, weights=priorities)`），**非 top-k 贪心**——避免只重复"明星轨迹"。
 
-### 6.3 去重
+### 6.4 去重
 
 同一 batch 内同一条轨迹只出现一次。加权随机可能重抽同一个 tid，重试最多 20×batch_size 次，不够则扫剩余轨迹补齐。
+
+### 6.5 CLEAR 基线（BaselineSampler）
+
+`within_bucket_sampling='uniform'` 且 `eviction_type != 'reservoir'` 时走 `BaselineSampler`：**全池均匀随机**，不分桶、不感知 current、不看 priority。这是 Rolnick et al. 2019 的 experience replay 基线——唯一的 CL 机制是"保留旧轨迹并随机回放"，无任何防遗忘加权。作为对照，证明 distance 加权的增益。
 
 ---
 
@@ -263,7 +278,7 @@ cl:
 | 组件 | 文件 | 关键类/函数 |
 |------|------|------|
 | 配额分配 | `replay_buffer/bucket.py` | `allocate_quota()`, `BucketReplayBuffer` |
-| 采样 | `replay_buffer/sampler.py` | `TwoLevelSampler.sample()` |
+| 采样 | `replay_buffer/sampler.py` | `TwoLevelSampler.sample()`, `DistanceStrategy`, `BaselineSampler` |
 | Priority | `replay_buffer/priority.py` | `Priority.compute()`, `UniformPriority`, `RewardPriority` |
 | 淘汰 | `replay_buffer/eviction.py` | `Eviction.select_victim()`, `should_evict()` |
 | 回放权重 | `replay_buffer/weighting.py` | `TokenWeighting.compute()` |

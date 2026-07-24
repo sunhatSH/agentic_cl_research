@@ -492,13 +492,17 @@ def main() -> None:
     ap.add_argument("--slot-timeout", type=int, default=900, help="per-sandbox timeout (s)")
     ap.add_argument("--collect-mode", choices=["overwrite", "incremental", "retry"],
                     default="incremental")
-    # 正式采集固定「1 个真实 seed task + Questioner 多轮在线追问」，无开关。
-    # --no-usersim 仅调试/冒烟用：跳过 observer/questioner（不连 sufy LLM），只跑 seed 验采集链路。
+    # 单轮采集（2026-07-23 全链路单轮化）：正式采集默认单轮——只跑 seed query，
+    # 不调 observer/questioner（单轮不需要它们）。多轮追问已 deprecated（训练侧 verl
+    # 固定 batch 契约 vs 多轮变长不可调和，见 rollout/simulated_session.py docstring）。
+    # --no-usersim 现在是正式单轮的开关（不再是"仅调试"）；--multi-turn 可回退多轮（deprecated）。
     ap.add_argument("--no-usersim", "--single-task", "--single-turn", action="store_true",
-                    dest="no_usersim",
-                    help="调试/冒烟：跳过 observer/questioner（不连 sufy），只跑单个 seed task 验采集链路。"
-                         "正式采集不要用——正式会话固定 1 seed + 多轮追问。"
-                         "旧名 --single-task/--single-turn 作别名兼容。")
+                    dest="no_usersim", default=True,
+                    help="单轮采集（默认）：只跑 seed query，跳过 observer/questioner。"
+                         "全链路单轮化后的正式方案。")
+    ap.add_argument("--multi-turn", action="store_true",
+                    help="（deprecated）回退多轮追问：actor + observer + questioner。"
+                         "多轮已搁置，仅留作未来轮池方案恢复时用。")
     ap.add_argument("--out-dir", default=None,
                     help="override output BASE dir (default <ROLLOUTS_ROOT>/{real|smoke}); "
                          "trajectory/<model>/ and debug/observer_report/<model>/ are created under it")
@@ -535,7 +539,7 @@ def main() -> None:
             hermes_max_turns=args.hermes_max_turns,
             slot_timeout=args.slot_timeout,
             mode=args.collect_mode,
-            multi_turn=not args.no_usersim,
+            multi_turn=args.multi_turn,  # 单轮为默认；--multi-turn 显式回退（deprecated）
             out_dir=Path(args.out_dir) if args.out_dir else None,
             workspace_dir=args.workspace_dir,
             model_tag=args.model_tag,

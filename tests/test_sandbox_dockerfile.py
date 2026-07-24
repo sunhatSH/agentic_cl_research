@@ -24,10 +24,15 @@ def test_dockerfile_no_snapshot_violations():
 
 
 def test_sandbox_tool_json_has_required_ports():
+    """The custom sandbox Tool exposes the envd port (49983) for commands.run.
+
+    Code execution goes through envd gRPC on 49983 (commands.run), NOT the
+    Jupyter /execute on 49999 -- the base sandbox-code image ships no Jupyter
+    kernel (see rollout/sandbox_client.py:135-139). So only 49983 is required.
+    """
     import json
 
     cfg = json.loads((ROOT / "configs" / "sandbox_tool.json").read_text(encoding="utf-8"))
     ports = {p["Port"] for p in cfg["CustomConfiguration"]["Ports"]}
-    assert 49999 in ports  # run-code
-    assert 49983 in ports  # envd
+    assert 49983 in ports  # envd (commands.run)
     assert cfg["ToolType"] == "custom"

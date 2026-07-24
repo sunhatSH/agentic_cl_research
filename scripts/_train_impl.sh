@@ -1,16 +1,6 @@
 #!/usr/bin/env bash
-# 参数化 CL 训练启动器 —— 所有 GPU/机器/集群相关的都是命令行参数。
-#
-# 这是唯一的训练启动基础脚本。规格 wrapper（train_4gpu/8gpu/32gpu/64gpu.sh）只是
-# 把各自的拓扑参数 pin 好后 exec 本脚本。任意实验阶段用 --config 传入。
-#
-# 用法：
-#   bash scripts/train_cl.sh --config configs/run/b1_8b.yaml \
-#        --nnodes 1 --gpus-per-node 8 --rollout-tp 2 --ulysses-sp 1 \
-#        --train-batch 256 --ppo-mini 32
-#   bash scripts/train_cl.sh --smoke --config configs/phase1/smoke_1step.yaml \
-#        --nnodes 1 --gpus-per-node 4 --rollout-tp 2 --train-batch 8 --ppo-mini 8
-#   bash scripts/train_cl.sh --buckets --config configs/run/b1_8b.yaml ...   # 9 桶顺序训练
+# _train_impl.sh — internal: called by ``scripts/train`` (the unified entry point).
+# 所有 GPU/机器/集群拓扑都是命令行参数。禁止直接调用；走 ``scripts/train <TOPOLOGY>``。
 #
 # 并行约束（verl engine_workers.py:258）：
 #   DP = 总卡数 / ULYSSES_SP_SIZE ; train_batch % DP == 0 ; ppo_mini % DP == 0

@@ -98,9 +98,9 @@ ruff check . && black --check .
 
 | 依赖 | 位置 | 状态 |
 |------|------|------|
-| 代码 | AFS: `/mnt/afs_toolcall/sunhao4/agentic_cl_research` | ✅ `dev_train` |
+| 代码 | AFS: `/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research` | ✅ `dev_train` |
 | 模型权重 | AFS: `/mnt/afs_agents/share_models/Qwen/Qwen3.6-27B` | 脚本自动 cp 到 `/tmp/qwen36` |
-| Judge 端点 | `configs/agents.yaml` → sufy `anthropic/claude-4.8-opus` | ✅ |
+| Judge 端点 | `configs/agents.yaml` → sufy `deepseek-v4-pro-202606` | ✅ |
 | 腾讯/E2B 凭证 | `docker/sandbox/tencent.env` | ✅ |
 | 镜像 | `registry.cn-tj-01.sensecore.cn/ccr-zuhu2026/qwen36-lightllm:1.0` | ✅ 2026-07-03 迁新租户 |
 
@@ -108,19 +108,26 @@ ruff check . && black --check .
 
 | 字段 | 值 |
 |------|-----|
-| 启动命令 | `bash /mnt/afs_toolcall/sunhao4/agentic_cl_research/scripts/start_train.sh` |
+| 启动命令 | `bash /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/scripts/train <TOPO> --config <CFG>` |
 | 节点数 | 8 |
 | 每节点 GPU | 8（共 64 卡） |
 | 镜像 | 见上表 |
 
 脚本按 `RANK` 区分角色：`RANK=0` → ray head + 训练 + ray stop；`RANK≠0` → ray worker --block。
 
+统一入口 ``scripts/train``（2026-07-24 重构，替换散落的 train_4gpu/8gpu/16gpu/32gpu/64gpu.sh）：
 ```bash
-# 单实验
-bash scripts/start_train.sh configs/run/r4.yaml
-# 串跑（默认 b1 + r4）
-bash scripts/run_phases.sh
+# 9B baseline（16 卡）
+bash scripts/train 16gpu --config configs/run/b1_9b_16gpu.yaml
+
+# 27B 正式训练（64 卡）
+bash scripts/train 64gpu --config configs/run/b1.yaml
+
+# dev 机测试（4 卡，自动检测）
+bash scripts/train --smoke --config configs/phase1/smoke_1step.yaml
 ```
+
+``start_train.sh`` → ``scripts/train`` 的 symlink（向后兼容集群旧 Job 配置）。
 
 ### 脚本内部流程
 

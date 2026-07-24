@@ -588,7 +588,9 @@ def test_config_resolve_judge_from_yaml():
     try:
         ep = resolve_judge()
         assert ep.base_url == "https://openai.sufy.com/v1"
-        assert ep.model == "anthropic/claude-4.8-opus"
+        # Judge model is the first in configs/agents.yaml reward.providers[0].models.
+        # Kept in sync with the yaml (single source of truth); update both if changed.
+        assert ep.model == "deepseek-v4-pro-202606"
         assert ep.temperature == 0.0
     finally:
         _reload_config(None)
@@ -602,11 +604,12 @@ def test_config_resolve_questioner_from_yaml():
     try:
         q_cfg = resolve_questioner()
         assert len(q_cfg.rotation) == 3
-        # All reliable NON-thinking models — the thinking models (deepseek/kimi)
-        # were removed after iter9 showed they over-truncate on long prompts and
-        # cause questioner_error via chained failover (2026-07-10 Iter10).
-        assert q_cfg.rotation[0].model == "claude-4.6-sonnet"
-        assert q_cfg.rotation[1].model == "qwen3-max"
+        # Rotation pool mirrors configs/agents.yaml questioner.providers[0].models.
+        # All reliable NON-thinking models — thinking models (deepseek/kimi) were
+        # removed after iter9 showed they over-truncate on long prompts and cause
+        # questioner_error via chained failover (2026-07-10 Iter10).
+        assert q_cfg.rotation[0].model == "qwen/qwen3.7-max"
+        assert q_cfg.rotation[1].model == "qwen/qwen3.6-plus"
         assert q_cfg.rotation[2].model == "openai/gpt-5.4-mini"
         assert q_cfg.rotate_every == 5
     finally:

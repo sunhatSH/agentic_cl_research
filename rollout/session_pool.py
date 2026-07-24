@@ -89,14 +89,18 @@ def select_winner_with_fallback(
 
 
 def _default_sync(slots: list[_Slot], winner_state: Any) -> None:
-    """Mock D1: copy winner state to every slot (deep copy = independent).
+    """Copy winner state to every slot (deep copy = independent).
 
-    REAL backend contract (doc/sandbox/Sandbox_管理调度指南.md §6): the winner instance is
-    the session's only live state carrier and MUST stay alive across queries --
-    kill ONLY the 7 losers and derive their replacements from the live winner.
-    NEVER kill all 8 mid-session (that drops process/in-memory state subsequent
-    queries depend on; the abandoned "D2 杀重建" path). Killing all 8 happens
-    only at session end (destroy_all).
+    This is the CORRECT single-turn behavior: after picking the winner, all 8
+    slots are aligned to the winner's state so the next turn (if any) starts
+    bit-identical. No slot is killed mid-session -- they all stay alive carrying
+    the winner's state, and are destroyed together at session end
+    (``destroy_all``). The real-backend contract (doc/ops/sandbox/
+    Sandbox_管理调度指南.md §6) is the same in spirit: the winner is the
+    session's only live state carrier; losers are derived from it, not kept as
+    independent divergent states. Killing all 8 mid-session (the abandoned
+    "D2 杀重建" path) drops process/in-memory state subsequent turns depend on
+    and only happens at session end.
     """
     for s in slots:
         s.state = copy.deepcopy(winner_state)

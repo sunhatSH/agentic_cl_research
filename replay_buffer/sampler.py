@@ -1,19 +1,19 @@
-"""Replay sampling strategies with pluggable bucket-level selection.
+"""Replay sampling strategies.
 
-BucketStrategy (Protocol):
-    Determines how much weight each bucket gets when sampling replay trajectories.
-    Three implementations are provided, swappable by config key:
+Two bucket-level samplers remain (others archived 2026-07-23):
 
-    - ``uniform`` (UniformStrategy):       equal weight for all buckets.
-    - ``quota`` (QuotaStrategy):           proportional to soft_target quota,
-                                           mixed with uniform + starvation boost.
-                                           (current TwoLevelSampler default)
-    - ``distance`` (DistanceStrategy):     weighted by capability-space distance
-                                           from the currently-trained bucket.
-                                           Farther = higher forgetting risk =
-                                           higher replay weight.
+- ``DistanceStrategy`` (main): replay weight = capability-space distance from
+  the *current batch's* bucket distribution. A batch may mix buckets (multi-turn
+  sessions expand to per-turn GRPO groups); the "current position" is the
+  batch-weighted centroid of the buckets being trained. Farther buckets carry
+  higher forgetting risk -> higher replay weight.
 
-Within-bucket sampling remains unchanged (priority-weighted random or uniform).
+- ``BaselineSampler`` (CLEAR baseline, Rolnick et al. 2019): uniform random
+  over the WHOLE pool, no bucket awareness, no current-bucket signal. This is
+  the no-CL-strategy control.
+
+Within-bucket sampling is unchanged: ``priority`` (default) or ``uniform``
+(R0 / R3 ablation). That is a separate axis from the bucket-level strategy.
 """
 
 from __future__ import annotations
@@ -59,75 +59,43 @@ def _weighted_choice_without_replacement(
 
 
 class BucketStrategy(Protocol):
-    """Pluggable bucket-level selection strategy.
+    """Bucket-level selection: given the buffer + the current batch's bucket
+    distribution, return a dict mapping each bucket name to a sampling weight.
 
-    Given the buffer state and the currently-trained bucket name (or None),
-    return a dict mapping each bucket name to a sampling weight.
+    ``current_distribution`` maps bucket name -> share of the current training
+    batch (e.g. {"finance": 0.56, "ops": 0.44}); it is None during cold-start /
+    warmup when no batch has run yet.
     """
 
     def get_weights(
         self,
         buffer,
         *,
-        current_bucket: str | None = None,
+        current_distribution: dict[str, float] | None = None,
     ) -> dict[str, float]:
         ...
 
 
-# ── Built-in strategies ────────────────────────────────────────────────────
-
-
-class UniformStrategy:
-    """Every non-empty bucket gets equal weight."""
-
-    def get_weights(self, buffer, *, current_bucket=None) -> dict[str, float]:
-        return {b: 1.0 for b in buffer.bucket_names if buffer.store.bucket_size(b) > 0}
-
-
-class QuotaStrategy:
-    """Mixed quota-proportional + uniform + starvation boost (current default)."""
-
-    def __init__(
-        self,
-        mix_ratio: float = 0.7,
-        starvation_boost: float = 0.1,
-        starvation_window: int = 50,
-    ):
-        self.mix_ratio = mix_ratio
-        self.starvation_boost = starvation_boost
-        self.starvation_window = starvation_window
-        self._last_sample_step: dict[str, int] = {}
-
-    def get_weights(self, buffer, *, current_bucket=None) -> dict[str, float]:
-        names = buffer.bucket_names
-        k = len(names)
-        c = buffer.total_capacity
-        cur_step = buffer._step
-        weights = {}
-        for b in names:
-            if buffer.store.bucket_size(b) == 0:
-                weights[b] = 0.0
-                continue
-            quota_w = buffer.soft_target[b] / c if c else 0.0
-            uniform_w = 1.0 / k
-            w = self.mix_ratio * quota_w + (1.0 - self.mix_ratio) * uniform_w
-            last_step = self._last_sample_step.get(b, -1)
-            if cur_step - last_step > self.starvation_window:
-                w += self.starvation_boost
-            weights[b] = w
-        return weights
-
-    def mark_sampled(self, bucket: str, step: int) -> None:
-        self._last_sample_step[bucket] = step
+# ── Main strategy: distance from the batch's bucket centroid ───────────────
 
 
 class DistanceStrategy:
-    """Bucket weight proportional to capability-space distance from current_bucket.
+    """Replay weight = capability-space distance from the current batch centroid.
 
-    Loads 5-D bucket coordinates from a JSON file (produced by
-    ``scripts/score_bucket_coords.py``).  When the currently-trained bucket is
-    known, non-current buckets receive weight = d(current, other) / mean(d).
-    When current_bucket is None (cold-start / warmup), falls back to uniform.
+    The current batch may mix buckets (multi-turn sessions expand to per-turn
+    GRPO groups, and the tail of one bucket blends into the head of the next).
+    The "current position" is the batch-weighted centroid of the buckets being
+    trained:
+
+        centroid = Σ_i  share_i * coords[bucket_i]      (share_i = n_i / batch_size)
+
+    Each replay bucket b gets weight = distance(b, centroid) / mean(distance),
+    so buckets far from what is being trained (higher forgetting risk) are
+    replayed more. Buckets in the current batch sit at/near the centroid and
+    get ~0 weight (they are being trained on-policy right now).
+
+    When ``current_distribution`` is None (cold-start / warmup), falls back to
+    uniform so every non-empty bucket is eligible.
     """
 
     def __init__(self, coords_path: str | Path | None = None):
@@ -138,22 +106,46 @@ class DistanceStrategy:
         self._coords: dict[str, list[float]] = data["coordinates"]
         self._dimensions: list[str] = data["dimensions"]
 
-    def get_weights(self, buffer, *, current_bucket=None) -> dict[str, float]:
+    def _centroid(self, distribution: dict[str, float]) -> list[float] | None:
+        """Batch-weighted centroid of the buckets in the current batch."""
+        acc = [0.0] * len(self._dimensions)
+        total = 0.0
+        for bucket, share in distribution.items():
+            c = self._coords.get(bucket)
+            if c is None or share <= 0:
+                continue
+            for i in range(len(acc)):
+                acc[i] += share * c[i]
+            total += share
+        if total <= 0:
+            return None
+        return [v / total for v in acc]
+
+    def get_weights(
+        self,
+        buffer,
+        *,
+        current_distribution: dict[str, float] | None = None,
+    ) -> dict[str, float]:
         names = buffer.bucket_names
-        if current_bucket is None or current_bucket not in self._coords:
+        # Cold-start / warmup: no batch yet -> uniform over non-empty buckets.
+        if not current_distribution:
             return {b: 1.0 for b in names if buffer.store.bucket_size(b) > 0}
 
-        cur = self._coords[current_bucket]
+        centroid = self._centroid(current_distribution)
+        if centroid is None:
+            return {b: 1.0 for b in names if buffer.store.bucket_size(b) > 0}
+
         distances = {}
         for b in names:
-            if b == current_bucket or buffer.store.bucket_size(b) == 0:
+            if buffer.store.bucket_size(b) == 0:
                 distances[b] = 0.0
                 continue
             other = self._coords.get(b)
             if other is None:
                 distances[b] = 0.0
                 continue
-            d = math.sqrt(sum((cur[i] - other[i]) ** 2 for i in range(len(cur))))
+            d = math.sqrt(sum((centroid[i] - other[i]) ** 2 for i in range(len(centroid))))
             distances[b] = d
 
         mean_d = sum(distances.values()) / max(1, sum(1 for v in distances.values() if v > 0))
@@ -163,38 +155,80 @@ class DistanceStrategy:
         return {b: (d / mean_d) for b, d in distances.items()}
 
 
-# ── Strategy registry ──────────────────────────────────────────────────────
+# ── CLEAR baseline: uniform random over the whole pool ─────────────────────
 
 
-def make_strategy(name: str, **kwargs) -> BucketStrategy:
-    """Build a BucketStrategy by name.
+class BaselineSampler:
+    """CLEAR experience-replay baseline (Rolnick et al. 2019).
 
-    ``name`` is one of ``uniform``, ``quota``, ``distance``.
-    Extra kwargs are forwarded to the strategy constructor.
+    Uniform random sampling over the ENTIRE pool -- no bucket awareness, no
+    current-batch signal, no priority. This is the no-CL-strategy control: the
+    only CL mechanism active is "keep old trajectories and resample them", with
+    no anti-forgetting weighting. Contrast with ``DistanceStrategy`` which adds
+    capability-distance-based replay weighting.
     """
-    if name == "uniform":
-        return UniformStrategy()
-    elif name == "quota":
-        return QuotaStrategy(
-            mix_ratio=kwargs.get("mix_ratio", 0.7),
-            starvation_boost=kwargs.get("starvation_boost", 0.1),
-            starvation_window=kwargs.get("starvation_window", 50),
-        )
-    elif name == "distance":
-        return DistanceStrategy(coords_path=kwargs.get("coords_path"))
-    else:
-        raise ValueError(f"unknown bucket strategy {name!r}")
+
+    def __init__(self, buffer, rng: random.Random | None = None):
+        self.buffer = buffer
+        self.rng = rng or random.Random()
+
+    def sample(self, batch_size: int):
+        if batch_size <= 0:
+            return []
+
+        total = len(self.buffer.store)
+        target = min(batch_size, total)
+        out = []
+        chosen: set[str] = set()
+
+        # Flat uniform over all trajectory ids, ignoring buckets entirely.
+        all_ids: list[str] = []
+        for b in self.buffer.bucket_names:
+            all_ids.extend(self.buffer.store.list_by_bucket(b))
+        if not all_ids:
+            return []
+
+        max_tries = target * 20
+        tries = 0
+        while len(out) < target and tries < max_tries:
+            tries += 1
+            tid = self.rng.choice(all_ids)
+            if tid in chosen:
+                continue
+            got = self.buffer.store.get(tid)
+            if got is None:
+                continue
+            chosen.add(tid)
+            traj, meta = got
+            out.append((tid, traj, meta))
+
+        # Fallback sweep if random sampling stalled (small pool / collisions).
+        if len(out) < target:
+            for tid in all_ids:
+                if tid in chosen:
+                    continue
+                got = self.buffer.store.get(tid)
+                if got is None:
+                    continue
+                chosen.add(tid)
+                traj, meta = got
+                out.append((tid, traj, meta))
+                if len(out) >= target:
+                    break
+
+        self.buffer.mark_replayed([tid for tid, _, _ in out])
+        return out
 
 
-# ── TwoLevelSampler (updated) ───────────────────────────────────────────────
+# ── TwoLevelSampler (distance bucket strategy + within-bucket priority) ─────
 
 
 class TwoLevelSampler:
-    """Two-level sampler: bucket strategy + within-bucket priority.
+    """Two-level sampler: distance bucket strategy + within-bucket priority.
 
     Args:
         buffer: BucketReplayBuffer instance.
-        bucket_strategy: BucketStrategy instance or name string (e.g. ``"quota"``).
+        bucket_strategy: a BucketStrategy instance (default DistanceStrategy).
         within_bucket_sampling: ``"priority"`` (default) or ``"uniform"``.
         rng: optional random.Random for reproducibility.
     """
@@ -202,24 +236,27 @@ class TwoLevelSampler:
     def __init__(
         self,
         buffer,
-        bucket_strategy: BucketStrategy | str = "quota",
+        bucket_strategy: BucketStrategy | None = None,
         within_bucket_sampling: str = "priority",
         rng: random.Random | None = None,
-        **strategy_kwargs,
     ):
-        if isinstance(bucket_strategy, str):
-            bucket_strategy = make_strategy(bucket_strategy, **strategy_kwargs)
+        if bucket_strategy is None:
+            bucket_strategy = DistanceStrategy()
         if within_bucket_sampling not in ("priority", "uniform"):
             raise ValueError(f"unknown within_bucket_sampling {within_bucket_sampling!r}")
         self.buffer = buffer
         self.bucket_strategy = bucket_strategy
         self.within_bucket_sampling = within_bucket_sampling
         self.rng = rng or random.Random()
-        self._current_bucket: str | None = None
+        self._current_distribution: dict[str, float] | None = None
 
-    def set_current_bucket(self, bucket: str | None) -> None:
-        """Tell the sampler which bucket is currently being trained."""
-        self._current_bucket = bucket
+    def set_current_distribution(self, distribution: dict[str, float] | None) -> None:
+        """Tell the sampler the current training batch's bucket distribution.
+
+        ``distribution`` maps bucket name -> share (n_i / batch_size). None
+        during cold-start / warmup. Drives the distance-based replay weights.
+        """
+        self._current_distribution = distribution
 
     def sample(self, batch_size: int):
         if batch_size <= 0:
@@ -233,7 +270,7 @@ class TwoLevelSampler:
         tries = 0
 
         weights = self.bucket_strategy.get_weights(
-            self.buffer, current_bucket=self._current_bucket,
+            self.buffer, current_distribution=self._current_distribution,
         )
         names = list(weights.keys())
         wlist = [weights[b] for b in names]
@@ -253,8 +290,6 @@ class TwoLevelSampler:
             chosen.add(tid)
             traj, meta = got
             out.append((tid, traj, meta))
-            if isinstance(self.bucket_strategy, QuotaStrategy):
-                self.bucket_strategy.mark_sampled(bucket, self.buffer._step)
 
         # Fallback sweep
         if len(out) < target:
@@ -284,60 +319,3 @@ class TwoLevelSampler:
             return self.rng.choice(ids)
         priorities = [max(self.buffer.store.get_metadata(tid)["priority"], 1e-9) for tid in ids]
         return self.rng.choices(ids, weights=priorities, k=1)[0]
-
-
-class BaselineSampler:
-    """Simple proportional-random sampler — the initial implementation.
-    Kept for backward compatibility with existing tests."""
-
-    def __init__(self, buffer, rng: random.Random | None = None):
-        self.buffer = buffer
-        self.rng = rng or random.Random()
-
-    def sample(self, batch_size: int):
-        if batch_size <= 0:
-            return []
-
-        total = len(self.buffer.store)
-        target = min(batch_size, total)
-        out = []
-        chosen: set[str] = set()
-        names = self.buffer.bucket_names
-        weights = [self.buffer.soft_target.get(b, 0) for b in names]
-
-        max_tries = target * 20
-        tries = 0
-        while len(out) < target and tries < max_tries:
-            tries += 1
-            [bucket] = self.rng.choices(names, weights=weights, k=1)
-            ids = self.buffer.store.list_by_bucket(bucket)
-            if not ids:
-                continue
-            tid = self.rng.choice(ids)
-            if tid in chosen:
-                continue
-            got = self.buffer.store.get(tid)
-            if got is None:
-                continue
-            chosen.add(tid)
-            traj, meta = got
-            out.append((tid, traj, meta))
-
-        if len(out) < target:
-            for b in names:
-                for tid in self.buffer.store.list_by_bucket(b):
-                    if tid in chosen:
-                        continue
-                    got = self.buffer.store.get(tid)
-                    if got is None:
-                        continue
-                    chosen.add(tid)
-                    traj, meta = got
-                    out.append((tid, traj, meta))
-                    if len(out) >= target:
-                        break
-                if len(out) >= target:
-                    break
-
-        self.buffer.mark_replayed([tid for tid, _, _ in out])
-        return out

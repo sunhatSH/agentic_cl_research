@@ -61,7 +61,7 @@ data_format: openai
 concurrency: $CONCURRENCY
 endpoints:
   - base_url: https://openai.sufy.com/v1
-    model: qwen3-max
+    model: deepseek-v4-pro-202606
     rpm: 30
     tpm: 500000
     keys:

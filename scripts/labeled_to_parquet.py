@@ -103,7 +103,7 @@ def main() -> int:
     ap.add_argument("--no-system", action="store_true",
                     help="prompt 不带 system（走沙箱 Hermes rollout 时用，system 由沙箱注入）")
     ap.add_argument("--per-bucket-out", action="store_true",
-                    help="每桶输出 train_<bucket>.parquet（供 train_cl.sh --buckets 按桶顺序训）")
+                    help="每桶输出 train_<bucket>.parquet（供 train.sh --buckets 按桶顺序训）")
     ap.add_argument("--proportional", type=int, default=0,
                     help=">0: 按桶比例抽样到总量 ~N；某桶不足其占比配额时用该桶全部（不足用其本身最多）")
     ap.add_argument("--scale", type=float, default=0.0,

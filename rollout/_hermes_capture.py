@@ -54,7 +54,11 @@ def _install_patches():
     # sum delta.reasoning_content across chunks; non-streaming: read directly).
     # Reasonings are collected in call order, then re-attached to assistant
     # messages in result.messages (same order) in _wrapped_run.
+    #
+    # GPT/Claude 系列还返回 reasoning_signature（验证思考完整性的签名），同样
+    # 从 delta/model_extra 捕获并按序回挂到 assistant 消息。
     _REASONING_ORDER: list[str] = []   # one entry per assistant API response, in order
+    _SIGNATURE_ORDER: list[str] = []   # reasoning_signature per API response
     _REASONING_LOCK = threading.Lock()
 
     def _extract_rc_from_message(msg_obj) -> str:
@@ -64,6 +68,20 @@ def _install_patches():
             me = msg_obj.model_extra or {}
             rc = me.get("reasoning_content")
         return rc or ""
+
+    def _extract_rs_from_message(msg_obj) -> str:
+        """Read reasoning_signature from a non-streaming ChatCompletion message."""
+        rs = getattr(msg_obj, "reasoning_signature", None)
+        if rs is None and hasattr(msg_obj, "model_extra"):
+            me = msg_obj.model_extra or {}
+            rs = me.get("reasoning_signature")
+        return rs or ""
+
+    def _extract_rs_from_delta(delta) -> str:
+        rs = getattr(delta, "reasoning_signature", None)
+        if rs is None and hasattr(delta, "model_extra"):
+            rs = (delta.model_extra or {}).get("reasoning_signature")
+        return rs or ""
 
     try:
         from openai.resources.chat.completions import Completions
@@ -99,6 +117,7 @@ def _install_patches():
             resp = _orig_create(self, *a, **k)
             if k.get("stream"):
                 acc: list[str] = []
+                sig_acc: list[str] = []
 
                 def _gen():
                     for chunk in resp:
@@ -112,20 +131,25 @@ def _install_patches():
                                     rc = (delta.model_extra or {}).get("reasoning_content")
                                 if rc:
                                     acc.append(rc)
+                                rs = _extract_rs_from_delta(delta)
+                                if rs:
+                                    sig_acc.append(rs)
                         except Exception:
                             pass
                         yield chunk
                     # record accumulated reasoning for this API call (may be "")
                     with _REASONING_LOCK:
                         _REASONING_ORDER.append("".join(acc))
+                        _SIGNATURE_ORDER.append("".join(sig_acc))
 
                 return _gen()
             else:
-                # non-streaming: read reasoning directly, record in order
+                # non-streaming: read reasoning + signature directly, record in order
                 try:
                     msg0 = resp.choices[0].message
                     with _REASONING_LOCK:
                         _REASONING_ORDER.append(_extract_rc_from_message(msg0))
+                        _SIGNATURE_ORDER.append(_extract_rs_from_message(msg0))
                 except Exception:
                     pass
                 return resp
@@ -144,12 +168,17 @@ def _install_patches():
             if msgs:
                 with _REASONING_LOCK:
                     order = list(_REASONING_ORDER)
+                    sig_order = list(_SIGNATURE_ORDER)
                     _REASONING_ORDER.clear()
+                    _SIGNATURE_ORDER.clear()
                 assistants = [m for m in msgs
                               if isinstance(m, dict) and m.get("role") == "assistant"]
                 for m, rc in zip(assistants, order):
                     if rc and rc.strip() and not (m.get("reasoning_content") or "").strip():
                         m["reasoning_content"] = rc
+                for m, rs in zip(assistants, sig_order):
+                    if rs and rs.strip() and not (m.get("reasoning_signature") or "").strip():
+                        m["reasoning_signature"] = rs
             self._cap = {
                 "messages": msgs,
                 "completed": (result or {}).get("completed") if isinstance(result, dict) else None,

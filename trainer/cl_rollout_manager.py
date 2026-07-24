@@ -244,29 +244,36 @@ def make_cl_scheduler_manager_cls():
 
         @auto_await
         async def generate_sequences(self, prompts):  # type: ignore[override]
-            # Decode the seed queries, run the winner-sync scheduler, assemble back.
+            # Decode the seed queries, run the single-turn scheduler, assemble back.
+            #
+            # SINGLE-TURN (2026-07-23): each seed query yields exactly 8 trajectories
+            # (one GRPO group), so len(queries) * 8 == len(prompts.batch) holds and
+            # the output fits verl's fixed-size contract exactly -- no pad/trim.
+            # Multi-turn follow-ups are disabled (see rollout/simulated_session.py
+            # docstring); a cross-batch trajectory pool to re-enable them is
+            # recorded as a deprecated future option.
             import asyncio
 
             tokenizer = self._get_tokenizer()
             queries = extract_queries_from_prompts(prompts, tokenizer)
             scheduler = self._build_scheduler()
-            specs = [SessionSpec(session_id=str(i), queries=[q]) for i, q in enumerate(queries)]
 
-            # 逐 query 跑 scheduler。每轮的 8 条轨迹各自独立训练（不合并），GRPO 组 n=8
-            # 保留。query 数=K×N，pad/trim 到 verl 期望的 batch_size。
-            n_per_query = int(rcfg.get("n", 8))
-            expected_n = len(prompts.batch)
             all_trajs = []
-
             for i, q in enumerate(queries):
                 spec = SessionSpec(session_id=str(i), queries=[q])
                 q_trajs = await asyncio.to_thread(scheduler.run_step, [spec])
                 all_trajs.extend(q_trajs)
 
-            # pad/trim to verl's expected batch size
-            if len(all_trajs) < expected_n:
-                all_trajs += [all_trajs[-1]] * (expected_n - len(all_trajs))
-            trajectories = all_trajs[:expected_n]
+            # Single-turn invariant: each seed -> exactly 8 trajectories, so the
+            # total equals verl's expected batch size. Assert rather than pad/trim
+            # -- a mismatch here is a bug (e.g. a slot crashed), not data to fake.
+            expected_n = len(prompts.batch)
+            assert len(all_trajs) == expected_n, (
+                f"single-turn yield {len(all_trajs)} != verl expected {expected_n}; "
+                f"queries={len(queries)} n=8 -> expected {len(queries) * 8}. "
+                "A slot likely crashed; investigate the rollout error path."
+            )
+            trajectories = all_trajs
 
             def _safe_tokenize(messages):
                 ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)

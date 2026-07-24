@@ -46,7 +46,7 @@ MAX_ROUNDS=5
 TOPUP_STEP=512
 START_NUM=0              # 0 = 自动估
 MAX_CONCURRENT=32
-ACTOR_MODEL="deepseek-v4-pro"
+ACTOR_MODEL="deepseek-v4-pro-202606"
 OUT_ROOT="/mnt/afs_toolcall/sunhao4/agentic_cl_rollouts/real"
 TAG=""
 SMOKE=0
@@ -97,9 +97,13 @@ fi
 echo "[pipeline] tag=$TAG out=$OUT model=$ACTOR_MODEL floors=$FLOORS overshoot=$OVERSHOOT smoke=$SMOKE" | tee "$LOG"
 
 _smoke_flag=""; [ "$SMOKE" = "1" ] && _smoke_flag="--smoke"
-# 正式采集固定「1 seed + Questioner 多轮追问」，不加开关。
-# 冒烟(--smoke)才 --no-usersim：跳过 observer/questioner LLM，只验采集链路。
-_usersim_flag=""; [ "$SMOKE" = "1" ] && _usersim_flag="--no-usersim"
+# 单轮采集（2026-07-23）：全链路单轮化——训练侧 verl 固定 batch 契约 vs 多轮变长产出
+# 不可调和，已关闭 Questioner 追问（见 rollout/simulated_session.py docstring）。
+# 冷采集同步单轮：只跑 seed query，不调 observer/questioner（单轮不需要它们）。
+# 质检（规则+LLM+purify）仍照常跑。--single-turn 显式开启正式单轮；冒烟也走单轮。
+SINGLE_TURN=1                       # 默认单轮（全链路单轮化）；--multi-turn 可回退（deprecated）
+_usersim_flag="--no-usersim"        # 单轮 = 跳过 observer/questioner
+[ "$SMOKE" = "1" ] && _smoke_flag="--smoke"
 # NO_BORROW=1 时跳过阶段B（cold 缺就缺，记 warning），见段②守卫。
 
 # ── 1. 构造 cold-only queries（按桶分块，不 borrow）─────────────────────────

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SenseCore(商汤)平台多机变量映射 —— 被 train_cl.sh（多机分支）source。
+# SenseCore(商汤)平台多机变量映射 —— 被 train.sh（多机分支）source。
 #
 # SenseCore PyTorch 任务注入 SENSECORE_PYTORCH_* 变量;本项目脚本用裸名
 # RANK/MASTER_ADDR/MASTER_PORT/NNODES。这里做兼容映射:

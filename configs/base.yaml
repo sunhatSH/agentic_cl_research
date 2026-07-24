@@ -152,10 +152,17 @@ cl:
     #   workflow 163  ops 145  qa 131  finance 97  office 72
     #   communication 72  safety 65  coding 30  research 53
     bucket_floors: [163, 145, 131, 97, 72, 72, 65, 30, 53]
-    # Bucket-level replay sampling strategy:
-    #   uniform  – equal weight per non-empty bucket
-    #   quota    – soft_target mix + uniform + starvation boost
-    #   distance – capability-space distance weighted (farther = higher replay weight)
+    # Bucket-level replay sampling strategy (2026-07-23: only `distance` remains;
+    # `uniform`/`quota` archived). distance weights each replay bucket by its
+    # capability-space distance from the CURRENT BATCH's bucket centroid -- a
+    # batch may mix buckets (multi-turn sessions expand to per-turn GRPO groups,
+    # or one bucket's tail blends into the next's head), so the "current
+    # position" is the batch-weighted centroid Σ (n_i/batch) * coords[bucket_i].
+    # Farther buckets = higher forgetting risk = higher replay weight. Buckets
+    # in the current batch sit at the centroid and get ~0 (on-policy now).
+    # The CLEAR baseline (uniform over the whole pool, no bucket awareness) is
+    # selected by within_bucket_sampling='uniform' + non-reservoir eviction,
+    # not by this key.
     bucket_strategy: distance
 
   weighting:

@@ -716,3 +716,64 @@ generated_tasks(task.json) → adapter → taskspecs_w3
 1. baseline 不需要等冷采集数据 —— baseline 无桶（不做防遗忘分桶，是无 CL 对照）。
 2. 先在 9B 上跑训练，27B 以后再说，现在就 9B。
 3. 训练数据只用 query（prompt-only，response 在线 rollout 生成）。
+
+---
+
+## 2026-07-23 多轮训练架构核查与单轮化重构（本机，CPU 单测验证）
+
+### 起因
+用户质疑多轮 UserSim 训练数据量：理论上一个 seed query（q1→追问→追问）应产生
+8+8+8=24 条被训练轨迹，但担心当前设计退化成"末轮 8 + 前两轮当输入"少训很多。
+
+### 核查结论（代码级，非猜测）
+1. **"少训"问题当前代码不存在**：`simulated_session.py` 每轮 `run_query` 都
+   `result.trajectories.extend(trajs)`，K 轮 = K×8 条全保留、全训练。历史 commit
+   `5090b6b`/`051315f` 的"合并成长轨迹"方案已被 `b91a846` 推翻（每轮 8 条独立训练）。
+2. **真正的结构性矛盾（致命）**：verl 0.8.0 rollout 契约是**固定 batch**
+   （`ray_trainer.py:1397-1398` `gen_batch.repeat(n)` → `generate_sequences`
+   必须返回 `gen_batch_size × n = 512` 条，`drop_last=True` 丢尾部）。多轮 UserSim
+   天然产出**变长**（K×8，K 由 Questioner 满意度驱动 1~20 随机），塞不进 512 固定契约。
+   - pad 复制（`cl_rollout_manager.py:268`）→ 假数据污染 GRPO 组
+   - trim 截断（`:269`）→ 丢 ~80% 多轮数据
+   - drop_last → 丢尾部（用户确认接受 drop_last=true，但只解决"总数不齐"，
+     解决不了"每 batch 产出量本身随机"）
+3. **winner 时序错位**：设计要求"先打分再选 winner"（`训练与推理流程.md:78-79`），
+   但 verl judge 打分是后置的（generate_sequences 返回后），session 循环内选 winner
+   时 reward=None → fallback 随机选。
+
+### 决策：单轮化（无奈之举，但自洽）
+关闭 Questioner 追问，每个 seed query 只跑一轮 → 产出恒定 8 条 →
+64×8=512 严丝合缝 verl 契约。消除变长来源是唯一能让产出量确定=512 的办法。
+
+### 改动清单
+| 文件 | 改动 |
+|------|------|
+| `rollout/simulated_session.py` | **单轮化**：Questioner 不调用（代码留不删），observer 报告只给 reward 打分；8 条各自过 judge 打分（actor 轨迹+observer state_diff）后选 winner；回退之前错加的 `_task_succeeded`/`success_threshold`/`_score_slots` |
+| `trainer/cl_rollout_manager.py` | `generate_sequences` 去 pad/trim，改 `assert len==expected_n`（单轮不变量）；注释说明单轮契约 |
+| `rollout/session_pool.py` | `_default_sync` 注释修正：deepcopy winner 状态给 8 槽不杀、留着跑下一轮是**对的**（非偏离契约） |
+| `replay_buffer/sampler.py` | **采样器清理**：删 `UniformStrategy`/`QuotaStrategy`/`make_strategy`；`DistanceStrategy` 改造支持 batch 桶分布加权（质心=Σ(n_i/batch)×coords，远的桶权重高）；`BaselineSampler` 改成真 CLEAR（全池 uniform 随机不分桶）；`TwoLevelSampler` 默认 distance、`set_current_bucket`→`set_current_distribution` |
+| `replay_buffer/bucket.py` | 默认 `bucket_strategy="distance"`；保留 BaselineSampler 路径作 CLEAR 对照；`set_current_distribution` 新接口 |
+| `trainer/cl_main.py` | `bucket_strategy` 默认 `"distance"` |
+| `configs/base.yaml` | `bucket_strategy: distance` 注释更新（删 quota/uniform 说明） |
+| `doc/source/BucketAlgorithm.md` | §6 采样章节重写：distance 距离加权 + CLEAR 基线 |
+| `tests/test_sampler.py` | 重写：distance 冷启动均匀/远桶高权/混桶质心 + CLEAR 全池均匀 |
+| `tests/test_simulated_session.py` | 重写：单轮契约（1 轮 N 条、winner 按 reward、observer 报告打分、空 diff gate 0） |
+| `tests/test_agents.py` | 修配置漂移：judge=`deepseek-v4-pro-202606`、questioner=`qwen3.7-max/qwen3.6-plus/gpt-5.4-mini`（对齐 agents.yaml） |
+| `tests/test_sandbox_dockerfile.py` | 端口对齐：只要求 49983（envd），不要求 49999（Jupyter，base 镜像无） |
+| `tests/test_sandbox_env.py` | 去掉"全空"断言（本地 runtime.env 有真实密钥，非空是设计） |
+| `tests/test_sandbox_client.py` | e2b_kill 测试重写：kill 委托 SDK、吞错（不再 mock httpx DELETE，因 SDK 内部处理） |
+| `tests/test_actor.py` | `_Cmds.run` mock 加 `cwd=None` 参数（生产代码 `actor.py:238` 传了 `cwd="/tmp"`） |
+
+### 验证
+- `pytest`：**368 passed, 26 skipped**（skip 全是 verl/GPU/torch 未装，本机环境限制）
+- 8 个历史失败测试全修（actor cwd mock / agents 配置漂移 / sandbox 端口+key+kill）
+
+### Deprecated（未来选项，本次不做）
+**跨 batch 轨迹池方案**：session 产轮→池→verl 按 512 取，能解"K 随机+混桶+drop_last"
+共存，但改变 generate_sequences 语义 + 池稳态难保证 + 复杂度高。标记 deprecated，
+后续若要恢复多轮训练再考虑。当前单轮化已让产出确定，无需轮池。
+
+### 待集群验证
+- `generate_sequences` 单轮不变量 assert 在真实 verl + 多卡上的实际行为
+- distance 采样在真实训练步上的回放分布
+- observer diff-driven 打分在真实沙箱后端的取证真值

@@ -127,7 +127,7 @@ class _FakeInner:
             def __init__(self, outer):
                 self._outer = outer
 
-            def run(self, cmd, timeout=None):
+            def run(self, cmd, timeout=None, cwd=None):
                 class R:
                     pass
                 r = R()
