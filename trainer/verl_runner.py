@@ -460,6 +460,26 @@ class CLTaskRunner:
 
         resource_pool_manager = self.init_resource_pool_mgr(config)
 
+        # verl HARD-REQUIRES a non-empty val dataloader: RayPPOTrainer._create_dataloader
+        # always builds val from config.data.val_files and asserts len>=1
+        # (ray_trainer.py:341,382) -- regardless of test_freq/val_before_train. When
+        # we run WITHOUT a separate validation set (val_files null/empty), verl's
+        # create_rl_dataset(None) -> copy_to_local(None) dies with
+        # "TypeError: 'NoneType' object is not subscriptable". We don't do verl's
+        # in-loop validation anyway (test_freq=-1, val_before_train=false; evaluation
+        # is offline-after-training per CLAUDE.md), so alias val_files -> train_files:
+        # a loadable placeholder that satisfies verl's contract and is never used to
+        # validate. Set it ON config.data so verl's internal re-build (:341) sees it too.
+        val_files = config.data.get("val_files", None)
+        if not val_files:
+            OmegaConf.update(config, "data.val_files", config.data.train_files, force_add=True)
+            print(
+                "[cl] data.val_files empty -> aliasing to train_files (verl requires a "
+                "loadable val dataloader; in-loop validation is disabled, so this "
+                "placeholder is never used to validate).",
+                flush=True,
+            )
+
         train_dataset = create_rl_dataset(
             config.data.train_files,
             config.data,
@@ -553,6 +573,10 @@ def build_trainer(cfg: Any, buffer: Any | None = None):
     tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
     processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
     resource_pool_manager = runner.init_resource_pool_mgr(cfg)
+    # See CLTaskRunner.run: verl requires a loadable non-empty val dataloader even
+    # when in-loop validation is off; alias empty val_files -> train_files.
+    if not cfg.data.get("val_files", None):
+        OmegaConf.update(cfg, "data.val_files", cfg.data.train_files, force_add=True)
     train_dataset = create_rl_dataset(
         cfg.data.train_files,
         cfg.data,

@@ -1053,3 +1053,52 @@ timing 修复后系统排查 verl fit() 对我们 rollout 返回值的其余无�
 崩点从「rollout 中途」推进证明:per-row 契约、reward manager、timing、multi_modal_inputs
 全过了,rollout 已能大量产出;唯一剩的是「失败 slot 的空轨迹」这个边界。修完后一条坏
 slot 不再拖垮整步。
+
+---
+
+## 2026-07-27 冷采集数据完成
+
+### 最终桶分布（质检后）
+
+| 桶 | 采集数 | floor | 余量 |
+|----|--------|-------|------|
+| workflow | 386 | 163 | +223 |
+| ops | 503 | 145 | +358 |
+| qa | 137 | 131 | +6 |
+| finance | 100 | 97 | +3 |
+| office | 75 | 72 | +3 |
+| communication | 76 | 72 | +4 |
+| safety | 67 | 65 | +2 |
+| coding | 31 | 30 | +1 |
+| research | 54 | 53 | +1 |
+| **总计** | **1429** | - | - |
+
+来源：cold-only 采 6 轮 + borrow 补 3 批 (55 个 query,已从训练集排除)
+actor: deepseek-v4-pro-202606, 单轮 hermes_structured
+质检: Layer 1 agent-data-qc + Layer 2 agent_data_tools, Layer 3 LLMChecker 98% pass(抽样)
+
+---
+
+## 2026-07-27 val_files=null → NoneType 崩溃：verl_runner 兜底别名到 train_files
+
+### 现象
+新任务 1 分钟即失败(脚本已如实报 `!!! 训练失败 rc=1`,假成功修复已生效)。
+
+### 根因(非本代码逻辑,数据配置 + verl 硬约束)
+`create_rl_dataset(None)`（val_files 为 null,datasets/val.parquet 也不存在）→
+`copy_to_local(src=None)` → `TypeError: 'NoneType' object is not subscriptable`
+（rl_dataset.py:164 → fs.py:238）。崩在初始化 create_rl_dataset,连 train 数据都没加载。
+
+关键:verl **硬要求** 一个可加载的非空 val dataloader——`RayPPOTrainer._create_dataloader`
+无条件从 `config.data.val_files` 建 val（:341）并 `assert len>=1`（:382），**与
+test_freq/val_before_train 无关**。所以「去掉 val」在 trainer 层做不到（传 val_dataset=None
+verl 也会自己从 val_files 重建）。
+
+### 修复(verl_runner,不 fork verl)
+run() 与 build_trainer() 在建 dataset 前:若 `data.val_files` 为空 → `OmegaConf.update`
+别名到 `train_files`。这是可加载的占位:in-loop 验证已关（test_freq=-1 /
+val_before_train=false,评测走训完离线），val dataloader 只为满足 verl 契约而建、
+从不被迭代/用于验证。设在 config.data 上,verl 内部 :341 重建也看到。
+
+不掩盖真实情况:验证本就不跑,占位 dataloader 永不迭代;若将来要真验证,配 val_files
+即覆盖此兜底。本机 pytest 12 passed / py_compile OK。
