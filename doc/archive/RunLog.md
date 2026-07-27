@@ -777,3 +777,149 @@ generated_tasks(task.json) → adapter → taskspecs_w3
 - `generate_sequences` 单轮不变量 assert 在真实 verl + 多卡上的实际行为
 - distance 采样在真实训练步上的回放分布
 - observer diff-driven 打分在真实沙箱后端的取证真值
+
+---
+
+## 2026-07-24 B1 16GPU 训练启动失败：多机 rendezvous bug 修复（集群，SenseCore）
+
+### 命令
+```bash
+bash scripts/train.sh 16gpu --config configs/run/b1_9b_16gpu.yaml
+```
+
+### 结果：启动即崩，0 step 完成
+- **主节点** (`pt-31d6097c...-master-0`, `10.120.6.246`)：配置校验通过，数据加载完成（train=44378, val=918），到 `init_workers()` 时报 `ValueError: Total available GPUs 8.0 is less than total desired GPUs 16`，崩溃
+- **副节点** (`10.120.7.20`)：启动 ~1.5 分钟后被集群 Kill
+
+### 根因（代码级，非集群问题）
+
+`_train_impl.sh:185` 的多机同步逻辑有 2 个 bug：
+
+**(A)** `torch.distributed.rendezvous()` 的 TCP URL 缺少 query 参数：
+```python
+# 旧代码
+d.rendezvous(f'tcp://{MASTER_ADDR}:{MASTER_PORT}')
+# → PyTorch 2.x _tcp_rendezvous_handler: rank = query.get("rank") → None
+# → "rank parameter missing"
+```
+原因：PyTorch 2.x TCP rendezvous 需要 `tcp://host:port?rank=X&world_size=Y` 格式。
+
+**(B)** `_train_impl.sh:1` 是 `set -uo pipefail`（不是 `-euo`），缺少 `-e` → python 命令失败被静默吞掉，两个节点跳过 barrier 各跑各的。
+
+**连锁效应**：副节点 rendezvous 失败 → 直接到 `ray start --address ... --block` 空等；主节点跳过 barrier → 启动训练 → 资源检查发现 Ray 集群只有本地 8 卡 → 崩溃。
+
+### 修复
+`_train_impl.sh:185` 两处改动：
+1. TCP URL 加 `?rank=$RANK&world_size=$WORLD_SIZE`
+2. 加 `|| exit 1` 显式失败中止（不加 `set -e` 全局以防影响其他分支）
+
+```bash
+# 修复后
+OMP_NUM_THREADS=1 "$PY" -c "... d.rendezvous(f'tcp://{addr}:{port}?rank={rank}&world_size={ws}'); ..." || exit 1
+```
+
+### 副节点日志取证
+```
+08:24:08 [sensecore_env] RANK=1 NNODES=2 MASTER_ADDR=... MASTER_PORT=23456 WORLD_SIZE=2
+08:24:09 ValueError: Error initializing torch.distributed using tcp:// rendezvous: rank parameter missing
+08:24:10 Ray runtime started. Local node IP: 10.120.7.20
+08:24:12 --block (阻塞等待 → ~1.5min 后容器被集群 Kill)
+```
+
+### 状态：修复已提交，待重新提交训练验证
+
+---
+
+## 2026-07-24 B1 16GPU 第二次运行失败：Ray head 竞态（集群，SenseCore）
+
+### 命令
+修复 rendezvous URL 后重新提交 `bash scripts/train.sh 16gpu --config configs/run/b1_9b_16gpu.yaml`
+
+### 结果
+同样的错误：`ValueError: Total available GPUs 8.0 is less than total desired GPUs 16`（08:34:23，PID 4613, hostname `pt-a84d62dd...-master-0`, IP `10.120.4.230`）。SenseCore 平台新增了 `acp_barrier:v0.0.6` 容器做平台级多机同步。
+
+### 根因：Ray head 启动与副节点连接的竞态
+
+修复前的执行顺序：
+```
+barrier 释放 → [主] ray start --head (耗时 ~3-5s)
+             → [副] ray start --address $MASTER_ADDR:6379 (立刻，head 未就绪 → 失败)
+```
+
+副节点在 barrier 释放后立刻尝试连接主节点的 Ray head，但主节点刚进入 `ray start --head`（初始化 GCS + 分布式运行时），head 尚未监听 6379。副节点连接失败 → 退出 → 主节点资源检查只有本地 8 卡。
+
+### 修复（`_train_impl.sh:182-199`）
+
+调换顺序：**主节点先启动 Ray head，再做 barrier**：
+
+```
+[主] ray start --head (head 就绪)
+→ barrier (等待两节点都到达)
+→ [副] ray start --address $MASTER_ADDR:6379 (head 已监听 → 成功连接)
+→ [主] 启动训练
+```
+
+### 修改内容
+- 主节点 Ray head 启动移到 barrier 之前
+- barrier 移到 Ray head 之后、训练/副节点连接之前
+- barrier 后主节点只做训练 + stop，副节点只做 connect + block
+
+---
+
+## 2026-07-24 B1 16GPU 训练启动全链路排障与修复（集群，SenseCore）
+
+### 背景
+当天迭代 8 次提交才跑通 16 卡训练。问题分布在多机同步、Ray 集群发现、凭证加载、脚本重组路径断裂四个层面。
+
+### 故障 #1：torch.distributed.rendezvous() URL 缺参数
+**症状**：副节点 `ValueError: rank parameter missing`
+**根因**：`_train_impl.sh` 的 TCP rendezvous URL 只传 `tcp://host:port`，PyTorch 2.x 要求 `?rank=X&world_size=Y`
+**修复**：URL 加 query 参数 + `|| exit 1`
+
+### 故障 #2：Ray head 竞态
+**症状**：barrier 释放后副节点立即连 Ray head，主节点 `ray start --head` 还没起来
+**根因**：barrier → head start 顺序反了。副节点连不上 → Ray 集群只有 8 卡 → verl 报 `available 8 < desired 16`
+**修复**：主节点先 `ray start --head`，再做 barrier，最后副节点连
+
+### 故障 #3：torch.distributed.rendezvous() "re-rendezvous" 错误
+**症状**：`RuntimeError: Unable to perform re-rendezvous using tcp:// method`
+**根因**：PyTorch 新版本 `rendezvous()` 内部缓存 TCPStore，重复调用同地址抛异常
+**修复**：弃用 `dist.rendezvous()`，改用 `dist.init_process_group('gloo', init_method='tcp://...')` 直接建 process group + barrier
+
+### 故障 #4：verl 无视已有 Ray 集群
+**症状**：多机同步成功、worker 已加入 Ray 集群，但 verl 仍报 `available 8 < desired 16`
+**根因**：`b1_9b_16gpu.yaml` 中 `ray_init.address: local` 让 verl 每次都新建本地 Ray，无视 `ray start --head` 搭好的多机集群
+**修复**：改 `address: auto`，verl 自动发现并加入已有集群
+
+### 故障 #5：脚本目录重组导致路径断裂
+**背景**：将 `scripts/` 下 64 个文件分类到 `env/` `sandbox/` `collect/` `data/` `pipeline/` `analysis/` `serve/` 7 个子目录
+**症状**：
+- `load_training_env.sh` 读不到 `.env` → SWANLAB_API_KEY 为空 → swanlab 认证失败崩训练
+- `load_tencent_env.sh` 读不到 `docker/sandbox/tencent.env` → E2B_API_KEY 为空 → 沙箱连接失败
+**根因**：这些脚本用 `dirname $0/..` 解析项目根，从 `scripts/` 下移到 `scripts/env/` 后 `..` 少跳了一级（解析到 `scripts/` 而非项目根）
+**修复**：
+- `load_training_env.sh` / `dev_env.sh`：`..` → `../..` + 改用 `BASH_SOURCE[0]`
+- `load_tencent_env.sh`：`$0` → `BASH_SOURCE[0]` + `..` → `../..`（被 source 时 `$0` 是调用方路径）
+- sandbox/pipeline/collect 下 9 个脚本同样修了 `..` → `../..`
+
+### 故障 #6：SwanLab 认证失败崩训练
+**症状**：`swanlab.error.KeyFileError: api key not configured (no-tty)`，训练直接退出
+**根因**：#5 导致 key 没加载，但 config 里仍配置了 `logger: [console, swanlab]`，swanlab 初始化时尝试认证失败
+**修复**：`_run_single` 加保护：key 缺失时 CLI 注入 `trainer.logger=[console]` 覆盖 yaml，不崩训练
+
+### 改进：诊断能力
+- **AFS 日志全覆盖**：`exec > >(tee -a train.log) 2>&1` —— 所有 shell 阶段输出落地，不再依赖拿不到的容器 stdout
+- **日志头带 rank**：`2026-07-24T13:03:53Z host=xxx-master-0 rank=0/2 pid=1`
+- **每步打点**：`ray start --head`、barrier 同步、worker 连接各阶段都有 `[train_cl]` 标记
+
+### 改进：自动续训
+`_run_single` 启动前检测 `ckpts/<exp>/global_step_*`，存在则自动 `--resume-from`，中断重启不丢进度。
+
+### 改进：脚本系统重构
+- 删 21 个冗余文件（phase 目录、train_*gpu wrapper、launch_8node 等）
+- `train.sh` 统一入口，支持拓扑 + `--config`（单实验）、`--phase N`（批）、`--all`（全 Phase）
+- 多机同步从一行不可读 python one-liner 改为 heredoc 三段式
+
+### 结果
+- 16 卡训练跑通（13:03），FSDP 16 路联通，LightLLM rollout 正常，SwanLab 上报就绪
+- `bash scripts/train.sh 16gpu --config configs/run/b1_9b_16gpu.yaml` 不变
