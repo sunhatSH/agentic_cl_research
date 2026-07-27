@@ -77,8 +77,6 @@ actor_rollout_ref:
         disable_audio: true
 
   ref:
-    model:
-      path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
     log_prob_micro_batch_size_per_gpu: 1
     fsdp_config:
       param_offload: true

@@ -1246,3 +1246,31 @@ b1 的 config(val_files: null)+ verl_runner 只处理"空/null"**,但:
 2. 全部 18 个 *_16gpu.yaml 的 val_files 统一改 null(与 b1 一致,显式表达"无独立验证集")。
 
 本机 pytest 354 passed(唯一 fail=test_sandbox_dockerfile 既有无关)。
+
+---
+
+## 2026-07-27 k3(kl_strong)/所有开 KL 实验崩:ref 段残留 path/model 键 → FSDPActorConfig 崩
+
+### 现象
+qwen35_9b_k3_16gpu(强 KL,kl_loss_coef=0.10,即 "kl_strong")14:09 启动,init_workers →
+actor_rollout_wg.init_model() 崩:`TypeError: FSDPActorConfig.__init__() got an
+unexpected keyword argument 'path'`(脚本如实报 rc=1)。b1(baseline)同 session 同结构
+却跑到 Training Progress——差异仅 use_kl_loss。
+
+### 根因(逐层核实)
+verl 0.8.0:ref policy 融合进 actor worker,权重路径**统一取共享 actor_rollout_ref.model.path**
+(main_ppo.py:264),ref 段 schema 为 FSDPActorConfig,**不接受 `path` 或 `model` 子键**。
+但我们的 config:
+- base.yaml 有扁平 `ref.path: .../Qwen3.6-27B`(旧基座残留);
+- run config 有 `ref.model.path: .../Qwen3.5-9B`。
+两者合并进 ref → 开 KL 的实验(K1/K2/K3/K2-R/R4-K…)构造 ref 时 FSDPActorConfig 收到
+`path`(和 `model`)非法关键字 → 崩。**b1 无 KL 不建 ref,故那些残留键无害、不崩**——
+这解释了为何 baseline 能跑、所有 KL 实验都崩。
+
+### 修复
+- base.yaml:`ref: path: 27B` → `ref: {}`(删扁平 path;ref 用共享 model.path=9B)。
+- 全部 run/*_16gpu.yaml:删 ref 段下的 `model:\n path: 9B`(redundant+同样非法);保留
+  ref 的合法键 log_prob_micro_batch_size_per_gpu / fsdp_config。
+- resolved 校验:6 个实验 ref 段均无 path/model,共享 model.path=9B。
+
+本机 pytest 354 passed。所有开 KL 实验(k1/k2/k3/k2-r/r4-k)不再因 ref path 崩。

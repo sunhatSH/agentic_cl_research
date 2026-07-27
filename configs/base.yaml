@@ -46,11 +46,15 @@ actor_rollout_ref:
     #   sessions_per_step: 16       # 16 sessions in parallel (x n slots = 128)
     #   sandbox_backend: e2b        # 'e2b' (Tencent) on cluster, 'local' for dev; 'aliyun' (AgentBay) = stub/留空
 
-  # Reference policy pi_ref -- KL 锚点（≠ 训练起点 model.path）。
-  # KL 项把 π_new 往 π_ref 拉；π_ref 用 π₀（K1-K3/多数）或 π_{t-1}（K4/K5 对照）。
-  # 无 KL 的实验（B1 / R 系列）此项不生效，填 π₀ 路径占位即可。
-  ref:
-    path: /mnt/afs_agents/share_models/Qwen/Qwen3.6-27B   # π₀ 占位;cluster 覆盖为 /tmp/qwen36;无 KL 实验(B1/R)不生效
+  # Reference policy pi_ref -- KL 锚点。
+  # verl 0.8.0:ref policy 融合进 actor worker,其权重路径**统一取共享的
+  # actor_rollout_ref.model.path**(main_ppo.py:264),ref 段本身**不接受** `path`
+  # 或 `model` 子键(schema 为 FSDPActorConfig 类)。之前这里填扁平 `ref.path:
+  # 27B` 会被合并进 ref config → 开 KL 的实验(K*)构造 ref 时
+  # `FSDPActorConfig.__init__() got unexpected keyword 'path'` 崩(b1 无 KL 不建 ref
+  # 故不崩)。故此处**不设 path**;ref 用共享 model.path(=π₀ 的 9B)。若要 π_{t-1}
+  # 锚点(K4/K5),改共享 model.path 或用 verl 支持的 ref 专属字段,不要加扁平 path。
+  ref: {}
 
   # Actor (policy optimization) config
   actor:
