@@ -56,17 +56,41 @@ class VerlRolloutGenerateFn:
                 uuid4().hex, prompt_ids=prompt_ids, sampling_params=self.sampling_params
             )
 
-        # Each scheduler thread runs its own loop; reuse if one is set, else create.
+        # The scheduler runs each session on its own thread, which has no default
+        # event loop. Detect the illegal "called from inside a running loop" case;
+        # otherwise create a dedicated loop and ALWAYS close it (the old code
+        # leaked one loop per call across thousands of steps -> fd exhaustion).
+        # Errors raised INSIDE _gen() must propagate -- the previous
+        # ``except RuntimeError`` swallowed genuine generate failures and silently
+        # retried on a fresh loop, masking the real cause and doubling load.
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():  # pragma: no cover - nested-loop guard
-                raise RuntimeError("nested loop")
-            out = loop.run_until_complete(_gen())
+            running = asyncio.get_running_loop()
         except RuntimeError:
-            out = asyncio.new_event_loop().run_until_complete(_gen())
+            running = None
+        if running is not None:  # pragma: no cover - nested-loop guard
+            raise RuntimeError(
+                "VerlRolloutGenerateFn called from inside a running event loop; "
+                "run it on a worker thread (the scheduler already does this)."
+            )
+        loop = asyncio.new_event_loop()
+        try:
+            out = loop.run_until_complete(_gen())
+        finally:
+            loop.close()
 
         token_ids = list(getattr(out, "token_ids", []) or [])
         logprobs = list(getattr(out, "log_probs", None) or [])
+        # Guard the GRPO importance ratio: a backend that returns token_ids but
+        # ragged/absent logprobs would silently misalign (chains into the
+        # batch-wide logprob drop in cl_rollout_manager). Drop logprobs for THIS
+        # step and warn rather than emit a length-mismatched vector.
+        if logprobs and len(logprobs) != len(token_ids):
+            print(
+                f"[generate] WARNING: logprob len {len(logprobs)} != token len "
+                f"{len(token_ids)}; dropping logprobs for this step.",
+                flush=True,
+            )
+            logprobs = []
         text = self.tokenizer.decode(token_ids) if token_ids else ""
         return GenStep(text=text, response_ids=token_ids, logprobs=logprobs)
 

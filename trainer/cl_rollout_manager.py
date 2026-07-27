@@ -82,7 +82,23 @@ def trajectories_to_dataproto(
         list(t.meta.get("response_mask") or [1] * len(r)) for t, r in zip(trajectories, resp_ids, strict=True)
     ]
     logprobs = [list(t.logprobs or []) for t in trajectories]
-    has_logprobs = all(len(lp) == len(r) for lp, r in zip(logprobs, resp_ids, strict=True)) and any(logprobs)
+    # rollout_log_probs is emitted only when EVERY row has a length-matched
+    # logprob vector (verl consumes it as a dense [B, R] tensor -- a single
+    # ragged row would misalign the whole batch). But dropping it silently
+    # degrades the GRPO importance ratio for ALL 512 rows because of one bad
+    # slot, with no trace. Log loudly which rows are ragged so the cause is
+    # diagnosable instead of a mystery reward/ratio drift.
+    _mismatched = [i for i, (lp, r) in enumerate(zip(logprobs, resp_ids, strict=True)) if len(lp) != len(r)]
+    has_logprobs = not _mismatched and any(logprobs)
+    if _mismatched:
+        print(
+            f"[rollout] WARNING: {len(_mismatched)}/{n} trajectories have logprob "
+            f"length != response length (rows {_mismatched[:8]}"
+            f"{'...' if len(_mismatched) > 8 else ''}); dropping rollout_log_probs "
+            "for the WHOLE batch -> GRPO will recompute old_log_probs. Investigate "
+            "the generate backend (inference/generate.py) or a crashed slot.",
+            flush=True,
+        )
 
     P = max((len(p) for p in prompt_token_ids), default=1) or 1
     R = max((len(r) for r in resp_ids), default=1) or 1
@@ -221,7 +237,7 @@ def make_cl_scheduler_manager_cls():
             questioner = Questioner()
             return RolloutScheduler(
                 agent_fn,
-                sessions_per_step=int(agent_cfg.get("sessions_per_step", 16)),
+                sessions_per_step=int(agent_cfg.get("sessions_per_step", 64)),
                 slots=int(rcfg.get("n", 8)),
                 backend=agent_cfg.get("sandbox_backend", "e2b"),
                 simulated=True,
@@ -267,7 +283,11 @@ def make_cl_scheduler_manager_cls():
             # Single-turn invariant: each seed -> exactly 8 trajectories, so the
             # total equals verl's expected batch size. Assert rather than pad/trim
             # -- a mismatch here is a bug (e.g. a slot crashed), not data to fake.
-            expected_n = len(prompts.batch)
+            # Validation batches may have prompts.batch=None: in that case the
+            # expected count is simply the number of trajectories we produced
+            # (n=8 per query). MUST read all_trajs, not `trajectories` -- the
+            # latter isn't bound until below (was a NameError on the val path).
+            expected_n = len(prompts.batch) if prompts.batch is not None else len(all_trajs)
             assert len(all_trajs) == expected_n, (
                 f"single-turn yield {len(all_trajs)} != verl expected {expected_n}; "
                 f"queries={len(queries)} n=8 -> expected {len(queries) * 8}. "

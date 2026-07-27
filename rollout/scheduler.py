@@ -114,13 +114,34 @@ class RolloutScheduler:
         return result.trajectories
 
     def run_step(self, specs: Sequence[SessionSpec]) -> list[Trajectory]:
-        """Run up to ``sessions_per_step`` sessions in parallel; collect all trajectories."""
+        """Run up to ``sessions_per_step`` sessions in parallel; collect all trajectories.
+
+        Session-level failures are ISOLATED: if one session raises (bad sandbox,
+        observer/snapshot error, sync error), we log it and keep its slot empty
+        rather than aborting the whole step. Aborting here (the old ``ex.map``
+        behaviour, which re-raises the first exception on iteration) took down
+        ``generate_sequences`` -> ``fit()`` for ALL sessions because of one bad
+        one. The single-turn contract's "exactly n*8 trajectories" invariant is
+        still enforced downstream (cl_rollout_manager asserts the count), so a
+        dropped session surfaces as a loud, localised error there -- not a
+        mysterious mid-step crash.
+        """
         batch = list(specs)[: self.sessions_per_step]
         results: list[list[Trajectory]] = [[] for _ in batch]
 
         def _run(args: tuple[int, SessionSpec]) -> tuple[int, list[Trajectory]]:
             i, spec = args
-            return i, self.run_session(spec, self.seed + i)
+            try:
+                return i, self.run_session(spec, self.seed + i)
+            except Exception as exc:  # noqa: BLE001 -- isolate session failures
+                import traceback
+
+                print(
+                    f"[rollout] session {spec.session_id} (idx {i}) crashed: "
+                    f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
+                    flush=True,
+                )
+                return i, []
 
         with ThreadPoolExecutor(max_workers=self._max_session_workers) as ex:
             for i, trajs in ex.map(_run, enumerate(batch)):

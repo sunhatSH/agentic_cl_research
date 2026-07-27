@@ -29,6 +29,18 @@ class MockChat:
         return self.reply
 
 
+class _ConstJudge:
+    """Judge stub returning a fixed passing verdict (no env judge in tests).
+
+    Used where the test only needs slots to grade successfully (reward not None,
+    ended_by=single_turn); it does NOT differentiate slots. Winner-on-graded-
+    reward differentiation is covered by test_single_turn_scores_all_slots_*.
+    """
+
+    def score(self, *, task, trajectory, rubric, data_source):
+        return {"completion": 1.0, "safety": 1.0, "robustness": 1.0}
+
+
 def make_agent_fn(reward_by_slot, *, write=True):
     """agent_fn whose slot rewards are fixed, so winner selection is deterministic.
 
@@ -84,6 +96,7 @@ def test_single_turn_yields_n_trajectories():
         k_max=2,
         seed=1,
         score_followups=False,
+        reward_judge=_ConstJudge(),  # inject a judge so slots grade (no env judge in tests)
     )
     assert res.num_turns == 1
     assert res.ended_by == "single_turn"
@@ -110,10 +123,11 @@ def test_single_turn_picks_winner_on_graded_reward():
         k_max=2,
         seed=1,
         score_followups=False,
+        reward_judge=_ConstJudge(),  # inject a judge so slots grade (no env judge in tests)
     )
     # The winner (slot 1, reward 0.9) was synced; its state propagated to all.
     # All 4 trajectories carry a graded reward (set by _score_all_slots or the
-    # agent_fn's fixed reward).
+    # agent_fn's fixed reward). A judge failure would leave reward None.
     assert all(t.reward is not None for t in res.trajectories)
 
 
@@ -153,18 +167,31 @@ def test_single_turn_scores_all_slots_with_injected_judge():
     assert res.num_turns == 1
 
 
-def test_single_turn_empty_diff_gates_to_zero_reward():
-    """A slot whose observer report is empty (no state change) gets reward 0
-    without a judge call (gated)."""
-    pool = _pool(slots=2)
-    # slot 0 writes (non-empty diff), slot 1 does not (empty diff -> gated 0)
+def test_single_turn_empty_report_gates_to_zero_reward():
+    """A slot whose observer report is TRULY empty (no file change AND no
+    assistant reply) gets reward 0 without a judge call (gated).
+
+    Fix 2026-07-27: a slot that produced an assistant REPLY but no file is a
+    text deliverable (QA/reasoning) and MUST reach the judge -- it is no longer
+    gated to 0. Only a slot with neither a deliverable file nor a reply is
+    genuinely empty. This test pins BOTH halves:
+      - slot 0 writes a file            -> judged
+      - slot 1 replies but writes nothing -> judged (text deliverable)
+      - slot 2 no file, no reply         -> gated to 0 (no judge call)
+    """
+    pool = _pool(slots=3)
+
     def agent_fn(client, query, state, slot_idx, history=None):
         if slot_idx == 0 and hasattr(client, "run_code"):
             client.run_code(f"open('out_{slot_idx}.txt', 'w').write({query!r})")
+        # slot 2 produces no assistant reply at all (truly empty turn).
+        messages = [{"role": "user", "content": query}]
+        if slot_idx != 2:
+            messages.append({"role": "assistant", "content": f"slot {slot_idx}"})
         return Trajectory(
             slot_idx=slot_idx,
             trajectory_id=f"s{slot_idx}",
-            messages=[{"role": "user", "content": query}, {"role": "assistant", "content": f"slot {slot_idx}"}],
+            messages=messages,
             reward=None,
             next_state={"files": {"out.csv": "data"}} if slot_idx == 0 else {},
         )
@@ -193,9 +220,10 @@ def test_single_turn_empty_diff_gates_to_zero_reward():
         score_followups=True,
         reward_judge=judge,
     )
-    # Only the non-empty slot (slot 0) called the judge; slot 1 was gated to 0.
-    assert judge.calls == 1
-    # slot 1's reward is 0 (gated), slot 0's is graded (1.0 aggregate).
+    # slot 0 (file) + slot 1 (text reply) reach the judge; slot 2 is gated.
+    assert judge.calls == 2
+    # slot 2's reward is 0 (gated), the others are graded (1.0 aggregate).
     by_slot = {t.slot_idx: t for t in res.trajectories}
-    assert by_slot[1].reward == 0.0
+    assert by_slot[2].reward == 0.0
     assert by_slot[0].reward == 1.0
+    assert by_slot[1].reward == 1.0

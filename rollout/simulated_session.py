@@ -1,6 +1,6 @@
 """User-sim simulated session (SINGLE-TURN mode, 2026-07-23).
 
-WHY SINGLE-TURN (the无奈之举, recorded for posterity):
+WHY SINGLE-TURN:
   verl 0.8.0's rollout contract is FIXED-SIZE: ``generate_sequences`` must
   return exactly ``gen_batch_size * n`` rows (ray_trainer.py:1397-1398), with
   ``drop_last=True`` discarding any non-multiple tail. A multi-turn UserSim
@@ -20,7 +20,8 @@ WHAT SURVIVES in single-turn mode:
     report is the ground-truth evidence fed to the reward judge. The observer
     is NOT wasted -- it anchors reward in real state, not actor self-report.
   - Reward = judge over (actor trajectory + observer state_diff report).
-  - Winner selection on graded reward; winner enters the replay buffer.
+  - Winner selection on graded reward; winner enters the replay buffer AND
+    is persisted to $ROLLOUT_DATA_DIR/winners.jsonl.
 
 WHAT IS DISABLED (code kept, just not called):
   - Questioner.next_query -- no follow-up query generation. The session ends
@@ -28,16 +29,21 @@ WHAT IS DISABLED (code kept, just not called):
     multi-turn can be re-enabled later via the (deprecated) pool approach.
 
 Flow (single turn):
-    spawn 8 slots ─► run_query(seed) ─► 8 trajectories
-        ─► Observer(winner) ─► ObservationReport R_t   (state diff, ground truth)
-        ─► Reward(actor traj + R_t) ─► graded reward per trajectory
-        ─► pick_winner ─► sync_to_winner ─► winner -> buffer
+    spawn 8 slots -> run_query(seed) -> 8 trajectories
+        -> Observer(winner) -> ObservationReport R_t   (state diff, ground truth)
+        -> Reward(actor traj + R_t) -> graded reward per trajectory
+        -> pick_winner -> sync_to_winner -> winner -> buffer
+        -> _save_winner_trajectory -> $ROLLOUT_DATA_DIR/winners.jsonl
 """
 
 from __future__ import annotations
 
+import json
+import os
 import random
+import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from agents.observer import Observer
@@ -45,6 +51,11 @@ from agents.questioner import Questioner  # kept for signature compat; not calle
 from agents.reward import score_followup
 from agents.schema import ObservationReport, Persona
 from rollout.session_pool import AgentFn, SessionSandboxPool, Trajectory
+
+# Sessions run on a ThreadPoolExecutor (rollout/scheduler.py); serialise the
+# shared winners.jsonl append so large `messages` payloads (> PIPE_BUF) don't
+# interleave into corrupt lines across threads.
+_WINNER_WRITE_LOCK = threading.Lock()
 
 
 @dataclass
@@ -80,8 +91,43 @@ def _score_all_slots(
             t.meta["reward_verdict"] = {"score": 0.0, "gated": 1.0}
             continue
         verdict = score_followup(query=query, report=rep, judge=reward_judge)
-        t.reward = float(verdict.get("score", 0.0))
         t.meta["reward_verdict"] = verdict
+        # A judge I/O failure returns score 0.0 with judge_error=1.0. Do NOT let
+        # that masquerade as a legitimate "this trajectory scored 0" -- an outage
+        # would then make an entire GRPO group look uniformly failed (zero
+        # advantage) or hand winner selection a fake-0 argmax. Set reward=None so
+        # pick_winner's fallback treats it as a scorer error (keep previous state,
+        # no sync) and the failure stays visible in reward_verdict.judge_error.
+        if float(verdict.get("judge_error", 0.0)) >= 1.0:
+            t.reward = None
+        else:
+            t.reward = float(verdict.get("score", 0.0))
+
+
+def _save_winner_trajectory(traj: Trajectory, query: str) -> None:
+    """Persist winner trajectory to AFS JSONL for permanent record.
+
+    Written to $ROLLOUT_DATA_DIR/winners.jsonl (one JSON object per line).
+    Serialised across threads via _WINNER_WRITE_LOCK so concurrent sessions'
+    appends don't interleave into corrupt lines.
+    """
+    out_dir = os.environ.get("ROLLOUT_DATA_DIR", "")
+    if not out_dir:
+        return
+    os.makedirs(out_dir, exist_ok=True)
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "query": query,
+        "trajectory_id": traj.trajectory_id,
+        "reward": traj.reward,
+        "bucket": traj.bucket,
+        "messages": traj.messages,
+        "reward_verdict": traj.meta.get("reward_verdict", {}),
+    }
+    path = os.path.join(out_dir, "winners.jsonl")
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with _WINNER_WRITE_LOCK, open(path, "a") as f:
+        f.write(line)
 
 
 def run_simulated_session(
@@ -152,6 +198,7 @@ def run_simulated_session(
             result.ended_by = "scorer_error"
         else:
             pool.sync_to_winner(winner_idx, trajs)
+            _save_winner_trajectory(trajs[winner_idx], seed_query)
             result.ended_by = "single_turn"
     finally:
         pool.destroy_all()

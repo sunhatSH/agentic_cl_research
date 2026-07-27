@@ -270,13 +270,20 @@ class RotatingChatClient:
                 )
 
     def chat(self, messages: list[dict[str, str]], *, max_tokens: int = 512) -> str:
-        """Chat via the current active client, then rotate if threshold reached."""
+        """Chat via the current active client, then rotate if threshold reached.
+
+        ``_advance`` runs in a ``finally`` so a raising endpoint still advances
+        the rotation counter -- otherwise a persistently-down endpoint would be
+        retried on every call (the counter never moved past it), pinning the
+        client to a dead server instead of rotating away from it.
+        """
         with self._lock:
             idx = self._current_idx
         client = self._clients[idx]
-        result = client.chat(messages, max_tokens=max_tokens)
-        self._advance()
-        return result
+        try:
+            return client.chat(messages, max_tokens=max_tokens)
+        finally:
+            self._advance()
 
     def chat_with_tools(
         self,

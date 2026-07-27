@@ -56,8 +56,14 @@ def score_followup(
     ({score, completion, safety, robustness, judge_error}); a gated/no-effect turn
     additionally carries ``gated=1.0``.
     """
-    # Gate: no effect this turn -> don't call the judge at all.
-    if not report.has_effect:
+    # Gate: no usable evidence this turn -> don't call the judge at all.
+    # Use is_empty() (deliverable-aware) NOT the raw has_effect flag: a text
+    # deliverable (QA/reasoning) folds the reply into report.final with
+    # has_effect possibly False (no FS/sys change). Gating on has_effect alone
+    # forced reward 0 for every text-only task -> zero GRPO advantage on entire
+    # buckets (silent collapse). is_empty() returns False whenever final/
+    # intermediate carry a real deliverable, so those tasks now reach the judge.
+    if report.is_empty():
         return dict(_NO_EFFECT_VERDICT)
 
     from trainer.model_reward import JUDGE_DIMENSIONS, aggregate, get_judge
