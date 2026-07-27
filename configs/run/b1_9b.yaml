@@ -46,7 +46,7 @@ actor_rollout_ref:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.30
+    gpu_memory_utilization: 0.40
     n: 8                         # GRPO group size (traj/query)
     load_format: auto
     max_model_len: 65536

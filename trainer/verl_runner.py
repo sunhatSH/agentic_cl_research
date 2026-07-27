@@ -89,6 +89,32 @@ def _persist_winners(winners: list, exp_name: str, step: int) -> None:
     print(f"[persist] {len(winners)} winners → {out_file}", flush=True)
 
 
+def _log_training_metrics(result, exp_name: str, step: int) -> None:
+    """Persist per-step training metrics to JSONL (independent of SwanLab)."""
+    import json
+    from pathlib import Path
+
+    meta = getattr(result, "meta_info", None)
+    if not isinstance(meta, dict):
+        return
+    metrics = meta.get("metrics", {})
+    if not metrics:
+        return
+
+    out_dir = Path(f"logs/metrics/{exp_name}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / "training_metrics.jsonl"
+
+    row = {"step": step}
+    for k, v in metrics.items():
+        if hasattr(v, "item"):
+            v = v.item()
+        if isinstance(v, (int, float)):
+            row[k] = round(float(v), 6)
+    with open(out_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
     """Patch RayPPOTrainer to feed trajectories into buffer and pre-stage replay.
 
@@ -157,6 +183,9 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
 
         step = getattr(trainer, "global_steps", buffer._step)
         buffer.set_step(step)
+
+        # 1.5: Persist training metrics per step → logs/metrics/{exp}.jsonl
+        _log_training_metrics(result, exp_name, step)
 
         # 2. Post: activate forgetting_risk -- recompute current-policy log-probs
         #    for the just-replayed trajectories and backfill their priority.

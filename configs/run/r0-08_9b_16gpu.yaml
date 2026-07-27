@@ -1,12 +1,7 @@
-# 16 卡 9B 定制训练配置（2 节点 × 8 卡）。
-# = b1_9b.yaml 同款 9B 引擎（沙箱 Hermes rollout + baseline 无 CL 防遗忘）+ 16 卡硬件覆盖。
+# Phase 3 / R0-10K — CLEAR 10k lambda_replay=0.8
+# 9B 16GPU（2节点×8卡）可运行配置，继承 b1_9b_16gpu 硬件规格。
 #
-# 规模（用户 2026-07-23 确认）：
-#   train_batch=64 query × n8 = 512 轨迹/step；total_training_steps=500；save_freq=100
-#   max_prompt=2048（实测 max 708）；max_response=53886（claude opus 轨迹 p90）；
-#   micro=2（9B+56k序列+16卡；36d9881 试跑值）；ppo_mini=64（全 batch 单次更新）
-#
-# 启动：bash scripts/train_16gpu.sh --buckets --config configs/run/b1_9b_16gpu.yaml
+# 启动: bash scripts/train.sh 16gpu --config configs/run/r0-10k_9b_16gpu.yaml
 
 defaults:
   - ../_generated_ppo_trainer
@@ -28,10 +23,10 @@ actor_rollout_ref:
     entropy_coeff: 0.001
     optim:
       lr: 1.0e-6
-    ppo_mini_batch_size: 64             # 对齐 train_batch=64
+    ppo_mini_batch_size: 64
     ppo_micro_batch_size_per_gpu: 2
     ppo_max_token_len_per_gpu: 65536
-    ulysses_sequence_parallel_size: 2   # SP=2 → DP=8（16卡÷2）
+    ulysses_sequence_parallel_size: 2
     fsdp_config:
       param_offload: true
       optimizer_offload: true
@@ -71,7 +66,7 @@ actor_rollout_ref:
 
   ref:
     model:
-      path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+      path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B  # pi_0 初始模型
     log_prob_micro_batch_size_per_gpu: 1
     fsdp_config:
       param_offload: true
@@ -83,30 +78,36 @@ reward:
       name: vllm
 
 # ── 数据 ──────────────────────────────────────────────────────────────────────
-# 单轮化（2026-07-23）：训练数据 = queries_train.jsonl 转的 parquet（scripts/queries_to_parquet.py）。
-# 每个 query 一条轨迹（单轮），按桶配额采样（小桶全取、大桶截断 per-bucket-cap=3600）。
-# baseline 无 CL 防遗忘，shuffle=false 按桶序训（可测遗忘）。
 data:
   train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
   val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet
-  train_batch_size: 64                # 64 query/step × n8 = 512 轨迹/step
+  train_batch_size: 64
   gen_batch_size: 64
   max_prompt_length: 2048
   max_response_length: 53886
-  shuffle: false                     # 按文件序（桶序排列）训，保证按桶顺序 → 可测遗忘
+  shuffle: false
   return_raw_chat: true
   filter_overlong_prompts: true
   trust_remote_code: true
   dataloader_num_workers: 4
   cache_dir: /tmp/verl_rlhf_cache
 
-# ── baseline 语义（无 KL、无 replay/buffer）──────────────────────────────────────
+# ── CL 参数 ──────────────────────────────────────────────────────────────────
 cl:
-  lambda_replay: 0.0
+  lambda_replay: 0.8
+  replay_batch_size: 512
   buffer:
-    enabled: false
-
-# ── trainer：16 GPU 2 节点 ────────────────────────────────────────────────────
+    enabled: true
+    num_buckets: 1
+    total_capacity: 10000
+    eviction_type: reservoir
+    within_bucket_sampling: uniform
+    priority_type: uniform
+  weighting:
+    scheme: W2
+    gamma: 1.0
+    delta: 1.0
+# ── trainer ──────────────────────────────────────────────────────────────────
 trainer:
   nnodes: 2
   n_gpus_per_node: 8
@@ -118,8 +119,8 @@ trainer:
   logger: [console]
   log_val_generations: 50
   project_name: agentic-cl
-  experiment_name: qwen35_9b_b1_16gpu
-  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_b1_16gpu}
+  experiment_name: qwen35_9b_r0-08_16gpu
+  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_r0-08_16gpu}
 
 ray_kwargs:
   ray_init:
