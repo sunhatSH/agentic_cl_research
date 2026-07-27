@@ -1102,3 +1102,28 @@ val_before_train=false,评测走训完离线），val dataloader 只为满足 ve
 
 不掩盖真实情况:验证本就不跑,占位 dataloader 永不迭代;若将来要真验证,配 val_files
 即覆盖此兜底。本机 pytest 12 passed / py_compile OK。
+
+---
+
+## 2026-07-27 系统审查 + 修 run_step crashed-session 行数漂移(会崩整步)
+
+### 独立确认的真隐患(源码级,非猜测)
+`rollout/scheduler.py::run_step` 的 session 级异常兜底原返回 `return i, []`：一个 session
+崩(如 e2b 超时/observer/sync 异常)→ 该 spec 贡献 0 条轨迹 → `all_trajs` 少一条 →
+`generate_sequences` 的 `assert len(all_trajs)==len(prompts)` 失败 → **整个训练 step 崩**。
+即「隔离了异常但没隔离行数」——一个坏沙箱仍拖垮整步。上次 run 恰好 0 session crash 才没触发,
+64 并发长跑下沙箱失败几乎必然。
+
+### 修复
+crashed session 返回 **1 条占位轨迹**(空 messages、reward=None、error meta)而非 []。
+per-row 单轮契约 = 每 spec 恰 1 条,占位保住行数;下游已安全处理空 messages(prompt 回退到
+query、空 response→reward 0、GRPO std 有 epsilon 防 NaN)、pick_winner 视 reward=None 为
+scorer-error。真正做到「一个坏 slot 不崩整步」。
+
+### 顺带排除的两个担心(源码确认安全,无需改)
+- ObserverRewardManager 不定义 __init__,继承父类 (config,tokenizer,compute_score,...),与
+  verl load_reward_manager 的 config=/tokenizer=/compute_score=/**kw 完全匹配。
+- GRPO 全相等 reward 组:core_algos.py:317 单条组 std=1,:326 (score-mean)/(std+epsilon=1e-6),
+  不 NaN 不崩(零优势=不产梯度但安全)。
+
+（另有后台 4 路审查 workflow 复核中,结论到后追加。）

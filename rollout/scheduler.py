@@ -141,7 +141,24 @@ class RolloutScheduler:
                     f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
                     flush=True,
                 )
-                return i, []
+                # Return a PLACEHOLDER trajectory, NOT [] -- the per-row single-turn
+                # contract is exactly 1 trajectory per spec, and generate_sequences
+                # asserts len(all_trajs) == len(prompts). Returning [] on a crashed
+                # session (e.g. one e2b timeout) drops the row count -> the assert
+                # fails -> the WHOLE training step crashes on one bad sandbox. Emit a
+                # placeholder (empty messages, reward=None, error meta) so row count
+                # is preserved; downstream handles empty messages (prompt falls back
+                # to the query, empty response -> reward 0) and pick_winner treats
+                # reward=None as scorer-error. This is the row-count half of the
+                # failure isolation the exception-catch above only half-did.
+                placeholder = Trajectory(
+                    slot_idx=0,
+                    trajectory_id=f"{spec.session_id}-session-crash",
+                    messages=[],
+                    reward=None,
+                    meta={"error": f"{type(exc).__name__}: {exc}", "session_id": spec.session_id},
+                )
+                return i, [placeholder]
 
         with ThreadPoolExecutor(max_workers=self._max_session_workers) as ex:
             for i, trajs in ex.map(_run, enumerate(batch)):
