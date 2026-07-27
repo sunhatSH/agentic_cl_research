@@ -49,7 +49,7 @@ actor_rollout_ref:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.6         # 0.55→0.6:更大 KV 池支撑 512 并发(训练阶段 lightllm
+    gpu_memory_utilization: 0.7         # KV 池支撑 512 并发(训练时 lightllm sleep 让出;训练 OOM 已由 micro=1 治理,残留~7GB 吃得下)
                                         # sleep 让出;训练 OOM 已由 micro=1 + max_token 减半治理)
     n: 8
     load_format: auto
