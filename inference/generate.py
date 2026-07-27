@@ -46,6 +46,10 @@ class VerlRolloutGenerateFn:
             prompt_ids = prompt_ids["input_ids"]
         elif isinstance(prompt_ids, dict):
             prompt_ids = prompt_ids["input_ids"]
+        # 若 chat_template 误返回文本（tokenize=True 被忽略），list(str) 会得到
+        # 单字符 list → 下游 torch.tensor 崩 "too many dimensions 'str'"。重编码。
+        if isinstance(prompt_ids, str):
+            prompt_ids = self.tokenizer.encode(prompt_ids, add_special_tokens=False)
         prompt_ids = list(prompt_ids)
         # 若仍是嵌套（batch 维 [[...]]），取第一条。
         if prompt_ids and isinstance(prompt_ids[0], (list, tuple)):

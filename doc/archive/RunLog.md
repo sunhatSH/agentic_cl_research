@@ -923,3 +923,41 @@ barrier 释放 → [主] ray start --head (耗时 ~3-5s)
 ### 结果
 - 16 卡训练跑通（13:03），FSDP 16 路联通，LightLLM rollout 正常，SwanLab 上报就绪
 - `bash scripts/train.sh 16gpu --config configs/run/b1_9b_16gpu.yaml` 不变
+
+---
+
+## 2026-07-27 复盘：07-23 baseline 按桶训练跑数小时后崩于 _validate（根因确认 + 修复）
+
+### 现象
+07-23 的旧「按桶逐个训练」baseline（`ckpts/qwen35_9b_b1/<桶>/`，每桶一子进程）：
+coding/office/ops 三个桶各自 rollout 成功产出数万 token 的轨迹后，**在验证阶段
+崩溃**，退出即失败。log 证据：`logs/experiments/qwen35_9b_b1/{coding,office,ops}/train.log`。
+RunLog 之前**无此条记录**（违反硬性规则，本条补记）。
+
+### 根因（log traceback 确认，非猜测）
+```
+verl ray_trainer.py:594 _validate → generate_sequences
+→ cl_rollout_manager.py trajectories_to_dataproto
+→ prompts[i] = torch.tensor(_left_pad(p, P, pad), dtype=torch.long)
+ValueError: too many dimensions 'str'
+```
+`val_before_train=True` + `test_freq=2` → 训练一开就先跑验证 rollout。
+`_safe_tokenize(t.messages[:1])` 调 `apply_chat_template(tokenize=True)`，当 chat_template
+误返回**模板文本字符串**（而非 int id）时，`list(str)` 得到单字符 list，
+`ids[0]` 是单字符 str、过不了「是否 list/tuple」的判断 → 直接返回字符 list →
+`torch.tensor([...str...], long)` 报 `too many dimensions 'str'`。
+崩在验证、不是启动，所以「跑了很久才失败」。
+
+### 为什么之前查不出
+- 崩点在 `trajectories_to_dataproto:99`，与本 session 修的「验证阶段 NameError」是
+  **同一函数不同坑**；NameError 修复未覆盖此路径。
+- 单测只覆盖 `trajectories_to_dataproto` 的 padding（喂的是干净 int list），
+  从不喂「apply_chat_template 返回字符串」这一真实退化输入 → 静态查不出。
+
+### 修复（commit 见下）
+- `cl_rollout_manager._safe_tokenize`：str 返回值 → `tokenizer.encode` 重编码；
+  收尾加「所有元素必须是 int」硬校验，非 int 立即抛 `TypeError`（带样本），
+  不再让脏数据流到 torch.tensor 报无上下文的错。
+- `inference/generate.py VerlRolloutGenerateFn`：同样加 str→encode 兜底。
+
+### 状态：已修，本机 py_compile + 相关单测通过；真实验证待集群。

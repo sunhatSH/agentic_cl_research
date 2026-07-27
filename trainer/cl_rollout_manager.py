@@ -302,9 +302,26 @@ def make_cl_scheduler_manager_cls():
                     ids = ids["input_ids"]
                 elif isinstance(ids, dict):
                     ids = ids["input_ids"]
+                # If a mis-set chat template returns the templated TEXT instead of
+                # ids (tokenize=True ignored), list(str) yields a list of single
+                # CHARACTERS -> torch.tensor(..., long) later dies with the opaque
+                # "too many dimensions 'str'" (the exact failure that killed the
+                # 07-23 baseline at _validate). Re-encode the string here instead.
+                if isinstance(ids, str):
+                    ids = tokenizer.encode(ids, add_special_tokens=False)
                 ids = list(ids)
                 if ids and isinstance(ids[0], (list, tuple)):
                     ids = list(ids[0])
+                # Final guard: every element MUST be an int token id. A stray str
+                # (nested token-string list, or the char-list case above) would
+                # otherwise reach torch.tensor and crash mid-run with no context.
+                if any(not isinstance(x, int) for x in ids):
+                    raise TypeError(
+                        f"_safe_tokenize produced non-int token ids "
+                        f"(sample: {ids[:8]!r}); apply_chat_template likely "
+                        "returned text instead of ids -- check the tokenizer's "
+                        "chat_template / tokenize handling."
+                    )
                 return ids
 
             prompt_ids = [_safe_tokenize(t.messages[:1]) for t in trajectories]
