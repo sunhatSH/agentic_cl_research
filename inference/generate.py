@@ -95,6 +95,19 @@ class VerlRolloutGenerateFn:
                 flush=True,
             )
             logprobs = []
+        # NaN/inf logprob from the backend would feed verl's importance ratio and
+        # NaN the loss for the whole batch. Drop the whole step's logprobs if any
+        # is non-finite (verl then recomputes old_log_probs -- safe, just slower).
+        if logprobs:
+            import math
+
+            if not all(math.isfinite(lp) for lp in logprobs):
+                print(
+                    "[generate] WARNING: non-finite logprob in this step; dropping "
+                    "logprobs (verl will recompute old_log_probs).",
+                    flush=True,
+                )
+                logprobs = []
         text = self.tokenizer.decode(token_ids) if token_ids else ""
         return GenStep(text=text, response_ids=token_ids, logprobs=logprobs)
 

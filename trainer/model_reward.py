@@ -107,6 +107,14 @@ def _clamp01(x: Any) -> float:
         v = float(x)
     except (TypeError, ValueError):
         return 0.0
+    # NaN passes BOTH `v < 0` and `v > 1` as False, so a NaN from the judge would
+    # slip through unclamped -> reward NaN -> rm_scores NaN -> verl loss NaN
+    # (a mid-training blow-up that's very hard to trace). math.isnan catches it;
+    # inf is handled by the >1 branch below (-> 1.0). Treat NaN as 0 (no signal).
+    import math
+
+    if math.isnan(v):
+        return 0.0
     return 0.0 if v < 0 else 1.0 if v > 1 else v
 
 

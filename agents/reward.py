@@ -88,6 +88,12 @@ def score_followup(
             v = float(x)
         except (TypeError, ValueError):
             return 0.0
+        # NaN slips past `<0`/`>1` (both False) -> would propagate into reward.
+        # Treat NaN as 0 (no signal); inf handled by >1 -> 1.0.
+        import math
+
+        if math.isnan(v):
+            return 0.0
         return 0.0 if v < 0 else 1.0 if v > 1 else v
 
     return {

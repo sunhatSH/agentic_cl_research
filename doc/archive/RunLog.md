@@ -1165,3 +1165,31 @@ cluster.yaml 致 CLI 并行/batch 参数被 config 写死值静默吃掉(当前�
 
 本机 pytest 350 passed(唯一 fail=test_sandbox_dockerfile 既有无关)/ py_compile / bash -n OK。
 rm_scores 形状/落位靠新单测(fake DataProto)+ 对齐 verl agent_loop.py:933 保证,数值链待集群。
+
+---
+
+## 2026-07-27 除零/特殊值(NaN/inf)专项排查:查全所有除法+归一化,修 2 处漏洞
+
+用户提问「除数这些易错地方是否做了范围和特殊值校验」。系统扫了整条链路的除法/
+归一化/分母/clip/空集合聚合。
+
+### 已良好保护(逐个确认,无需改)
+- weighting._clip_and_normalize:空 flat 早返回;total<=0 不除。
+- weighting._percentile:空列表→0.0。
+- priority.forgetting_risk:len==0 + n==0 双重保护 + clip(0,1)。
+- priority.rarity:1/(1+log(1+count)),分母>=1。
+- priority peer 相似度:sqrt(sum) or 1.0 防零范数。
+- model_reward.aggregate:纯乘无除。
+- GRPO advantage:verl core_algos.py std+epsilon(1e-6),单条组 std=1。
+
+### 修复的 2 处漏洞(NaN 传进 verl loss,训练中途才炸,最难查)
+1. `_clamp01`(model_reward)/`_c01`(agents/reward):`nan<0` 与 `nan>1` 都是 False →
+   **NaN 原样漏过** → judge 返回 NaN 字段 → reward NaN → rm_scores NaN → verl loss NaN。
+   修:math.isnan 检测,NaN→0(inf 仍走 >1→1.0)。本机验证 aggregate(nan)→有限值。
+2. `inference/generate.py`:rollout_log_probs 只校验长度,**不校验 NaN/inf**。lightllm 返
+   NaN logprob → verl 重要性比 NaN → loss NaN。修:非有限则丢弃该步 logprobs(verl 重算
+   old_log_probs,安全)。
+3. 加固:trajectories_to_dataproto 写 rm_scores 时 math.isfinite 兜底(非有限→0+warn)。
+
+新增 test_aggregate_nan_inf_are_finite。本机 pytest 351 passed(唯一 fail=
+test_sandbox_dockerfile 既有无关)。

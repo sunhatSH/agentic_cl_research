@@ -57,6 +57,21 @@ def test_aggregate_formula():
     )
 
 
+def test_aggregate_nan_inf_are_finite():
+    """NaN/inf judge fields must NOT propagate into reward (would NaN verl loss).
+    _clamp01: nan->0, inf->1, -inf->0."""
+    from trainer.model_reward import _clamp01
+
+    nan, inf = float("nan"), float("inf")
+    assert _clamp01(nan) == 0.0
+    assert _clamp01(inf) == 1.0
+    assert _clamp01(-inf) == 0.0
+    # a NaN in any field yields a finite aggregate (not nan)
+    for field in ("safety", "completion", "robustness"):
+        v = aggregate({"safety": 1.0, "completion": 1.0, "robustness": 1.0, field: nan})
+        assert math.isfinite(v), f"aggregate leaked nan via {field}"
+
+
 def test_compute_score_with_injected_judge():
     judge = MockJudge({"completion": 1.0, "safety": 1.0, "robustness": 1.0})
     out = compute_score(

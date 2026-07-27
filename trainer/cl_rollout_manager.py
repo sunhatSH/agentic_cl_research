@@ -101,6 +101,8 @@ def trajectories_to_dataproto(
             key belongs to the dataset and would collide on union). The custom
             reward manager folds it into extra_info for the training judge.
     """
+    import math
+
     import numpy as np
     import torch
 
@@ -183,7 +185,14 @@ def trajectories_to_dataproto(
         for i in range(n):
             rlen = len(resp_ids[i])
             if rlen > 0 and rewards[i] is not None:
-                rm_scores[i, rlen - 1] = float(rewards[i])
+                rv = float(rewards[i])
+                # Belt-and-suspenders: a NaN/inf reward (should be clamped upstream,
+                # but a judge/regression could slip one through) would poison verl's
+                # loss for the whole batch. Force non-finite -> 0 (no signal).
+                if not math.isfinite(rv):
+                    print(f"[rollout] WARNING: non-finite reward {rv!r} at row {i} -> 0", flush=True)
+                    rv = 0.0
+                rm_scores[i, rlen - 1] = rv
         tensors["rm_scores"] = rm_scores
 
     # non_tensor: messages (transcript/bucket), bucket, observer_report (diff
