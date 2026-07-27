@@ -1,7 +1,20 @@
 # Copyright 2026. Continual-Learning over Agentic LLM.
 #
 # Licensed under the Apache License, Version 2.0.
-"""Observer-aware reward manager: fold the per-row observer diff into extra_info.
+"""Observer-aware reward manager -- CURRENTLY NOT WIRED (kept for reference/backup).
+
+⚠️ 2026-07-27: training reward is now computed INLINE during rollout
+(cl_rollout_manager.generate_sequences -> _score_all_slots(observer diff + judge)
+-> t.reward -> trajectories_to_dataproto writes rm_scores). verl reads rm_scores
+directly (use_rm=False), so it NEVER calls a reward manager -- this class is on
+verl's separate "reward-loop worker" path, which we do not use. base.yaml's
+reward_manager is plain ``naive`` (never invoked since rm_scores already exists).
+This file is retained only as a reference for the alternative "route reward
+through verl's RewardLoopWorker + ObserverRewardManager" design; DO NOT assume
+it runs. If you re-enable it, set reward.reward_manager to source=importlib +
+this module, and make generate_sequences STOP writing rm_scores (else double reward).
+
+Observer-aware reward manager: fold the per-row observer diff into extra_info.
 
 verl scores each row via ``compute_score(data_source, solution_str,
 ground_truth, extra_info)``, reading ``extra_info`` from the dataset. Our rollout

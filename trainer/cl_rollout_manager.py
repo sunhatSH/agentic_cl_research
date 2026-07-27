@@ -61,6 +61,7 @@ def trajectories_to_dataproto(
     pad_token_id: int = 0,
     uids: list[str] | None = None,
     observer_reports: list[str] | None = None,
+    rewards: list[float | None] | None = None,
 ):
     """Assemble collected ``Trajectory`` objects into a verl-contract DataProto.
 
@@ -72,6 +73,8 @@ def trajectories_to_dataproto(
         attention_mask [B, P+R] real-token mask
         position_ids   [B, P+R] cumsum(attention_mask)-1
         rollout_log_probs [B, R] per response token (when available)
+        rm_scores      [B, R]   training reward at last valid response token (when
+                                rewards given) -- verl reads this as the reward
     non_tensor_batch carries messages / bucket / observer_report for downstream
     (transcript, bucket, and the observer diff evidence the training judge reads).
 
@@ -161,6 +164,27 @@ def trajectories_to_dataproto(
     }
     if rollout_lp is not None:
         tensors["rollout_log_probs"] = rollout_lp
+
+    # rm_scores [B, R]: the training reward. verl's fit() reads it via
+    # extract_reward(batch["rm_scores"]) right after rollout (ray_trainer.py:1475)
+    # and, because reward.reward_model.enable=false (use_rm=False), it does NOT
+    # compute reward itself -- it ASSUMES the rollout brought rm_scores back (the
+    # default AgentLoopManager writes it in _postprocess, agent_loop.py:933-937).
+    # Our custom rollout replaced that path, so without this the reward stage dies
+    # with KeyError: 'rm_scores'. The reward is ALREADY computed per trajectory
+    # during rollout (run_simulated_session -> _score_all_slots -> score_followup
+    # over the observer diff + judge), sitting on t.reward; we just place it at the
+    # last valid response-token position, exactly as verl's default does. Empty
+    # response (crashed-slot placeholder) or reward=None -> that row stays all-zero
+    # (no reward signal, GRPO std+epsilon keeps it NaN-safe).
+    if rewards is not None:
+        assert len(rewards) == n, "rewards must align with trajectories"
+        rm_scores = torch.zeros((n, R), dtype=torch.float32)
+        for i in range(n):
+            rlen = len(resp_ids[i])
+            if rlen > 0 and rewards[i] is not None:
+                rm_scores[i, rlen - 1] = float(rewards[i])
+        tensors["rm_scores"] = rm_scores
 
     # non_tensor: messages (transcript/bucket), bucket, observer_report (diff
     # evidence for the training judge). uid is emitted ONLY when explicitly
@@ -408,15 +432,21 @@ def make_cl_scheduler_manager_cls():
 
             prompt_ids = [_safe_tokenize(_prompt_msgs(t, i)) for i, t in enumerate(trajectories)]
             pad_id = getattr(tokenizer, "pad_token_id", 0) or 0
-            # Carry each row's observer diff evidence so the training judge can
-            # ground completion on it. Do NOT pass uids -- verl's own uid drives
-            # GRPO grouping and an invented uid would collide on union.
+            # Carry each row's observer diff evidence (offline record; the training
+            # reward is already computed inline below). Do NOT pass uids -- verl's
+            # own uid drives GRPO grouping and an invented uid would collide on union.
             observer_reports = [str(t.meta.get("observer_report", "") or "") for t in trajectories]
+            # Training reward: t.reward was set during rollout by _score_all_slots
+            # (score_followup over observer diff + judge). Pass it so it's written to
+            # rm_scores -- verl reads THAT as the reward (use_rm=False -> verl won't
+            # compute reward itself). None (crashed slot / judge error) -> row stays 0.
+            rewards = [t.reward for t in trajectories]
             out = trajectories_to_dataproto(
                 trajectories,
                 prompt_ids,
                 pad_token_id=pad_id,
                 observer_reports=observer_reports,
+                rewards=rewards,
             )
             # verl's fit() does `timing_raw.update(gen_output.meta_info["timing"])`
             # right after rollout (ray_trainer.py:1425) and the default

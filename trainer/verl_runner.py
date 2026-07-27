@@ -513,8 +513,16 @@ class CLTaskRunner:
         trainer.init_workers()
         inject_cl_loss(trainer, config, buffer)
         install_buffer_hooks(trainer, buffer, config)
+        # Resume: verl's fit() -> _load_checkpoint() does this NATIVELY. There is no
+        # public trainer.load_checkpoint() (only private _load_checkpoint(self), no
+        # args) -- calling it (the old code) raised AttributeError on every 2nd/resume
+        # run. Instead drive verl's own resume: an explicit path -> resume_mode=
+        # resume_path + resume_from_path; otherwise the default resume_mode=auto
+        # already auto-finds the latest ckpt in default_local_dir. Either way fit()
+        # loads it; we must NOT call any load here.
         if resume_from:
-            trainer.load_checkpoint(resume_from)
+            OmegaConf.update(config, "trainer.resume_mode", "resume_path", force_add=True)
+            OmegaConf.update(config, "trainer.resume_from_path", str(resume_from), force_add=True)
         trainer.fit()
 
 

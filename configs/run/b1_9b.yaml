@@ -121,7 +121,8 @@ trainer:
   total_epochs: 1
   total_training_steps: 50           # 由 train.sh _run_buckets 按每桶条数/16 覆盖
   save_freq: 20
-  test_freq: 20
+  test_freq: -1                      # 关 in-loop 验证(评测走训完离线;避免跑无用验证 rollout)
+  val_before_train: false            # 不训练前跑验证(与 16gpu 对齐;之前继承默认 true 会跑)
   critic_warmup: 0
   logger: [console]                  # 只 console（swanlab api 422，去掉）；指标/rollout/val 全落本地文件
   log_val_generations: 50

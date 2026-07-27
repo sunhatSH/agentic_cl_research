@@ -82,18 +82,15 @@ algorithm:
 # the judge model is NOT hardcoded -- it is resolved from env (launch with
 # scripts/serve_reward_model.sh, then export REWARD_API_BASE + REWARD_MODEL).
 reward:
+  # 训练 reward 在 ROLLOUT 阶段内联算好并写进 rm_scores(cl_rollout_manager.py:
+  # generate_sequences -> _score_all_slots(observer diff + judge) -> t.reward ->
+  # trajectories_to_dataproto 的 rm_scores 张量)。verl use_rm=false 时直接读
+  # batch["rm_scores"],不调用 reward_manager。故 reward_manager 用默认 naive 即可
+  # (不会被调,rm_scores 已存在);custom_reward_function 作兜底路径留着。
+  # 注:trainer/observer_reward_manager.py 是那条「verl reward-loop」平行路径的适配,
+  # 当前不接入(reward 走 rollout 内联),保留仅备用,见该文件顶部说明。
   reward_manager:
-    # cl_observer = naive + per-row Observer-diff injection into extra_info, so
-    # the training judge grounds completion on real sandbox state (not the
-    # actor's self-report). Loaded via importlib so EVERY process (driver AND
-    # the separate RewardLoopWorker) resolves it directly from the module --
-    # a @register decorator only fires in the process that imports it, and the
-    # reward worker is a distinct Ray process (was: "Unknown reward manager").
-    # Falls back to naive semantics when a row has no observer_report.
-    source: importlib
-    name: ObserverRewardManager
-    module:
-      path: pkg://trainer.observer_reward_manager
+    name: naive
   custom_reward_function:
     path: trainer/model_reward.py
     name: compute_score

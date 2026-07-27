@@ -173,15 +173,38 @@ _run_buckets() {
   prev="$base_model"
   _resume=""
 
+  # ── 护栏(R3/R2/R5,2026-07-27 审查):--buckets 路径有三个已知坑,先 fail-loud ──
+  # R3: per-bucket parquet 曾在 datasets/_archive_multiturn_20260723/,datasets/baseline_9b/
+  #     可能是空目录 → create_rl_dataset 打不开首桶就崩在 verl 深处。这里先检查。
+  # R2: 桶行数 < train_batch_size 时 verl `assert len(dataloader)>=1` 崩(batch=64,
+  #     多数桶行数远小于 64)。无法在 shell 廉价读 parquet 行数,故仅提示。
+  # R5: 9 桶共享 $ckpt_base + verl resume_mode=auto 会让第 2 桶起误从上一桶 step 续训
+  #     (resume_from_path 是死配置,auto 不读它),遗忘实验语义被毁。按桶训练方案本身
+  #     待重构(见 doc/archive/RunLog.md),此处不深修,仅护栏 + 警告。
+  if [ ! -d "$data_dir" ] || [ -z "$(ls -A "$data_dir" 2>/dev/null)" ]; then
+    echo "[train_cl] FATAL: --buckets 数据目录 $data_dir 不存在或为空。" >&2
+    echo "[train_cl]   per-bucket parquet 可能在 datasets/_archive_multiturn_20260723/;" >&2
+    echo "[train_cl]   请先把 train_<bucket>.parquet 放进 $data_dir 再跑 --buckets。" >&2
+    return 1
+  fi
+  echo "[train_cl] WARN(R2): 桶行数若 < train_batch_size 会触发 verl 'dataloader empty' 断言;" >&2
+  echo "[train_cl] WARN(R5): 9 桶共享 ckpt 目录 + verl resume_mode=auto → 第2桶起可能误续训," >&2
+  echo "[train_cl]           跨桶 global_steps 继承会破坏遗忘实验语义。按桶训练方案待重构。" >&2
+
   local buckets=(office research coding ops safety workflow finance communication qa)
   for b in "${buckets[@]}"; do
+    local bfile="$data_dir/train_$b.parquet"
+    if [ ! -f "$bfile" ]; then
+      echo "[train_cl] FATAL: 桶 $b 的数据文件不存在: $bfile" >&2
+      return 1
+    fi
     local blogdir="$ROOT_DIR/logs/experiments/$exp/$b"
     mkdir -p "$ckpt_base" "$blogdir/rollout" "$blogdir/val"
     export CKPT_DIR="$ckpt_base" ROLLOUT_DATA_DIR="$blogdir/rollout" VAL_DATA_DIR="$blogdir/val"
     echo "[train_cl] 桶 $b  model=$prev  resume=${_resume:-无}"
     "$PY" -m trainer.cl_main --config "$CONFIG" \
       "actor_rollout_ref.model.path=$prev" "actor_rollout_ref.ref.path=$base_model" \
-      "data.train_files=$data_dir/train_$b.parquet" \
+      "data.train_files=$bfile" \
       "trainer.default_local_dir=$ckpt_base" "trainer.resume_from_path=$_resume" \
       2>&1 | tee "$blogdir/train.log"
     latest=$(ls -dt "$ckpt_base"/global_step_* 2>/dev/null | head -1) || true

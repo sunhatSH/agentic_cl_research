@@ -1127,3 +1127,41 @@ scorer-error。真正做到「一个坏 slot 不崩整步」。
   不 NaN 不崩(零优势=不产梯度但安全)。
 
 （另有后台 4 路审查 workflow 复核中,结论到后追加。）
+
+---
+
+## 2026-07-27 系统审查(4路workflow)后修复 R1-R6:reward 接上 + 续训 + 验证语义 + buckets 护栏
+
+后台 4 路审查 + 复核查出 6 条真问题(逐条源码核实),按此修:
+
+### R1(根因,reward 阶段必崩):rm_scores 从不产生
+verl use_rm=false → 假定 rollout 已带回 rm_scores(默认 AgentLoopManager 在
+_postprocess 写,agent_loop.py:933),直接 extract_reward(batch["rm_scores"])。我们
+自定义 rollout 替换了该路径、从不写 rm_scores → reward 阶段 KeyError。且发现
+observer→ObserverRewardManager→compute_score 那条 verl reward-manager 路径是**死代码**
+(reward 走 rm_scores,不调 manager)。
+关键:reward **已在 rollout 内联算好**(_score_all_slots → score_followup(observer diff+judge)
+→ t.reward)。修:trajectories_to_dataproto 加 rewards 参数,把 t.reward 写进 rm_scores
+[B,R](最后有效 response token 处,照 verl 放法);generate_sequences 传 t.reward。
+reward=None/空 response → 该行全 0(NaN-safe)。base.yaml reward_manager 回 naive
+(rm_scores 已存在,naive 不会被调);observer_reward_manager.py 标注 deprecated/未接入。
+
+### R4(续训必崩):trainer.load_checkpoint() 不存在
+verl 只有私有无参 _load_checkpoint;fit() 在 resume_mode 下自动续。改:resume_from
+给定时设 resume_mode=resume_path + resume_from_path,删手动调用,用 verl 原生续训。
+
+### R6(4gpu 语义偏离):b1_9b.yaml 验证没关
+加 val_before_train=false + test_freq=-1(原 test_freq=20 + 继承 val_before_train=true
+会跑验证并更早触发 R1)。
+
+### R2/R3/R5(--buckets 路径,加护栏不深修):
+R3 datasets/baseline_9b 空(parquet 在 _archive_multiturn_20260723)、R2 桶行数<batch64
+→ dataloader empty 断言、R5 共享 ckpt+resume_mode=auto 第2桶起误续训毁遗忘语义。
+_run_buckets 加 fail-loud 护栏(空目录/缺文件直接报错退出)+ R2/R5 显式 WARN;按桶
+训练方案本身待重构(TODO)。16gpu 单次训主线不走 --buckets,不阻塞当前。
+
+### R7/R8(MINOR,记录):多机 worker --block 无 rank0 联动 hang;16gpu config 未接
+cluster.yaml 致 CLI 并行/batch 参数被 config 写死值静默吃掉(当前数值巧合一致不崩)。
+
+本机 pytest 350 passed(唯一 fail=test_sandbox_dockerfile 既有无关)/ py_compile / bash -n OK。
+rm_scores 形状/落位靠新单测(fake DataProto)+ 对齐 verl agent_loop.py:933 保证,数值链待集群。
