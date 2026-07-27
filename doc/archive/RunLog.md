@@ -1274,3 +1274,22 @@ verl 0.8.0:ref policy 融合进 actor worker,权重路径**统一取共享 actor
 - resolved 校验:6 个实验 ref 段均无 path/model,共享 model.path=9B。
 
 本机 pytest 354 passed。所有开 KL 实验(k1/k2/k3/k2-r/r4-k)不再因 ref path 崩。
+
+---
+
+## 2026-07-27 rollout 并发 64→256(减 rollout 批数,提吞吐)
+
+rollout 是当前瓶颈(一个 step 的 512 条轨迹按 64 并发要 8 批串行、十几分钟;训练更新才几秒)。
+per-row 模式下并发 = sessions_per_step(每 session 1 条轨迹)。提到 256:512条/step 分 2 批
+(原 8 批),rollout 吞吐 ~4×。
+
+必须三件套一起改(否则光提 sessions_per_step 会卡在 lightllm 的 64、请求排队=假并发):
+- agent.sessions_per_step: (默认64)→ 256
+- lightllm running_max_req_size: 64→256(推理端一次并发解码上限)
+- lightllm graph_max_batch_size: 64→256(cuda graph 支持 256 batch)
+- gpu_memory_utilization: 0.40→0.55(给 KV 池更多显存;256 峰值 KV ~125k token vs 池上限
+  远够;整卡余量大 ~20GB/80GB)
+
+18 个 *_16gpu.yaml 一致;YAML + 值校验通过。
+待集群验证的前提:e2b 沙箱配额需 ≥256(256 并发=一次开 256 沙箱);若配额不足会大量
+crashed-session 占位(空轨迹 reward 0),需回调 sessions_per_step。稳妥档,未上 512。

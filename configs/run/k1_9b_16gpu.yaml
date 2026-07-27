@@ -39,7 +39,7 @@ actor_rollout_ref:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.40
+    gpu_memory_utilization: 0.55        # 0.40→0.55:支撑 256 并发 KV 池
     n: 8
     load_format: auto
     max_model_len: 65536
@@ -49,6 +49,7 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: 1
     agent:
       agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
+      sessions_per_step: 256            # rollout 并发 256(per-row);512条/step 分2批
     multi_turn:
       enable: false
       format: qwen3_coder
@@ -61,8 +62,8 @@ actor_rollout_ref:
         batch_max_tokens: 8192
         enable_multimodal: false
         enable_torch_memory_saver: true
-        graph_max_batch_size: 64
-        running_max_req_size: 64
+        graph_max_batch_size: 256       # 配合 256 并发
+        running_max_req_size: 256       # 推理端一次并发上限=256
         sampling_backend: triton
         disable_vision: true
         disable_audio: true
