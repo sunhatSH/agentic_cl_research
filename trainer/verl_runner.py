@@ -463,18 +463,22 @@ class CLTaskRunner:
         # verl HARD-REQUIRES a non-empty val dataloader: RayPPOTrainer._create_dataloader
         # always builds val from config.data.val_files and asserts len>=1
         # (ray_trainer.py:341,382) -- regardless of test_freq/val_before_train. When
-        # we run WITHOUT a separate validation set (val_files null/empty), verl's
-        # create_rl_dataset(None) -> copy_to_local(None) dies with
-        # "TypeError: 'NoneType' object is not subscriptable". We don't do verl's
-        # in-loop validation anyway (test_freq=-1, val_before_train=false; evaluation
-        # is offline-after-training per CLAUDE.md), so alias val_files -> train_files:
-        # a loadable placeholder that satisfies verl's contract and is never used to
-        # validate. Set it ON config.data so verl's internal re-build (:341) sees it too.
+        # we run WITHOUT a usable validation set, verl's create_rl_dataset(None/missing)
+        # dies (TypeError on None; FileNotFoundError on a non-existent path). We don't
+        # do verl's in-loop validation anyway (test_freq=-1, val_before_train=false;
+        # evaluation is offline-after-training per CLAUDE.md), so alias val_files ->
+        # train_files whenever val is EMPTY *or points at a missing file* (the latter
+        # is what crashed k2: val_files set but datasets/val.parquet doesn't exist).
+        # Set it ON config.data so verl's internal re-build (:341) sees it too.
+        import os
+
         val_files = config.data.get("val_files", None)
-        if not val_files:
+        _val_missing = bool(val_files) and isinstance(val_files, str) and not os.path.exists(val_files)
+        if not val_files or _val_missing:
+            reason = "empty" if not val_files else f"missing file ({val_files})"
             OmegaConf.update(config, "data.val_files", config.data.train_files, force_add=True)
             print(
-                "[cl] data.val_files empty -> aliasing to train_files (verl requires a "
+                f"[cl] data.val_files {reason} -> aliasing to train_files (verl requires a "
                 "loadable val dataloader; in-loop validation is disabled, so this "
                 "placeholder is never used to validate).",
                 flush=True,
@@ -582,8 +586,12 @@ def build_trainer(cfg: Any, buffer: Any | None = None):
     processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
     resource_pool_manager = runner.init_resource_pool_mgr(cfg)
     # See CLTaskRunner.run: verl requires a loadable non-empty val dataloader even
-    # when in-loop validation is off; alias empty val_files -> train_files.
-    if not cfg.data.get("val_files", None):
+    # when in-loop validation is off; alias val_files -> train_files when empty OR
+    # pointing at a missing file.
+    import os as _os
+
+    _vf = cfg.data.get("val_files", None)
+    if not _vf or (isinstance(_vf, str) and not _os.path.exists(_vf)):
         OmegaConf.update(cfg, "data.val_files", cfg.data.train_files, force_add=True)
     train_dataset = create_rl_dataset(
         cfg.data.train_files,

@@ -83,7 +83,7 @@ reward:
 # ── 数据 ──────────────────────────────────────────────────────────────────────
 data:
   train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
-  val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet
+  val_files: null                    # 无独立验证集;verl_runner 空/缺失时别名到 train_files(验证已关)
   train_batch_size: 64
   gen_batch_size: 64
   max_prompt_length: 2048

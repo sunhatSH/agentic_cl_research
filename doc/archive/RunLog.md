@@ -1223,3 +1223,26 @@ without_replacement 无调用点。
 
 ### 判为误报/不改
 sampler:151 mean_d 分子分母口径(相对权重,rng.choices 不在乎绝对尺度,不影响正确性)。
+
+---
+
+## 2026-07-27 k2(kl_medium)失败:val.parquet 缺失 → val_files 兜底覆盖不全的漏修
+
+### 现象
+qwen35_9b_k2_16gpu(=中 KL,kl_loss_coef=0.05,即用户口中的 "kl_medium")13:59 启动,
+14:00 即失败,脚本如实报 rc=1(退出码检查生效)。
+
+### 根因
+`FileNotFoundError: datasets/val.parquet`(create_rl_dataset 建 val 数据集)。
+`datasets/val.parquet` 实际不存在(只有 train.parquet)。之前修 val_files 兜底时**只改了
+b1 的 config(val_files: null)+ verl_runner 只处理"空/null"**,但:
+- 其它 16 个 k*/r* config 的 val_files 仍**硬指向不存在的 val.parquet**(漏改);
+- verl_runner 兜底只挡"空",不挡"非空但文件不存在" → k2 走 create_rl_dataset 崩。
+即上一轮 val_files 修复覆盖不全。
+
+### 修复
+1. verl_runner.run + build_trainer:兜底条件从"空"扩到"空 OR os.path.exists 为假",
+   两种都别名到 train_files(验证已关,占位不用于验证)。
+2. 全部 18 个 *_16gpu.yaml 的 val_files 统一改 null(与 b1 一致,显式表达"无独立验证集")。
+
+本机 pytest 354 passed(唯一 fail=test_sandbox_dockerfile 既有无关)。
