@@ -1150,6 +1150,7 @@ Phase 6:      不动
 | A8 | Selective Experience Replay Compression Using Coresets | Guangyao Zheng et al. | 2026 | Reward 分布保持的 coreset 压缩实现 10x buffer 压缩，性能无显著下降；但高压缩比下某些任务仍退化 | [arxiv](https://arxiv.org/abs/2603.08561) |
 | A9 | Prioritized Generative Replay | Renhao Wang et al. | 2023 | 最优 replay 分布可由正则化 RL 目标推导，TD-error 驱动的占据比率可将离策略数据拉向在线策略最优分布 | [arxiv](https://arxiv.org/abs/2311.11557) |
 | A10 | Adaptive Replay Buffer for Offline-to-Online RL | Chihyeon Song et al. | 2025 | 固定数据混合比在 offline-to-online RL 中导致早期性能退化和上限受限；需自适应调整在线/离线数据比例 | [arxiv](https://arxiv.org/abs/2512.10510) |
+| A11 | Overcoming catastrophic forgetting in neural networks (EWC) | James Kirkpatrick et al. | 2017 | 参数空间防遗忘代表作：用 Fisher 信息估计各参数对旧任务的重要性，对重要参数施加二次惩罚以减缓其变化。本文作为对照：在 LLM 分布式表征下参数级重要性归因失真、逐参数存储代价高，故我们改走函数空间的经验回放（见 Method §4.2） | [PNAS](https://www.pnas.org/doi/10.1073/pnas.1611835114) |
 
 ### B. LLM Agent 持续学习 & RL 训练
 
