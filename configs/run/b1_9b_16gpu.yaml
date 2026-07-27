@@ -27,9 +27,9 @@ actor_rollout_ref:
     kl_loss_coef: 0.0
     entropy_coeff: 0.001
     optim:
-      lr: 3.0e-6
-      # 峰值 lr 3e-6(比 1e-6 更有学习动力,仍在 9B RL 微调保守~中档区间)。
-      # warmup:前 3% step 从 0 线性升到峰值(500 步→前~15 步),step0≈0、step15=3e-6。
+      lr: 2.0e-6                          # 峰值 lr(warmup 从0线性爬到此)
+      # 峰值 lr 2e-6(比 1e-6 更有学习动力,仍在 9B RL 微调保守~中档区间)。
+      # warmup:前 3% step 从 0 线性升到峰值(500 步→前~15 步),step0≈0、step15=2e-6。
       # RL 早期梯度方差大 + 自定义 rollout/reward 首批分布未稳,warmup 抵消提 lr 的早期
       # 跑飞风险。warmup 后 constant(不衰减)——防遗忘场景后期新桶仍需学得动。
       # 优化器默认 AdamW(FP32 态)。若评测发现遗忘偏重可回调 lr(看曲线定)。

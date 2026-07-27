@@ -22,7 +22,7 @@ actor_rollout_ref:
     kl_loss_coef: 0.0
     entropy_coeff: 0.001
     optim:
-      lr: 3.0e-6                          # 峰值 lr(warmup 从0线性爬到此)
+      lr: 2.0e-6                          # 峰值 lr(warmup 从0线性爬到此)
       lr_warmup_steps_ratio: 0.03         # 前3% step warmup:step0≈0 → 峰值
       lr_scheduler_type: constant         # warmup 后恒定不衰减(防遗忘:后期新桶仍需学动)
     ppo_mini_batch_size: 64
