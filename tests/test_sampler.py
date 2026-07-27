@@ -35,6 +35,21 @@ def test_sample_returns_requested_size():
     assert 0 < len(out) <= 16
 
 
+def test_within_bucket_nan_priority_does_not_crash():
+    # A NaN/inf priority (from a degenerate log-prob-drift recompute) used to
+    # crash rng.choices with "Total of weights must be finite". Poison one and a
+    # whole bucket, and assert sampling still returns without raising.
+    buf = _make_buffer()
+    ids = buf.store.list_by_bucket("workflow")
+    buf.store.update_metadata(ids[0], priority=float("nan"))
+    buf.store.update_metadata(ids[1], priority=float("inf"))
+    for tid in buf.store.list_by_bucket("qa"):
+        buf.store.update_metadata(tid, priority=float("nan"))  # whole bucket NaN
+    sampler = TwoLevelSampler(buf, rng=random.Random(1))
+    out = sampler.sample(16)  # must not raise
+    assert isinstance(out, list)
+
+
 def test_sample_marks_replayed():
     buf = _make_buffer()
     sampler = TwoLevelSampler(buf, rng=random.Random(42))

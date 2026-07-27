@@ -1193,3 +1193,33 @@ rm_scores 形状/落位靠新单测(fake DataProto)+ 对齐 verl agent_loop.py:9
 
 新增 test_aggregate_nan_inf_are_finite。本机 pytest 351 passed(唯一 fail=
 test_sandbox_dockerfile 既有无关)。
+
+---
+
+## 2026-07-27 非-reward 模块除法/特殊值二次审查(sampler/bucket/eviction/cl_loss)
+
+用户要求除 reward 外其余参与计算模块尤其分母都审。派 agent 逐行扫 replay_buffer/* +
+trainer/replay_* + cl_loss。
+
+### 已确认良好保护(不改)
+eviction.py:98(if size<threshold 守卫)、store(空守卫,无统计除法)、
+replay_forward.py masked mean(.clamp(min=1))、replay_metrics(.clamp + if fill_ratios)、
+replay_batch(warmup>0 守卫)、cl_loss(_replay_is_empty 早返回 + 纯乘)、
+bucket.reservoir(max(n,1))、weighting(已审)。dead code: sampler._weighted_choice_
+without_replacement 无调用点。
+
+### 修的 3 处(与 reward NaN 同源:NaN 绕过 min/max/==0 比较)
+1. sampler._sample_one_within_bucket(:320,最易触发):priority 由 GPU log-prob drift
+   算,NaN/inf 时 max(nan,1e-9)→nan → rng.choices 报 "weights must be finite" 崩整个
+   桶采样(主训练路径)。修:_safe_prio 用 math.isfinite,非有限/≤1e-9→1e-9(退化为~uniform)。
+2. bucket.allocate_quota:全 0 counts → sum(n^alpha)=0 → ZeroDivisionError(构造期崩);
+   空 counts → max(range(0)) ValueError;0**负alpha 崩。修:空→[]、s<=0→均分、
+   n^alpha 对 (n<=0 且 alpha<=0) 置 0 权重。
+3. sampler TwoLevelSampler.sample(:277):bucket 权重 NaN(corrupt coords)绕过 wsum==0 →
+   rng.choices 崩。修:非有限/≤0 权重→0,wsum<=0 返回 []。
+
+新增 3 回归测试(NaN priority 不崩、全0 quota 均分、空 quota→[])。
+本机 pytest 354 passed(唯一 fail=test_sandbox_dockerfile 既有无关)。
+
+### 判为误报/不改
+sampler:151 mean_d 分子分母口径(相对权重,rng.choices 不在乎绝对尺度,不影响正确性)。

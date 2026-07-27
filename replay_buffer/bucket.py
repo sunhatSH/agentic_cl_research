@@ -49,8 +49,22 @@ def allocate_quota(
         Sums to total_capacity (modulo integer rounding -- the largest
         bucket absorbs the rounding residue).
     """
-    weights = [n**alpha for n in bucket_task_counts]
+    # Empty counts -> nothing to allocate (avoids max() on empty range below).
+    if not bucket_task_counts:
+        return []
+    # n**alpha: guard 0**negative (ZeroDivisionError) by flooring counts to >=0 and
+    # treating the exponent per-element; a 0 count with alpha<=0 would raise, so
+    # clamp such contributions to 0 weight instead.
+    weights = [(float(n) ** alpha if (n > 0 or alpha > 0) else 0.0) for n in bucket_task_counts]
     s = sum(weights)
+    if s <= 0:
+        # All counts zero (or all weights collapsed) -> no size signal; fall back
+        # to uniform split so we never divide by zero (was: ZeroDivisionError).
+        k = len(bucket_task_counts)
+        base = total_capacity // k
+        targets = [base] * k
+        targets[0] += total_capacity - base * k
+        return targets
     targets = [int(total_capacity * w / s) for w in weights]
     residue = total_capacity - sum(targets)
     if residue != 0:

@@ -21,6 +21,17 @@ def test_allocate_quota_alpha_dampens_large_buckets():
     assert prop[1] < sqrt[1]
 
 
+def test_allocate_quota_all_zero_counts_uniform_no_crash():
+    # all-zero counts -> sum(n^alpha)=0 used to ZeroDivisionError; now uniform.
+    t = allocate_quota(100, [0, 0, 0], alpha=0.5)
+    assert sum(t) == 100
+    assert max(t) - min(t) <= 1
+
+
+def test_allocate_quota_empty_counts_returns_empty():
+    assert allocate_quota(100, []) == []
+
+
 def test_buffer_add_and_stats():
     buf = BucketReplayBuffer(num_buckets=9, total_capacity=14000, bucket_floors=D9, alpha=0.5)
     buf.set_step(1)

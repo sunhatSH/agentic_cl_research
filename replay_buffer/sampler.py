@@ -274,8 +274,14 @@ class TwoLevelSampler:
         )
         names = list(weights.keys())
         wlist = [weights[b] for b in names]
+        # Coerce non-finite bucket weights (NaN/inf from a corrupt coords file or a
+        # degenerate distance) to 0 -- else `wsum == 0` is False for NaN and
+        # rng.choices raises "Total of weights must be finite" far from the cause.
+        import math
+
+        wlist = [w if (isinstance(w, (int, float)) and math.isfinite(w) and w > 0) else 0.0 for w in wlist]
         wsum = sum(wlist)
-        if wsum == 0:
+        if wsum <= 0:
             return []
 
         while len(out) < target and tries < max_tries:
@@ -317,5 +323,19 @@ class TwoLevelSampler:
             return None
         if self.within_bucket_sampling == "uniform":
             return self.rng.choice(ids)
-        priorities = [max(self.buffer.store.get_metadata(tid)["priority"], 1e-9) for tid in ids]
+        # priority is recomputed on the GPU path (log-prob drift); a NaN/inf there
+        # poisons this whole bucket's draw -- max(nan, 1e-9) returns nan and
+        # random.choices raises "Total of weights must be finite". Floor to 1e-9
+        # AND coerce non-finite -> 1e-9 so a bad priority degrades that trajectory
+        # to ~uniform weight instead of crashing the main sampling path.
+        import math
+
+        def _safe_prio(tid: str) -> float:
+            try:
+                p = float(self.buffer.store.get_metadata(tid)["priority"])
+            except (TypeError, ValueError, KeyError):
+                return 1e-9
+            return p if (math.isfinite(p) and p > 1e-9) else 1e-9
+
+        priorities = [_safe_prio(tid) for tid in ids]
         return self.rng.choices(ids, weights=priorities, k=1)[0]
