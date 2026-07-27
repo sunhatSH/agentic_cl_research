@@ -126,11 +126,24 @@ _exp_name() {
 }
 
 # ── 日志重定向到 AFS（所有 shell + Python 输出都落盘）─────────────────
+# 默认：覆写本 rank 的日志（每次启动从干净日志开始，避免历次叠加到同一文件）。
+# 多机各 rank 写各自的文件（rank0=train.log，rank>0=train.rank<N>.log），
+#   避免两节点 tee 同一文件互相截断/交错。
+# TRAIN_LOG_KEEP=1：不覆写——改写到带时间戳的新文件 train[.rankN]-<UTC>.log，
+#   保留上一次日志（不追加，故不会越滚越大）。
 _exp=$(_exp_name)
 _LOGDIR="$ROOT_DIR/logs/experiments/$_exp"
 mkdir -p "$_LOGDIR"
-exec > >(tee -a "$_LOGDIR/train.log") 2>&1
-echo "[train_cl] === $(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) rank=${RANK:-0}/${WORLD_SIZE:-${NNODES}} pid=$$ ==="
+_rank="${RANK:-0}"
+if [ "$_rank" = "0" ]; then _rank_sfx=""; else _rank_sfx=".rank$_rank"; fi
+if [ "${TRAIN_LOG_KEEP:-0}" = "1" ]; then
+  _LOGFILE="$_LOGDIR/train$_rank_sfx-$(date -u +%Y%m%dT%H%M%SZ).log"
+else
+  _LOGFILE="$_LOGDIR/train$_rank_sfx.log"
+fi
+# tee 不带 -a → 覆写；换文件模式下文件本就是新的。stderr 合并到同一流。
+exec > >(tee "$_LOGFILE") 2>&1
+echo "[train_cl] === $(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) rank=${RANK:-0}/${WORLD_SIZE:-${NNODES}} pid=$$ log=$_LOGFILE ==="
 echo "[train_cl] RANK=${RANK:-0} MASTER_ADDR=${MASTER_ADDR:-N/A} NNODES=$NNODES WORLD_SIZE=${WORLD_SIZE:-$NNODES}"
 
 _run_single() {
