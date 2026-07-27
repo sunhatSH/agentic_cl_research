@@ -16,15 +16,24 @@ on real state, not the actor's self-report.
 The Observer never scores; it only supplies evidence. This manager is the wiring
 that delivers that evidence to the one judge that actually drives training.
 
-verl 0.8.0 resolves reward managers from the experimental async registry
-(``source: register`` -> ``verl.experimental.reward_loop.reward_manager``). We
-subclass its ``NaiveRewardManager`` and override only ``run_single`` to inject
-observer_report, so we inherit its exact ``__init__`` / batching / async
-contract and stay robust to the rest of that path. Registered as
-``cl_observer``; select via ``reward.reward_manager.name: cl_observer`` (source
-stays ``register``). Importing this module triggers registration -- ensure it is
-imported before the trainer resolves the reward manager (done in
-``trainer/verl_runner.py``).
+verl 0.8.0's reward runs in a SEPARATE Ray process (``RewardLoopWorker``), so a
+``@register`` decorator (which only populates the registry in the process that
+imports it) is NOT enough -- the worker never imported this module and raised
+"Unknown reward manager: cl_observer". We therefore load via ``source: importlib``
+(``load_extern_object("pkg://trainer.observer_reward_manager", "ObserverRewardManager")``),
+which resolves directly from the module in EVERY process. The ``@register`` below
+is kept as a harmless fallback for ``source: register`` callers. We subclass the
+experimental ``NaiveRewardManager`` and override only ``run_single`` to inject
+observer_report, inheriting its exact ``__init__`` / async contract.
+
+Config (configs/base.yaml)::
+
+    reward:
+      reward_manager:
+        source: importlib
+        name: ObserverRewardManager
+        module:
+          path: pkg://trainer.observer_reward_manager
 
 When a row has no ``observer_report`` (empty diff / cold path), behaviour is
 identical to naive.

@@ -85,10 +85,15 @@ reward:
   reward_manager:
     # cl_observer = naive + per-row Observer-diff injection into extra_info, so
     # the training judge grounds completion on real sandbox state (not the
-    # actor's self-report). Registered by trainer/observer_reward_manager.py
-    # (imported in trainer/verl_runner.py before the trainer resolves this).
+    # actor's self-report). Loaded via importlib so EVERY process (driver AND
+    # the separate RewardLoopWorker) resolves it directly from the module --
+    # a @register decorator only fires in the process that imports it, and the
+    # reward worker is a distinct Ray process (was: "Unknown reward manager").
     # Falls back to naive semantics when a row has no observer_report.
-    name: cl_observer
+    source: importlib
+    name: ObserverRewardManager
+    module:
+      path: pkg://trainer.observer_reward_manager
   custom_reward_function:
     path: trainer/model_reward.py
     name: compute_score
