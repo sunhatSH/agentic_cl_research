@@ -96,7 +96,7 @@ reward:
 # 每个 query 一条轨迹（单轮），全量不截断（测不均分布防遗忘）。shuffle=false 按桶序训。
 data:
   train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
-  val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet
+  val_files: null
   train_batch_size: 32               # 32 query × rollout.n8 = 256 轨迹/step（GRPO 统计量下限）
   gen_batch_size: 32
   max_prompt_length: 2048            # 数据实测 max 708

@@ -88,7 +88,7 @@ reward:
 # baseline 无 CL 防遗忘，shuffle=false 按桶序训（可测遗忘）。
 data:
   train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
-  val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet
+  val_files: null
   train_batch_size: 64                # 64 query/step × n8 = 512 轨迹/step
   gen_batch_size: 64
   max_prompt_length: 2048
