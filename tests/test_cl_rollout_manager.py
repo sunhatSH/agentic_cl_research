@@ -132,6 +132,9 @@ def test_assemble_non_tensor_messages_bucket_no_uid_by_default():
     # an invented uid would collide with verl's on union (union_numpy_dict
     # asserts conflicting keys are deep-equal).
     assert "uid" not in dp.non_tensor_batch
+    # multi_modal_inputs is present as an empty dict per row (verl's fit()
+    # iterates it unconditionally; text-only truth = no multi-modal input).
+    assert list(dp.non_tensor_batch["multi_modal_inputs"]) == [{}]
 
 
 def test_assemble_uid_only_when_explicit():

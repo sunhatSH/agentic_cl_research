@@ -169,6 +169,20 @@ def trajectories_to_dataproto(
     non_tensor: dict[str, Any] = {
         "messages": np.array([t.messages for t in trajectories], dtype=object),
         "bucket": np.array([t.bucket for t in trajectories], dtype=object),
+        # multi_modal_inputs: verl's fit() unconditionally iterates
+        # batch.non_tensor_batch["multi_modal_inputs"] (ray_trainer.py:1463) after
+        # rollout. verl's OWN default AgentLoopManager only sets this key when a
+        # sample actually has multi-modal data (agent_loop.py:953
+        # `if any(mmi is not None)`), so text-only + custom-rollout hits
+        # KeyError: 'multi_modal_inputs'. We are TEXT-ONLY by design (195 tasks,
+        # no multimodal -- see CLAUDE.md), so the semantically-correct value is an
+        # empty dict per row = "this row has no multi-modal input". verl's loop
+        # does `if "image_grid_thw" not in mmi: continue`, so {} is skipped
+        # cleanly and images_seqlens stays empty -- exactly the text-only truth.
+        # This is a contract placeholder, NOT fabricated data: if real multimodal
+        # is ever added, these empty dicts must be replaced with actual inputs
+        # (they will stand out precisely because they are empty).
+        "multi_modal_inputs": np.array([{} for _ in trajectories], dtype=object),
     }
     if observer_reports is not None:
         assert len(observer_reports) == n, "observer_reports must align with trajectories"

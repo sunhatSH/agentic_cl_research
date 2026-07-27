@@ -994,3 +994,30 @@ verl 0.8.0 自己按 `rollout.n=8` 复制 gen_batch(`ray_trainer.py:1398` repeat
 待集群。真实 512/920 行契约 + cl_observer manager 链路待集群全栈验。
 
 ### 状态:已修,待集群验证。baseline 排队前务必用本 commit。
+
+---
+
+## 2026-07-27 补 multi_modal_inputs 空 dict → 修纯文本 + agent-rollout 的 KeyError（预防性,已论证不掩盖）
+
+### 背景
+timing 修复后系统排查 verl fit() 对我们 rollout 返回值的其余无守卫读取,发现
+`ray_trainer.py:1463` 无条件遍历 `batch.non_tensor_batch["multi_modal_inputs"]`。
+
+### 根因
+该 key 由 verl **默认 AgentLoopManager** 在 rollout 输出上设置,但仅
+`if any(mmi is not None)`（agent_loop.py:953）——**纯文本 batch 默认 manager 也不设**,
+而 :1463 却无条件读。即 verl 自身在「纯文本 + agent rollout」路径存在不一致。
+我们是纯文本（195 任务,无多模态,见 CLAUDE.md）,自定义 manager 不设 → 必撞
+`KeyError: 'multi_modal_inputs'`（紧接 timing 之后的第 6 个坑）。
+
+### 修复 + 为何不掩盖真实情况
+`trajectories_to_dataproto` 的 non_tensor 补 `multi_modal_inputs = [{} per row]`。
+论证:
+- **语义正确值**:纯文本每行「无多模态输入」的正确表示就是空 dict;verl 循环
+  `if "image_grid_thw" not in mmi: continue` 会跳过空 dict → images_seqlens 为空,
+  正是纯文本真值。不是假数据盖真错误（对比:补 rm_scores 假分才算掩盖）。
+- **无 union 冲突**:数据集 __getitem__ 纯文本行不设此 key,主 batch 无它,
+  union 直接新增(非冲突 key,不触发 deep-equal)。不覆盖任何真实数据。
+- **留痕**:注释写明这是 verl 契约占位;若将来做多模态,空 dict 会显眼提示需填真值。
+
+本机 pytest 350 passed（唯一 fail=test_sandbox_dockerfile,既有,无关）。待集群验。
