@@ -1,77 +1,85 @@
-# Scripts — 分类索引
+# Scripts
 
-35 个脚本按功能分为以下几类，方便快速定位。
+## 训练
 
-## 训练启动
-
-| 脚本 | 说明 |
-|------|------|
-| [`train.sh`](train.sh) | 通用 python -m 入口（被 train_cl.sh 复用） |
-| [`train_cl.sh`](train_cl.sh) | **参数化训练基础脚本**：GPU/机器/集群参数全为命令行参数（环境自检 + 4D 并行整除自检 + 单机/多机 + --smoke + --buckets + 任意 --config） |
-| [`train_4gpu.sh`](train_4gpu.sh) | 4 卡开发机（SP1/DP4/TP2）；`--smoke` 跑 1-step 验证 |
-| [`train_8gpu.sh`](train_8gpu.sh) | 单机 8 卡（SP1/DP8/TP2） |
-| [`train_32gpu.sh`](train_32gpu.sh) | 4 节点集群（SP4/DP8/TP4） |
-| [`train_64gpu.sh`](train_64gpu.sh) | 8 节点集群正式训练（SP4/DP16/TP4） |
-| [`launch_8node.sh`](launch_8node.sh) | 8 节点冷启动采集（ssh 到各节点） |
-| [`_node_worker.sh`](_node_worker.sh) | `launch_8node.sh` 的每节点 worker |
-| [`load_training_env.sh`](load_training_env.sh) | 导入训练凭证（.env → 环境变量） |
-
-### Phase run 快捷方式
+```bash
+bash scripts/train.sh 16gpu --config configs/run/b1_9b_16gpu.yaml    # 单实验
+bash scripts/train.sh 16gpu --phase 1                                 # Phase 1 全部实验
+bash scripts/train.sh 64gpu --phase 2 --only k2                      # 只跑 k2
+bash scripts/train.sh 64gpu --all                                     # 所有 Phase
+```
 
 | 脚本 | 说明 |
 |------|------|
-| `phase1/run.sh` | Phase 1 全部实验 |
-| `phase2/run.sh` | Phase 2 全部实验（`--only k2` 选单个） |
-| `phase3/run.sh` | Phase 3 全部实验（`--only r4` 选单个） |
-| `phase4/run.sh` | Phase 4 全部实验（`--only c1` 选单个） |
-| `phase5/run.sh` | Phase 5 全部实验（`--only s1` 选单个） |
-| `phase6/` | Phase 6（占位，后续填充） |
+| `train.sh` | 统一入口：拓扑 + 实验选择 + 参数覆盖 |
+| `_train_impl.sh` | 实现：多机同步 + verl 启动 |
+| `_sensecore_env.sh` | SenseCore 平台变量映射 |
+| `check_train_env.sh` | 环境依赖自检 |
+| `load_training_env.sh` | 训练凭证 |
+| `load_tencent_env.sh` | 沙箱凭证 |
+| `dev_env.sh` | 开发环境 PYTHONPATH |
 
-## 沙箱操作
-
-| 脚本 | 说明 |
-|------|------|
-| [`build_sandbox_image.sh`](build_sandbox_image.sh) | 构建 Agent Runtime 沙箱镜像 |
-| [`push_sandbox_image.sh`](push_sandbox_image.sh) | 推送沙箱镜像到腾讯 CCR |
-| [`create_sandbox_tool.sh`](create_sandbox_tool.sh) | 从 JSON 创建沙箱 Tool |
-| [`create_sandbox_via_api.sh`](create_sandbox_via_api.sh) | 通过 tccli 创建 Tool + API key + 测试实例 |
-| [`validate_sandbox_dockerfile.sh`](validate_sandbox_dockerfile.sh) | 静态校验 Dockerfile（无需 docker daemon） |
-| [`print_sandbox_runtime_env.sh`](print_sandbox_runtime_env.sh) | 打印合并后的运行时环境变量 JSON |
-| [`load_tencent_env.sh`](load_tencent_env.sh) | 导入腾讯沙箱凭证 |
-| [`sandbox_smoke.py`](sandbox_smoke.py) | 沙箱冒烟（execute + M 采样 + winner 固化 + domain→bucket） |
-
-## 数据采集与处理
+## 沙箱
 
 | 脚本 | 说明 |
 |------|------|
-| [`collect_cold.sh`](collect_cold.sh) | 冷启动数据采集启动器 |
-| [`collect_cold.py`](collect_cold.py) | 冷启动采集实现 |
-| [`collect_rollout.sh`](collect_rollout.sh) | 多轮 user-sim rollout 采集启动器 |
-| [`collect_rollout.py`](collect_rollout.py) | 多轮 rollout 采集实现 |
-| [`prepare_queries.py`](prepare_queries.py) | query 提取 / 格式转换 |
-| [`convert_dataset.py`](convert_dataset.py) | jsonl → verl parquet 格式转换 |
-| [`clean_queries.py`](clean_queries.py) | query 清洗去重 |
-| [`clean_buffer.py`](clean_buffer.py) | Buffer 快照清理 |
-| [`warmup_buffer.py`](warmup_buffer.py) | Buffer 预热（冷启动数据 → replay buffer） |
+| `build_sandbox_image.sh` | 构建镜像 |
+| `push_sandbox_image.sh` | 推送镜像 |
+| `create_sandbox_tool.sh` | 创建 Tool |
+| `create_sandbox_via_api.sh` | API 创建 Tool + 实例 |
+| `validate_sandbox_dockerfile.sh` | Dockerfile 校验 |
+| `print_sandbox_runtime_env.sh` | 运行时 env |
 
-## 评测与 Judge
+## 采集
 
 | 脚本 | 说明 |
 |------|------|
-| [`eval.sh`](eval.sh) | ClawEval 评测入口 |
-| [`calibrate_judge.py`](calibrate_judge.py) | Judge 校准 |
-| [`mock_judge.py`](mock_judge.py) | Mock judge（固定满分，用于本地开发调试） |
-| [`serve_reward_model.sh`](serve_reward_model.sh) | 启动外部冻结 judge vLLM 服务 |
+| `collect_cold.sh` / `collect_cold.py` | 冷采集（无 agent） |
+| `collect_rollout.sh` / `collect_rollout.py` | 多轮采集（observer+questioner） |
+| `collect_smoke.sh` / `collect_floor.sh` | smoke / floor 采集 |
+| `run_cold_start.py` | 冷启动采集 runner |
+| `sandbox_grpo_collect.py` | GRPO 采集 |
+| `sandbox_smoke.py` | 沙箱冒烟测试 |
 
-## 推理 / vLLM
+## 数据管道
 
 | 脚本 | 说明 |
 |------|------|
-| [`vllm_serve_patched.py`](vllm_serve_patched.py) | 补丁版 vLLM 服务 |
-| [`test_vllm_infer.py`](test_vllm_infer.py) | vLLM 推理测试 |
-| `vllm_patch/sitecustomize.py` | vLLM 启动补丁 |
+| `queries_to_parquet.py` | queries → parquet |
+| `labeled_to_parquet.py` | labeled data → parquet |
+| `merge_bucket_parquet.py` | 合并桶 parquet |
+| `label_buckets.py` / `label_capability.py` | 能力打标 |
+| `convert_dataset.py` / `trajectory_to_parquet.py` | 格式转换 |
+| `prepare_queries.py` / `taskspec_to_queries.py` | query 提取 |
+| `build_fs_seeds.py` / `build_topup_queries.py` | 种子/补采构建 |
+| `build_eval_manifest.py` | 评测 manifest |
+| `clean_queries.py` / `clean_buffer.py` | 数据清洗 |
 
-## 注意
+## Pipeline
 
-- `scripts/phase<N>/` 中的 `run.sh` 通过相对路径调用 `scripts/train.sh`，因此执行时必须在项目根目录。
-- 集群配置（环境变量、AFS 路径、凭证注入）详见 `train_cl.sh`，用对应规格 wrapper（train_4gpu/8gpu/32gpu/64gpu.sh）启动。
+| 脚本 | 说明 |
+|------|------|
+| `cold_start_pipeline.sh` | 全链路冷启动 |
+| `run_cold_pipeline.sh` | 简化冷启动 |
+| `run_data_pipeline.sh` | 数据 pipeline |
+| `run_w3_pipeline.sh` | W3 采集 pipeline |
+| `qc_cold_start.sh` | QC 质检 pipeline |
+| `chain_buffill.sh` | buffer 补齐链 |
+| `filter_and_borrow.sh` | 过滤 + 借任务 |
+
+## 评测 / 分析 / 测试
+
+| 脚本 | 说明 |
+|------|------|
+| `eval.sh` | 评测入口 |
+| `mock_judge.py` | Mock judge |
+| `serve_reward_model.sh` | Judge vLLM 服务 |
+| `calibrate_judge.py` | Judge 校准 |
+| `agents_harness.py` | Agent 端到端测试 |
+| `verify_endpoints.py` / `verify_binary_extraction.py` | 端点/二进制验证 |
+| `qc_trajectory.py` / `qc_trajectories.py` | 轨迹 QC |
+| `capability_bucket_discovery.py` / `claweval_bucket_discovery.py` | 桶发现 |
+| `score_bucket_coords.py` | 桶坐标评分 |
+| `phase_summary.py` | Phase 汇总 |
+| `analyze_observer_health.py` | Observer 诊断 |
+| `warmup_buffer.py` | Buffer 预热 |

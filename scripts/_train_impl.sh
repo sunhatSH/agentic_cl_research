@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# _train_impl.sh — internal: called by ``scripts/train`` (the unified entry point).
-# 所有 GPU/机器/集群拓扑都是命令行参数。禁止直接调用；走 ``scripts/train <TOPOLOGY>``。
-#
-# 并行约束（verl engine_workers.py:258）：
-#   DP = 总卡数 / ULYSSES_SP_SIZE ; train_batch % DP == 0 ; ppo_mini % DP == 0
-# 启动前整除自检，不满足直接中止（防止换卡数训到一半崩）。
+# _train_impl.sh — internal: called by ``scripts/train <TOPOLOGY>``.
+# 禁止直接调用。
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -14,13 +10,13 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG="$ROOT_DIR/configs/run/b1_8b.yaml"
 NNODES=1
 GPUS_PER_NODE=8
-ROLLOUT_TP=""            # 空 → 默认 = GPUS_PER_NODE
+ROLLOUT_TP=""
 ULYSSES_SP=1
 TRAIN_BATCH=256
 PPO_MINI=32
 GPU_MEM_UTIL=0.75
-CUDA_DEVICES=""         # 空 → 生成 0,1,..,GPUS_PER_NODE-1
-EXP_NAME=""             # 空 → 从 config 读 experiment_name
+CUDA_DEVICES=""
+EXP_NAME=""
 VENV="/opt/conda"
 VERL_DIR="/mnt/afs_toolcall/sunhao4/workspace/verl"
 LIGHTLLM_DIR="/mnt/afs_toolcall/sunhao4/workspace/LightLLM"
@@ -57,137 +53,179 @@ PY="$VENV/bin/python"
 TOTAL_GPUS=$((NNODES * GPUS_PER_NODE))
 DP=$((TOTAL_GPUS / ULYSSES_SP))
 
-# ── 整除自检（4D 并行约束）─────────────────────────────────────────────
-echo "[train_cl] 拓扑: ${NNODES}节点 × ${GPUS_PER_NODE}卡 = ${TOTAL_GPUS} | SP=${ULYSSES_SP} DP=${DP} rollout_TP=${ROLLOUT_TP}"
-echo "[train_cl] batch: train=${TRAIN_BATCH} ppo_mini=${PPO_MINI} | config=${CONFIG}"
-_fail=0
-if [ $((TOTAL_GPUS % ULYSSES_SP)) -ne 0 ]; then
-  echo "[train_cl] ERROR: 总卡数 $TOTAL_GPUS 不能被 ULYSSES_SP=$ULYSSES_SP 整除" >&2; _fail=1
-fi
-if [ "$DP" -gt 0 ] && [ $((TRAIN_BATCH % DP)) -ne 0 ]; then
-  echo "[train_cl] ERROR: train_batch=$TRAIN_BATCH 不能被 DP=$DP 整除" >&2; _fail=1
-fi
-if [ "$DP" -gt 0 ] && [ $((PPO_MINI % DP)) -ne 0 ]; then
-  echo "[train_cl] ERROR: ppo_mini=$PPO_MINI 不能被 DP=$DP 整除" >&2; _fail=1
-fi
-[ "$_fail" -ne 0 ] && { echo "[train_cl] 整除自检失败，中止" >&2; exit 3; }
-echo "[train_cl] ✓ 整除自检通过"
+# ── 并行约束检查 ────────────────────────────────────────────────────────
+echo "[train_cl] ${NNODES}节点×${GPUS_PER_NODE}卡=${TOTAL_GPUS}GPU  SP=${ULYSSES_SP} DP=${DP}  rollout_TP=${ROLLOUT_TP}"
+echo "[train_cl] train_batch=${TRAIN_BATCH}  ppo_mini=${PPO_MINI}  config=${CONFIG}"
 
-# ── 环境（PYTHONPATH / PATH / CUDA libs）───────────────────────────────
+_fail=0
+[ $((TOTAL_GPUS % ULYSSES_SP)) -ne 0 ] && { echo "[train_cl] ERROR: ${TOTAL_GPUS}GPU % SP=${ULYSSES_SP} != 0" >&2; _fail=1; }
+[ "$DP" -gt 0 ] && [ $((TRAIN_BATCH % DP)) -ne 0 ] && { echo "[train_cl] ERROR: train_batch=${TRAIN_BATCH} % DP=${DP} != 0" >&2; _fail=1; }
+[ "$DP" -gt 0 ] && [ $((PPO_MINI % DP)) -ne 0 ] && { echo "[train_cl] ERROR: ppo_mini=${PPO_MINI} % DP=${DP} != 0" >&2; _fail=1; }
+[ "$_fail" -ne 0 ] && exit 3
+echo "[train_cl] ✓ 并行约束检查通过"
+
+# ── 环境变量 ────────────────────────────────────────────────────────────
 export PATH="$VENV/bin:$PATH"
 export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$ROOT_DIR:${PYTHONPATH:-}"
 export PYTHON="$PY"
-# nvidia runtime libs（lightllm rollout 子进程加载 libcudart/cudnn/nccl）
+export NNODES N_GPUS_PER_NODE="$GPUS_PER_NODE" ROLLOUT_TP_SIZE="$ROLLOUT_TP"
+export ULYSSES_SP_SIZE="$ULYSSES_SP" TRAIN_BATCH_SIZE="$TRAIN_BATCH" PPO_MINI_BATCH_SIZE="$PPO_MINI"
+export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
+export ROLLOUT_GPU_MEM_UTIL="$GPU_MEM_UTIL"
+export HF_DATASETS_CACHE="/tmp/hf_datasets_cache" HF_HOME="/tmp/hf_home"
+export VLLM_GDN_PREFILL_BACKEND="${VLLM_GDN_PREFILL_BACKEND:-triton}"
+
 _NV="$VENV/lib/python3.11/site-packages/nvidia"
 if [ -d "$_NV" ]; then
   for _d in "$_NV"/*/lib; do [ -d "$_d" ] && LD_LIBRARY_PATH="$_d:${LD_LIBRARY_PATH:-}"; done
   export LD_LIBRARY_PATH
 fi
 
-# ── 拓扑 env（cluster.yaml 的 ${oc.env:...} 锚点）──────────────────────
-export NNODES N_GPUS_PER_NODE="$GPUS_PER_NODE" ROLLOUT_TP_SIZE="$ROLLOUT_TP"
-export ULYSSES_SP_SIZE="$ULYSSES_SP" TRAIN_BATCH_SIZE="$TRAIN_BATCH" PPO_MINI_BATCH_SIZE="$PPO_MINI"
-export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
-export ROLLOUT_GPU_MEM_UTIL="$GPU_MEM_UTIL"
-# AFS 不支持 flock → HF/verl cache 指向本地盘
-export HF_DATASETS_CACHE="/tmp/hf_datasets_cache" HF_HOME="/tmp/hf_home"
-export VLLM_GDN_PREFILL_BACKEND="${VLLM_GDN_PREFILL_BACKEND:-triton}"
-
+# ── dry-run ─────────────────────────────────────────────────────────────
 if [ "$DRY_RUN" = "1" ]; then
-  echo "[train_cl] --dry-run: 打印 env 后退出（不启动训练）"
+  echo "[train_cl] --dry-run"
   env | grep -E "NNODES|N_GPUS|ROLLOUT_TP|ULYSSES|TRAIN_BATCH|PPO_MINI|CUDA_VISIBLE|GPU_MEM" | sort
   exit 0
 fi
 
-# ── 环境自检：① 检查 ② 不符就装/改版本 ③ 训练。只有【安装失败】才中止 ──
-# （快速失败，不带缺依赖硬跑白费排队）。多机时每个节点各自跑（各机 /opt/conda 独立）。
-PY="$PY" bash "$ROOT_DIR/scripts/check_train_env.sh" || {
-  echo "[train_cl] 环境依赖安装失败，中止训练（先修好环境再排队）" >&2; exit 5; }
+# ── 环境依赖自检 ────────────────────────────────────────────────────────
+PY="$PY" bash "$ROOT_DIR/scripts/env/check_train_env.sh" || {
+  echo "[train_cl] 环境依赖安装失败，中止" >&2; exit 5; }
 
-# ── judge：--smoke 用 mock，否则 agents.yaml sufy judge ─────────────────
+# ── judge 凭证 ──────────────────────────────────────────────────────────
 if [ "$SMOKE" = "1" ]; then
   export REWARD_API_BASE="${REWARD_API_BASE:-http://127.0.0.1:8100/v1}"
   export REWARD_MODEL="${REWARD_MODEL:-mock-judge}"
   export TOKENHUB_API_KEY="${TOKENHUB_API_KEY:-sk-local}"
-  if ! curl -sS -m 3 "$REWARD_API_BASE/models" >/dev/null 2>&1; then
-    echo "[train_cl] 起 mock judge on $REWARD_API_BASE"
-    "$PY" "$ROOT_DIR/scripts/mock_judge.py" --port 8100 > /tmp/mock_judge.log 2>&1 &
+  curl -sS -m 3 "$REWARD_API_BASE/models" >/dev/null 2>&1 || {
+    echo "[train_cl] 起 mock judge → $REWARD_API_BASE"
+    "$PY" "$ROOT_DIR/scripts/serve/mock_judge.py" --port 8100 > /tmp/mock_judge.log 2>&1 &
     for _ in $(seq 1 10); do curl -sS -m 2 "$REWARD_API_BASE/models" >/dev/null 2>&1 && break; sleep 1; done
-  fi
+  }
 else
-  # 真训练：judge 走 agents.yaml sufy；加载训练凭证（.env）
-  [ -f "$ROOT_DIR/scripts/load_training_env.sh" ] && { set -a; source "$ROOT_DIR/scripts/load_training_env.sh"; set +a; }
-  # rollout 走沙箱 Hermes（agent_loop_manager, backend=e2b）时需要 E2B_API_KEY/E2B_DOMAIN
-  # 等沙箱凭证——它们在 docker/sandbox/tencent.env，由 load_tencent_env.sh 导出。
-  [ -f "$ROOT_DIR/scripts/load_tencent_env.sh" ] && { set -a; source "$ROOT_DIR/scripts/load_tencent_env.sh"; set +a; }
+  [ -f "$ROOT_DIR/scripts/env/load_training_env.sh" ] && { set -a; source "$ROOT_DIR/scripts/env/load_training_env.sh"; set +a; }
+  [ -f "$ROOT_DIR/scripts/env/load_tencent_env.sh" ] && { set -a; source "$ROOT_DIR/scripts/env/load_tencent_env.sh"; set +a; }
   export MODELING_BACKEND="${MODELING_BACKEND:-hf}"
 fi
 
 cd "$ROOT_DIR"
 
-# ── 单实验 / 桶序 运行函数 ─────────────────────────────────────────────
-_exp_name() {  # 从 config 读 experiment_name，fallback basename
+# ══════════════════════════════════════════════════════════════════════════
+# 多机：先 source SenseCore env 取 RANK/WORLD_SIZE，再做日志重定向
+# ══════════════════════════════════════════════════════════════════════════
+if [ "$NNODES" -gt 1 ]; then
+  source "$SCRIPT_DIR/_sensecore_env.sh"
+fi
+
+# ── helper 函数 ──────────────────────────────────────────────────────────
+_exp_name() {
   [ -n "$EXP_NAME" ] && { echo "$EXP_NAME"; return; }
-  local n; n=$(grep -E "^[[:space:]]*experiment_name:" "$CONFIG" 2>/dev/null | head -1 | sed -E "s/.*experiment_name:[[:space:]]*//;s/[[:space:]\"']*//g")
+  local n
+  n=$(grep -E "^[[:space:]]*experiment_name:" "$CONFIG" 2>/dev/null | head -1 | sed -E 's/.*experiment_name:[[:space:]]*//;s/[[:space:]"'"'"']*//g') || true
   echo "${n:-$(basename "$CONFIG" .yaml)}"
 }
 
-_run_single() {  # 单实验：直接跑 or ray head（多机）
-  local exp; exp=$(_exp_name)
-  local ckpt="$ROOT_DIR/ckpts/$exp"
-  local logdir="$ROOT_DIR/logs/experiments/$exp"
-  mkdir -p "$ckpt" "$logdir/rollout" "$logdir/val"
-  export CKPT_DIR="$ckpt" ROLLOUT_DATA_DIR="$logdir/rollout" VAL_DATA_DIR="$logdir/val"
-  export VERL_LOGGER="${VERL_LOGGER:-[console,swanlab]}"
-  echo "[train_cl] 启动 $exp → $logdir"
-  "$PY" -m trainer.cl_main --config "$CONFIG" "$@" 2>&1 | tee "$logdir/train.log"
+# ── 日志重定向到 AFS（所有 shell + Python 输出都落盘）─────────────────
+_exp=$(_exp_name)
+_LOGDIR="$ROOT_DIR/logs/experiments/$_exp"
+mkdir -p "$_LOGDIR"
+exec > >(tee -a "$_LOGDIR/train.log") 2>&1
+echo "[train_cl] === $(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) rank=${RANK:-0}/${WORLD_SIZE:-${NNODES}} pid=$$ ==="
+echo "[train_cl] RANK=${RANK:-0} MASTER_ADDR=${MASTER_ADDR:-N/A} NNODES=$NNODES WORLD_SIZE=${WORLD_SIZE:-$NNODES}"
+
+_run_single() {
+  local ckpt="$ROOT_DIR/ckpts/$_exp"
+  mkdir -p "$ckpt" "$_LOGDIR/rollout" "$_LOGDIR/val"
+  export CKPT_DIR="$ckpt" ROLLOUT_DATA_DIR="$_LOGDIR/rollout" VAL_DATA_DIR="$_LOGDIR/val"
+
+  # auto-resume：检测最新 checkpoint，中断后续训
+  local latest latest_step
+  latest=$(ls -dt "$ckpt"/global_step_* 2>/dev/null | head -1) || true
+  if [ -n "$latest" ]; then
+    latest_step=$(basename "$latest" | grep -oP '\d+')
+    echo "[train_cl] 检测到 checkpoint step=$latest_step → 自动续训"
+    set -- "--resume-from" "$latest" "$@"
+  fi
+
+  echo "[train_cl] 启动 $_exp → $_LOGDIR"
+  "$PY" -m trainer.cl_main --config "$CONFIG" "$@"
 }
 
-_run_buckets() {  # 9 桶顺序训练：每桶从上一桶 ckpt 续训
-  local base_model; base_model=$(grep -E "^[[:space:]]*path:" "$CONFIG" 2>/dev/null | head -1 | sed -E "s/.*path:[[:space:]]*//;s/[[:space:]\"']*//g")
-  local exp; exp=$(_exp_name)
-  local ckpt_base="$ROOT_DIR/ckpts/$exp"
-  # 桶序 = 训练组间序（评测须同序对齐，防遗忘方案）。
-  # total_training_steps/save_freq/test_freq 来自 config（不按桶数据量覆盖）。
+_run_buckets() {
+  local base_model exp ckpt_base data_dir prev _resume latest
+  base_model=$(grep -E "^[[:space:]]*path:" "$CONFIG" 2>/dev/null | head -1 | sed -E 's/.*path:[[:space:]]*//;s/[[:space:]"'"'"']*//g') || true
+  exp=$(_exp_name)
+  ckpt_base="$ROOT_DIR/ckpts/$exp"
+  data_dir="$ROOT_DIR/datasets/baseline_9b"
+  prev="$base_model"
+  _resume=""
+
   local buckets=(office research coding ops safety workflow finance communication qa)
-  local data_dir="$ROOT_DIR/datasets/baseline_9b"
-  local prev="$base_model"
-  local _resume=""                              # 首桶不 resume，后续 resume 上一桶最后一个 ckpt
   for b in "${buckets[@]}"; do
-    local logdir="$ROOT_DIR/logs/experiments/$exp/$b"
-    mkdir -p "$ckpt_base" "$logdir/rollout" "$logdir/val"
-    export CKPT_DIR="$ckpt_base" ROLLOUT_DATA_DIR="$logdir/rollout" VAL_DATA_DIR="$logdir/val"
-  echo "[train_cl] 桶 $b model=$prev resume=${_resume}"
-  "$PY" -m trainer.cl_main --config "$CONFIG" \
-    "actor_rollout_ref.model.path=$prev" "actor_rollout_ref.ref.path=$base_model" \
-    "data.train_files=$data_dir/train_$b.parquet" \
-    "trainer.default_local_dir=$ckpt_base" "trainer.resume_from_path=$_resume" \
-    2>&1 | tee "$logdir/train.log"
-    local latest; latest=$(ls -dt "$ckpt_base"/global_step_* 2>/dev/null | head -1)
+    local blogdir="$ROOT_DIR/logs/experiments/$exp/$b"
+    mkdir -p "$ckpt_base" "$blogdir/rollout" "$blogdir/val"
+    export CKPT_DIR="$ckpt_base" ROLLOUT_DATA_DIR="$blogdir/rollout" VAL_DATA_DIR="$blogdir/val"
+    echo "[train_cl] 桶 $b  model=$prev  resume=${_resume:-无}"
+    "$PY" -m trainer.cl_main --config "$CONFIG" \
+      "actor_rollout_ref.model.path=$prev" "actor_rollout_ref.ref.path=$base_model" \
+      "data.train_files=$data_dir/train_$b.parquet" \
+      "trainer.default_local_dir=$ckpt_base" "trainer.resume_from_path=$_resume" \
+      2>&1 | tee "$blogdir/train.log"
+    latest=$(ls -dt "$ckpt_base"/global_step_* 2>/dev/null | head -1) || true
     if [ -n "$latest" ]; then
       prev="$latest/actor"
-      _resume="$latest"                         # 下一桶从这 resume
+      _resume="$latest"
     else
       echo "[train_cl] WARN: 桶 $b 无 ckpt，续用 $prev"
-      _resume=""                                # 没 ckpt 就不 resume
+      _resume=""
     fi
   done
   echo "[train_cl] 9 桶全部完成"
 }
 
-# ── 单机直跑 / 多机 rendezvous ─────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════
+# 启动
+# ══════════════════════════════════════════════════════════════════════════
+
 if [ "$NNODES" -le 1 ]; then
-  export RAY_ADDRESS="${RAY_ADDRESS:-}"   # 单机由 cl_main 内 ray.init(address=local)
   if [ "$BUCKETS" = "1" ]; then _run_buckets; else _run_single "$@"; fi
+  exit 0
+fi
+
+# ── 多机 ────────────────────────────────────────────────────────────────
+echo "[train_cl] === 多机模式 rank=${RANK:-0}/${WORLD_SIZE:-?} ==="
+
+# 1. Master 先启动 Ray head
+if [ "${RANK:-0}" = "0" ]; then
+  echo "[train_cl] master: ray start --head ..."
+  ray start --head --disable-usage-stats || { echo "[train_cl] FATAL: ray start --head 失败" >&2; exit 1; }
+  ray status
+  echo "[train_cl] master: Ray head 就绪 ($(ray status 2>/dev/null | head -3 | tr '\n' ' '))"
+fi
+
+# 2. 全节点 barrier 同步
+echo "[train_cl] rank=${RANK:-0}: 等待 ${WORLD_SIZE:-?} 节点同步..."
+"$PY" << 'PYEOF' || { echo "[train_cl] FATAL: rank=${RANK:-0} 同步失败" >&2; exit 1; }
+import os, torch.distributed as dist
+addr = os.environ['MASTER_ADDR']
+port = int(os.environ['MASTER_PORT'])
+rank = int(os.environ['RANK'])
+ws   = int(os.environ['WORLD_SIZE'])
+print(f'[sync] rank={rank} init tcp://{addr}:{port}', flush=True)
+dist.init_process_group('gloo', init_method=f'tcp://{addr}:{port}', rank=rank, world_size=ws)
+dist.barrier()
+dist.destroy_process_group()
+print(f'[sync] rank={rank}: {ws} 节点同步完成', flush=True)
+PYEOF
+echo "[train_cl] rank=${RANK:-0}: 同步完成"
+
+# 3. 分发：master 训，worker 连 Ray
+if [ "${RANK:-0}" = "0" ]; then
+  echo "[train_cl] master: 启动训练"
+  if [ "$BUCKETS" = "1" ]; then _run_buckets; else _run_single "$@"; fi
+  echo "[train_cl] master: 训练结束，ray stop"
+  ray stop --force
 else
-  # 多机：SenseCore 注入 RANK/MASTER_ADDR/MASTER_PORT（_sensecore_env 兼容映射）
-  source "$SCRIPT_DIR/_sensecore_env.sh"
-  OMP_NUM_THREADS=1 "$PY" -c "import os,torch.distributed as d; s,r,w=d.rendezvous(f'tcp://{os.environ[\"MASTER_ADDR\"]}:{os.environ[\"MASTER_PORT\"]}'); d.init_process_group('gloo',store=s,rank=r,world_size=w); d.barrier()"
-  if [ "${RANK:-0}" = "0" ]; then
-    ray start --head --disable-usage-stats && ray status
-    if [ "$BUCKETS" = "1" ]; then _run_buckets; else _run_single "$@"; fi
-    ray stop --force
-  else
-    ray start --address "$MASTER_ADDR:6379" --block
-  fi
+  echo "[train_cl] worker: ray start --address $MASTER_ADDR:6379 --block"
+  ray start --address "$MASTER_ADDR:6379" --block
 fi
