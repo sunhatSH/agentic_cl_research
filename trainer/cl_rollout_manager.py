@@ -382,12 +382,24 @@ def make_cl_scheduler_manager_cls():
             # ground completion on it. Do NOT pass uids -- verl's own uid drives
             # GRPO grouping and an invented uid would collide on union.
             observer_reports = [str(t.meta.get("observer_report", "") or "") for t in trajectories]
-            return trajectories_to_dataproto(
+            out = trajectories_to_dataproto(
                 trajectories,
                 prompt_ids,
                 pad_token_id=pad_id,
                 observer_reports=observer_reports,
             )
+            # verl's fit() does `timing_raw.update(gen_output.meta_info["timing"])`
+            # right after rollout (ray_trainer.py:1425) and the default
+            # AgentLoopManager always returns meta_info={"timing": {...}, ...}
+            # (agent_loop.py:1091). Our custom manager must honour that contract or
+            # fit() dies with KeyError: 'timing' AFTER a full rollout (the 08:37
+            # crash). We don't have verl's per-request perf breakdown, so emit an
+            # empty timing dict -- update() with {} is a no-op, keeps the key present.
+            try:
+                out.meta_info = {**getattr(out, "meta_info", {}), "timing": {}}
+            except Exception:  # noqa: BLE001 -- fake DataProto in off-cluster tests
+                pass
+            return out
 
     return CLSchedulerAgentLoopManager
 
