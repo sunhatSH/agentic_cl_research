@@ -27,8 +27,8 @@ actor_rollout_ref:
       lr_warmup_steps_ratio: 0.03         # 前3% step warmup:step0≈0 → 峰值
       lr_scheduler_type: constant         # warmup 后恒定不衰减(防遗忘:后期新桶仍需学动)
     ppo_mini_batch_size: 64
-    ppo_micro_batch_size_per_gpu: 2
-    ppo_max_token_len_per_gpu: 65536
+    ppo_micro_batch_size_per_gpu: 1     # 2→1:治训练 OOM(激活峰值减半)
+    ppo_max_token_len_per_gpu: 32768    # 65536→32768:压激活
     ulysses_sequence_parallel_size: 2
     fsdp_config:
       param_offload: true
@@ -39,7 +39,7 @@ actor_rollout_ref:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.55        # 0.40→0.55:支撑 256 并发 KV 池
+    gpu_memory_utilization: 0.6         # 支撑 512 并发 KV 池(训练时 lightllm sleep 让出)
     n: 8
     load_format: auto
     max_model_len: 65536
@@ -49,7 +49,7 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: 1
     agent:
       agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
-      sessions_per_step: 256            # rollout 并发 256(per-row);512条/step 分2批
+      sessions_per_step: 512            # rollout 并发 512:512条/step 分1批
     multi_turn:
       enable: false
       format: qwen3_coder
@@ -62,8 +62,8 @@ actor_rollout_ref:
         batch_max_tokens: 8192
         enable_multimodal: false
         enable_torch_memory_saver: true
-        graph_max_batch_size: 256       # 配合 256 并发
-        running_max_req_size: 256       # 推理端一次并发上限=256
+        graph_max_batch_size: 512       # 配合 512 并发
+        running_max_req_size: 512       # 推理端一次并发上限=512
         sampling_backend: triton
         disable_vision: true
         disable_audio: true

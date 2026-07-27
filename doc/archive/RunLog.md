@@ -1293,3 +1293,35 @@ per-row 模式下并发 = sessions_per_step(每 session 1 条轨迹)。提到 25
 18 个 *_16gpu.yaml 一致;YAML + 值校验通过。
 待集群验证的前提:e2b 沙箱配额需 ≥256(256 并发=一次开 256 沙箱);若配额不足会大量
 crashed-session 占位(空轨迹 reward 0),需回调 sessions_per_step。稳妥档,未上 512。
+
+---
+
+## 2026-07-27 baseline 训练阶段 CUDA OOM(update_actor)+ 一把改:治 OOM + util 0.6 + 并发 512
+
+### 现象
+b1(13:59 老进程)跑到 _update_actor → update_actor 时 `torch.OutOfMemoryError: CUDA
+out of memory. Tried to allocate 12.97 GiB. GPU0 total 79.32GB, 训练进程已占 63.36GB`。
+**崩在训练阶段(非 rollout)**,推翻"显存宽松"的乐观估计——长序列(53886)+ micro=2 的
+激活峰值 + FSDP all-gather + log_prob 计算,单卡训练峰值 ~76GB→爆。ckpt 空。
+
+### 决策(用户:一把全改)
+治 OOM + 提 util 0.6 + 提并发。**未开 use_remove_padding**:它依赖 flash-attn varlen,
+而本模型是 sdpa + 混合 GatedDeltaNet(GDN 自定义线性注意力,日志已显示 fla-org/causal-conv1d
+未装走 torch fallback),开 rmpad 高风险崩在诡异处;改用更稳的 micro/token 手段。
+
+### 改动(18 个 *_16gpu.yaml)
+治 OOM(砍训练激活):
+- ppo_micro_batch_size_per_gpu: 2→1(update_actor 激活峰值减半,最直接)
+- ppo_max_token_len_per_gpu: 65536→32768(每卡单次前向 token 上限减半)
+- (log_prob_micro_batch_size_per_gpu 已是 1;param/optimizer_offload 保持 true)
+提吞吐:
+- gpu_memory_utilization: 0.55→0.6(训练时 lightllm sleep 让出,不占训练;更大 KV 池)
+- sessions_per_step: 256→512 + lightllm running_max_req_size/graph_max_batch_size: 256→512
+  (rollout 并发 512 → 512条/step 分 1 批,原 8 批)
+
+估算:训练峰值 micro=1 后 ~45-55GB/卡(有余量);rollout util 0.6 = 48GB lightllm + offload
+训练态(CPU)+ 系统 ≈ 53GB,够。本机 pytest 354 passed。
+
+### 待集群验证的风险
+1. micro=1 是否真把训练压进 80GB(激活估算不确定,若仍 OOM 需再降 max_token 或 batch)。
+2. e2b 沙箱配额需 ≥512(512 并发=一次开 512 沙箱),不足则大量 crashed-session 占位。

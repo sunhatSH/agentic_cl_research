@@ -36,8 +36,9 @@ actor_rollout_ref:
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
     ppo_mini_batch_size: 64             # 对齐 train_batch=64
-    ppo_micro_batch_size_per_gpu: 2
-    ppo_max_token_len_per_gpu: 65536
+    ppo_micro_batch_size_per_gpu: 1     # 2→1:治训练 OOM(update_actor 阶段激活峰值减半)
+                                        # 之前 micro=2 时 update_actor 吃 ~76GB/卡→CUDA OOM
+    ppo_max_token_len_per_gpu: 32768    # 65536→32768:每卡单次前向 token 上限减半,进一步压激活
     ulysses_sequence_parallel_size: 2   # SP=2 → DP=8（16卡÷2）
     fsdp_config:
       param_offload: true
@@ -48,8 +49,8 @@ actor_rollout_ref:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.55        # 0.40→0.55:给 lightllm KV 池更多显存,支撑 256 并发
-                                        # (整卡余量大,~20GB/80GB;256 峰值 KV ~125k token 远够)
+    gpu_memory_utilization: 0.6         # 0.55→0.6:更大 KV 池支撑 512 并发(训练阶段 lightllm
+                                        # sleep 让出;训练 OOM 已由 micro=1 + max_token 减半治理)
     n: 8
     load_format: auto
     max_model_len: 65536
@@ -59,9 +60,9 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: 1
     agent:
       agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
-      sessions_per_step: 256            # rollout 并发:256 条轨迹同时跑(per-row,slots=1)
+      sessions_per_step: 512            # rollout 并发 512:512条/step 分1批(per-row,slots=1)
                                         # → 512 条/step 分 2 批(原 64→8 批)。必须与下方
-                                        # lightllm running_max_req_size 一致,否则请求在推理端排队=假并发
+                                        # 必须与 lightllm running_max_req_size 一致,否则推理端排队=假并发
     multi_turn:
       enable: false
       format: qwen3_coder
@@ -74,8 +75,8 @@ actor_rollout_ref:
         batch_max_tokens: 8192
         enable_multimodal: false
         enable_torch_memory_saver: true
-        graph_max_batch_size: 256       # 64→256:cuda graph 支持一次解码 256 请求(配合并发)
-        running_max_req_size: 256       # 64→256:推理端一次最多同时解码 256 请求(=并发上限)
+        graph_max_batch_size: 512       # 配合 512 并发
+        running_max_req_size: 512       # 推理端一次并发上限=512
         sampling_backend: triton
         disable_vision: true
         disable_audio: true
