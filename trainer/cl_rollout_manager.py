@@ -9,17 +9,29 @@ instead of the default ``AgentLoopManager`` -- WITHOUT touching ``fit()``.
 We subclass ``AgentLoopManager`` and override only ``generate_sequences``:
 
     verl fit() ── generate_sequences(prompts: DataProto) ──►  CLSchedulerAgentLoopManager
-                                                                │
-                    RolloutScheduler (16 sessions × 8 slots)    │  winner-sync per query
-                      each per-slot step → llm_client.generate  │  (our existing code)
-                                                                ▼
+                    (prompts already ×n: verl repeated each query by rollout.n)  │
+                    per input ROW → 1 single-slot single-turn rollout            │
+                      each step → llm_client.generate (token_ids + log_probs)    │
+                      Observer diff per row → meta['observer_report']            ▼
                     list[Trajectory] ── trajectories_to_dataproto ──► DataProto (verl contract)
+
+CONTRACT (bug fix 2026-07-27): verl OWNS the ×n repeat and GRPO grouping. It
+repeats each query by ``rollout.n`` (interleave) BEFORE calling us and groups
+advantages by ITS OWN ``uid``. So we return EXACTLY one trajectory per input row,
+in order, and never emit our own ``uid`` (would collide on ``union``). The OLD
+code ran an 8-slot pool PER input row -- ×n on top of verl's ×n = ×n² rows --
+which broke the row-count contract and gave every baseline 0 checkpoints (it
+crashed at ``_validate``/first step before finishing any training step).
+
+Single-turn: the Questioner/winner-sync path is a no-op (one query per session);
+it is the future multi-turn re-enable path, NOT a reason to multiply rows here.
 
 The per-step generation reuses verl's NATIVE rollout LLM server
 (``llm_client.generate`` -> token_ids + log_probs) via
-``inference.VerlRolloutGenerateFn`` -- no HTTP proxy. The 16×8 + winner-sync
-orchestration is our existing, unit-tested ``RolloutScheduler`` /
-``SessionSandboxPool``; this module is just the adapter on both ends.
+``inference.VerlRolloutGenerateFn`` -- no HTTP proxy. The Observer's per-row diff
+is carried back on ``observer_report`` and folded into the training judge's
+rubric by ``trainer/observer_reward_manager.py`` (the observer never scores; it
+supplies ground-truth state evidence).
 
 verl is imported lazily (in ``create``/assembly) so the module imports off-cluster;
 ``trajectories_to_dataproto`` and the prompt-extraction helper are pure and
@@ -48,6 +60,7 @@ def trajectories_to_dataproto(
     *,
     pad_token_id: int = 0,
     uids: list[str] | None = None,
+    observer_reports: list[str] | None = None,
 ):
     """Assemble collected ``Trajectory`` objects into a verl-contract DataProto.
 
@@ -59,17 +72,31 @@ def trajectories_to_dataproto(
         attention_mask [B, P+R] real-token mask
         position_ids   [B, P+R] cumsum(attention_mask)-1
         rollout_log_probs [B, R] per response token (when available)
-    non_tensor_batch carries uid / messages / bucket for downstream
-    (reward, buffer ingest, advantage grouping by uid).
+    non_tensor_batch carries messages / bucket / observer_report for downstream
+    (transcript, bucket, and the observer diff evidence the training judge reads).
+
+    verl OWNS the row identity and GRPO grouping: it repeats the gen batch by
+    ``rollout.n`` BEFORE calling us (ray_trainer.py:1398, interleave) and groups
+    advantages by ITS OWN ``uid`` (dataset uid, repeated ×8). We therefore must
+    return EXACTLY ``len(trajectories) == len(input rows)`` rows, in input order,
+    and must NOT emit ``uid`` -- a uid we invent would collide with verl's on
+    ``union`` (union_numpy_dict asserts conflicting keys are deep-equal) and crash.
+    ``uids`` is accepted for signature parity / offline callers but is NOT written
+    to the DataProto unless explicitly passed (cold-collect / tests).
 
     Args:
-        trajectories: list of ``rollout.session_pool.Trajectory`` (one per slot,
-            per query) carrying ``response_token_ids`` / ``logprobs`` /
+        trajectories: list of ``rollout.session_pool.Trajectory`` (one per input
+            row) carrying ``response_token_ids`` / ``logprobs`` /
             ``meta['response_mask']`` / ``messages`` / ``bucket``.
-        prompt_token_ids: the prompt ids for each trajectory (aligned by index),
-            i.e. the tokenized seed/follow-up query the slot answered.
+        prompt_token_ids: the prompt ids for each trajectory (aligned by index).
         pad_token_id: tokenizer pad id.
-        uids: GRPO grouping id per trajectory (default: per-query group id).
+        uids: OPTIONAL explicit grouping id per trajectory. Only written to the
+            DataProto when non-None (off-cluster/cold paths). In verl training
+            leave it None so verl's own uid drives GRPO grouping.
+        observer_reports: per-row observer diff/state evidence (str). Carried as a
+            NEW non_tensor key ``observer_report`` (never ``extra_info`` -- that
+            key belongs to the dataset and would collide on union). The custom
+            reward manager folds it into extra_info for the training judge.
     """
     import numpy as np
     import torch
@@ -135,14 +162,20 @@ def trajectories_to_dataproto(
     if rollout_lp is not None:
         tensors["rollout_log_probs"] = rollout_lp
 
-    # non-tensor: uid (GRPO grouping), messages (transcript/bucket), bucket
-    if uids is None:
-        uids = [str(t.meta.get("session_id", i)) for i, t in enumerate(trajectories)]
-    non_tensor = {
-        "uid": np.array(uids, dtype=object),
+    # non_tensor: messages (transcript/bucket), bucket, observer_report (diff
+    # evidence for the training judge). uid is emitted ONLY when explicitly
+    # passed -- in verl training it stays absent so verl's own uid (dataset uid
+    # repeated ×n) drives GRPO grouping and no union collision occurs.
+    non_tensor: dict[str, Any] = {
         "messages": np.array([t.messages for t in trajectories], dtype=object),
         "bucket": np.array([t.bucket for t in trajectories], dtype=object),
     }
+    if observer_reports is not None:
+        assert len(observer_reports) == n, "observer_reports must align with trajectories"
+        non_tensor["observer_report"] = np.array([str(x or "") for x in observer_reports], dtype=object)
+    if uids is not None:
+        assert len(uids) == n, "uids must align with trajectories"
+        non_tensor["uid"] = np.array([str(u) for u in uids], dtype=object)
 
     from verl import DataProto  # lazy: only needed on the cluster
 
@@ -203,11 +236,21 @@ def make_cl_scheduler_manager_cls():
     from rollout.scheduler import RolloutScheduler, SessionSpec
 
     class CLSchedulerAgentLoopManager(_Base):
-        """Route rollout through our 16×8 + winner-sync scheduler.
+        """Route rollout through our per-row single-turn scheduler.
 
-        With Questioner + Observer support: each session runs one seed query
-        through the full simulated-session loop (run_simulated_session), generating
-        follow-up queries online and observing winner state via diff.
+        verl OWNS the ×n repeat and GRPO grouping: it repeats each query by
+        ``rollout.n`` (ray_trainer.py:1398, interleave) BEFORE calling us and
+        groups advantages by its own ``uid``. So ``generate_sequences`` receives
+        an already-repeated batch (n_query × n rows) and must return EXACTLY that
+        many trajectories, one per input row, in order. We therefore run ONE
+        single-slot single-turn rollout per input row -- NOT an 8-slot pool per
+        query (that double-counted ×n → ×n² and crashed the row-count contract).
+
+        The Observer still runs per row (diff-driven, deterministic) and its
+        state evidence is carried back on each trajectory's ``meta['observer_report']``
+        so the TRAINING judge (custom reward manager) can ground completion on it.
+        Winner-sync / multi-turn Questioner is a no-op under single-turn and is
+        the future path if multi-turn is re-enabled.
         """
 
         def _build_scheduler(self) -> Any:
@@ -235,10 +278,14 @@ def make_cl_scheduler_manager_cls():
             )
             observer = Observer(use_llm=False)  # deterministic diff-driven, no model call
             questioner = Questioner()
+            # slots=1: each input row is ONE independent single-turn rollout. verl
+            # already repeated the query ×n, so the n GRPO samples of a query are n
+            # separate input rows here (n separate 1-slot sessions), not n slots of
+            # one pool. sessions_per_step = concurrency cap over rows.
             return RolloutScheduler(
                 agent_fn,
                 sessions_per_step=int(agent_cfg.get("sessions_per_step", 64)),
-                slots=int(rcfg.get("n", 8)),
+                slots=1,
                 backend=agent_cfg.get("sandbox_backend", "e2b"),
                 simulated=True,
                 observer=observer,
@@ -260,38 +307,43 @@ def make_cl_scheduler_manager_cls():
 
         @auto_await
         async def generate_sequences(self, prompts):  # type: ignore[override]
-            # Decode the seed queries, run the single-turn scheduler, assemble back.
-            #
-            # SINGLE-TURN (2026-07-23): each seed query yields exactly 8 trajectories
-            # (one GRPO group), so len(queries) * 8 == len(prompts.batch) holds and
-            # the output fits verl's fixed-size contract exactly -- no pad/trim.
-            # Multi-turn follow-ups are disabled (see rollout/simulated_session.py
-            # docstring); a cross-batch trajectory pool to re-enable them is
-            # recorded as a deprecated future option.
+            # PER-ROW single-turn rollout (2026-07-27). verl already repeated each
+            # query by rollout.n (interleave) BEFORE calling us, so `prompts` holds
+            # n_query × n rows and verl expects EXACTLY that many trajectories back,
+            # one per row, in order (ray_trainer union asserts equal row count; GRPO
+            # groups by verl's own uid). We run ONE single-slot single-turn rollout
+            # per input row. The OLD code ran an 8-slot pool per row → ×n again →
+            # ×n² rows → the row-count crash that gave every baseline 0 checkpoints.
             import asyncio
 
             tokenizer = self._get_tokenizer()
             queries = extract_queries_from_prompts(prompts, tokenizer)
             scheduler = self._build_scheduler()
 
-            all_trajs = []
-            for i, q in enumerate(queries):
-                spec = SessionSpec(session_id=str(i), queries=[q])
-                q_trajs = await asyncio.to_thread(scheduler.run_step, [spec])
-                all_trajs.extend(q_trajs)
+            # One SessionSpec per input row; scheduler runs up to
+            # sessions_per_step in parallel (each a 1-slot single-turn session ->
+            # exactly 1 trajectory). Batched so we never spawn all N sandboxes at
+            # once. Order is preserved: batch k covers rows [k*S : (k+1)*S].
+            step = max(1, int(scheduler.sessions_per_step))
+            all_trajs: list[Any] = []
+            for start in range(0, len(queries), step):
+                chunk = queries[start : start + step]
+                specs = [
+                    SessionSpec(session_id=str(start + j), queries=[q]) for j, q in enumerate(chunk)
+                ]
+                chunk_trajs = await asyncio.to_thread(scheduler.run_step, specs)
+                all_trajs.extend(chunk_trajs)
 
-            # Single-turn invariant: each seed -> exactly 8 trajectories, so the
-            # total equals verl's expected batch size. Assert rather than pad/trim
-            # -- a mismatch here is a bug (e.g. a slot crashed), not data to fake.
-            # Validation batches may have prompts.batch=None: in that case the
-            # expected count is simply the number of trajectories we produced
-            # (n=8 per query). MUST read all_trajs, not `trajectories` -- the
-            # latter isn't bound until below (was a NameError on the val path).
-            expected_n = len(prompts.batch) if prompts.batch is not None else len(all_trajs)
+            # verl contract: 1 trajectory per input row, same order. `prompts.batch`
+            # is always present after `_get_gen_batch` (train AND val), so compare
+            # against it directly. A mismatch means a row's rollout was dropped
+            # (crashed slot / isolated session error) -- that is a bug to surface,
+            # not data to pad.
+            expected_n = len(prompts.batch) if prompts.batch is not None else len(queries)
             assert len(all_trajs) == expected_n, (
-                f"single-turn yield {len(all_trajs)} != verl expected {expected_n}; "
-                f"queries={len(queries)} n=8 -> expected {len(queries) * 8}. "
-                "A slot likely crashed; investigate the rollout error path."
+                f"per-row yield {len(all_trajs)} != verl expected {expected_n} "
+                f"(queries={len(queries)}); a row's rollout was dropped "
+                "(isolated session error?). Investigate rollout/scheduler.run_step logs."
             )
             trajectories = all_trajs
 
@@ -326,7 +378,16 @@ def make_cl_scheduler_manager_cls():
 
             prompt_ids = [_safe_tokenize(t.messages[:1]) for t in trajectories]
             pad_id = getattr(tokenizer, "pad_token_id", 0) or 0
-            return trajectories_to_dataproto(trajectories, prompt_ids, pad_token_id=pad_id)
+            # Carry each row's observer diff evidence so the training judge can
+            # ground completion on it. Do NOT pass uids -- verl's own uid drives
+            # GRPO grouping and an invented uid would collide on union.
+            observer_reports = [str(t.meta.get("observer_report", "") or "") for t in trajectories]
+            return trajectories_to_dataproto(
+                trajectories,
+                prompt_ids,
+                pad_token_id=pad_id,
+                observer_reports=observer_reports,
+            )
 
     return CLSchedulerAgentLoopManager
 

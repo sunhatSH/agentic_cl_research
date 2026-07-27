@@ -86,6 +86,11 @@ def _score_all_slots(
     change) gets reward 0 without a judge call (gated, per agents.reward).
     """
     for t, rep in zip(trajs, reports, strict=True):
+        # Stash the observer's diff evidence on the trajectory so it survives
+        # back to the rollout manager, which forwards it (non_tensor
+        # ``observer_report``) to the TRAINING judge -- the observer never
+        # scores, it only supplies ground-truth state evidence the judge reads.
+        t.meta["observer_report"] = "" if rep is None else (rep.state_diff or "")
         if rep is None or rep.is_empty():
             t.reward = 0.0
             t.meta["reward_verdict"] = {"score": 0.0, "gated": 1.0}

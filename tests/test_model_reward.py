@@ -83,6 +83,28 @@ def test_compute_score_judge_error_is_flagged_not_raised():
     assert out["score"] == 0.0
 
 
+def test_compute_score_folds_observer_report_into_rubric():
+    """Observer diff evidence (extra_info['observer_report']) must reach the
+    judge's rubric so completion is grounded on real state, not self-report."""
+    judge = MockJudge({"completion": 1.0, "safety": 1.0, "robustness": 1.0})
+    compute_score(
+        "agentic_cl",
+        "agent said it wrote out.csv",
+        "",
+        {"queries": ["make out.csv"], "observer_report": "ADDED out.csv (csv, 42B): a,b\\n1,2"},
+        judge=judge,
+    )
+    assert "out.csv (csv, 42B)" in judge.record[0]["rubric"]
+    assert "observer ground truth" in judge.record[0]["rubric"].lower()
+
+
+def test_compute_score_no_observer_report_is_naive():
+    """No observer_report -> rubric unaffected (naive behaviour)."""
+    judge = MockJudge({"completion": 0.5, "safety": 1.0, "robustness": 0.0})
+    compute_score("agentic_cl", "x", "", {"queries": ["q"]}, judge=judge)
+    assert "observer ground truth" not in judge.record[0]["rubric"].lower()
+
+
 def test_get_judge_requires_env(monkeypatch):
     set_judge(None)
     monkeypatch.delenv("REWARD_API_BASE", raising=False)

@@ -120,15 +120,42 @@ def test_assemble_position_ids_from_attention():
     assert dp.batch["position_ids"][0].tolist() == [0, 1, 2, 3]
 
 
-def test_assemble_non_tensor_uid_messages_bucket():
+def test_assemble_non_tensor_messages_bucket_no_uid_by_default():
     _install_fake_verl_dataproto()
     from trainer.cl_rollout_manager import trajectories_to_dataproto
 
     trajs = [_traj(0, [10], sid="sess7", bucket="SysOps")]
     dp = trajectories_to_dataproto(trajs, [[1]])
     assert dp.non_tensor_batch["bucket"][0] == "SysOps"
-    assert dp.non_tensor_batch["uid"][0] == "sess7"
     assert dp.non_tensor_batch["messages"][0][0]["content"] == "make a report"
+    # uid is NOT emitted by default: verl owns GRPO grouping via its own uid;
+    # an invented uid would collide with verl's on union (union_numpy_dict
+    # asserts conflicting keys are deep-equal).
+    assert "uid" not in dp.non_tensor_batch
+
+
+def test_assemble_uid_only_when_explicit():
+    _install_fake_verl_dataproto()
+    from trainer.cl_rollout_manager import trajectories_to_dataproto
+
+    trajs = [_traj(0, [10], sid="sess7", bucket="SysOps")]
+    dp = trajectories_to_dataproto(trajs, [[1]], uids=["g0"])
+    assert dp.non_tensor_batch["uid"][0] == "g0"
+
+
+def test_assemble_observer_report_carried():
+    _install_fake_verl_dataproto()
+    from trainer.cl_rollout_manager import trajectories_to_dataproto
+
+    trajs = [_traj(0, [10]), _traj(1, [11])]
+    dp = trajectories_to_dataproto(
+        trajs, [[1], [2]], observer_reports=["diff: wrote out.csv", ""]
+    )
+    assert dp.non_tensor_batch["observer_report"][0] == "diff: wrote out.csv"
+    assert dp.non_tensor_batch["observer_report"][1] == ""
+    # observer_report is a NEW key, never named extra_info (that belongs to the
+    # dataset and would collide on union).
+    assert "extra_info" not in dp.non_tensor_batch
 
 
 def test_assemble_no_logprobs_when_absent():

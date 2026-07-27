@@ -426,6 +426,16 @@ class CLTaskRunner:
 
         from trainer.cl_main import build_buffer
 
+        # Import the custom reward manager so its @register("cl_observer") fires
+        # BEFORE RayPPOTrainer resolves reward.reward_manager.name. It folds the
+        # per-row observer diff (non_tensor "observer_report") into extra_info so
+        # the training judge grounds completion on real state. Import is a no-op
+        # when verl's reward-loop registry is unavailable (off-cluster).
+        try:
+            import trainer.observer_reward_manager  # noqa: F401
+        except Exception as exc:  # noqa: BLE001 -- registry absent off-cluster
+            print(f"[cl] observer reward manager not registered ({exc}); using configured manager", flush=True)
+
         buffer = build_buffer(config)
 
         actor_rollout_cls, ray_worker_group_cls = self.add_actor_rollout_worker(config)

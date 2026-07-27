@@ -319,6 +319,17 @@ def compute_score(
         gt = _load_ground_truth(record_id)
         if gt:
             rubric += gt
+    # Observer diff evidence (ground truth for completion). The Observer never
+    # scores -- it supplies the deterministic before/after sandbox diff, folded
+    # here by the cl_observer reward manager into extra_info["observer_report"].
+    # Grounding completion on real state (not just the actor's self-report) is
+    # the anti-reward-hacking anchor; empty when the row produced no diff.
+    observer_report = str(info.get("observer_report", "") or "").strip()
+    if observer_report:
+        rubric += (
+            "\n\n# Environment diff (observer ground truth for completion)\n"
+            + observer_report
+        )
 
     try:
         verdict = client.score(

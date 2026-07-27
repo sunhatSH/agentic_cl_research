@@ -961,3 +961,36 @@ ValueError: too many dimensions 'str'
 - `inference/generate.py VerlRolloutGenerateFn`：同样加 str→encode 兜底。
 
 ### 状态：已修，本机 py_compile + 相关单测通过；真实验证待集群。
+
+---
+
+## 2026-07-27 根治 baseline rollout ↔ verl ×8 契约冲突 + 打通 observer→训练 judge + 关 verl 验证
+
+### 根因(verl 源码 + 6 次崩溃 log + 子 agent 复核,三方一致)
+verl 0.8.0 自己按 `rollout.n=8` 复制 gen_batch(`ray_trainer.py:1398` repeat_interleave)再交给
+`generate_sequences`,并期望「进多少行返多少行」(`:1448` union 断言等行数);GRPO 由 verl 自己的
+`uid`(数据集 uid ×8)在 `compute_advantage`(`:192/:206`)分组。而旧 manager 对**每个输入行**又跑
+8-slot pool → `len(input)×8`,即 **verl ×8、我们又 ×8 = ×64**。训练 512→4096、验证 920→7360,
+行数对不上必崩。6 次 baseline 全崩在 `_validate`(val_before_train=true 是首个动作),0 checkpoint。
+另两条同路径坑:uid 冲突(union_numpy_dict 要求同名 key deep-equal)、训练 judge 看不到 observer 报告。
+
+### 修复(方案 A:对齐 verl 契约,每输入行 1 条 rollout)
+- `cl_rollout_manager.generate_sequences`:改为**每输入行 1 条**单 slot 单轮 rollout,原序返回等行数;
+  scheduler `slots=1`;assert 改 `len==len(prompts)`;并发按 sessions_per_step 分批。
+- `trajectories_to_dataproto`:**默认不发 uid**(verl 自己的 uid 驱动 GRPO;发了会 union 冲突),
+  新增 `observer_report` 非张量列(每行 observer 的 state_diff),`uid` 仅显式传入时才写(冷/测试)。
+- **打通 observer→训练 judge**:新增 `trainer/observer_reward_manager.py`(`@register("cl_observer")`,
+  子类化 verl experimental NaiveRewardManager,override `run_single` 把 observer_report 折进 extra_info),
+  `verl_runner.run` 里 import 触发注册;`model_reward.compute_score` 读 `extra_info["observer_report"]`
+  拼进 rubric 作 completion ground truth;base.yaml `reward_manager.name=cl_observer`。
+  observer 仍**只观察不打分**,只是它的取证现在真喂给了决定训练的那个 judge。
+- **关 verl 内建验证**:所有 `configs/run/*_16gpu.yaml` 加 `val_before_train=false` + `test_freq=-1`
+  (评测按方案训完离线统一跑,verl `_validate` 对 baseline 无产出+纯浪费+曾是崩溃触发器)。
+- docstring/注释订正:16×8 winner-sync → 单轮 per-row / verl 负责 ×8。
+
+### 验证
+本机 `pytest tests/` 350 passed(唯一 fail=test_sandbox_dockerfile,既有,脚本重组删了 validate 脚本,
+与本次无关)。torch-only 的 trajectories_to_dataproto 新断言(不发 uid / observer_report 逐行)本机 skip、
+待集群。真实 512/920 行契约 + cl_observer manager 链路待集群全栈验。
+
+### 状态:已修,待集群验证。baseline 排队前务必用本 commit。

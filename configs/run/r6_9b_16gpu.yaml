@@ -107,7 +107,8 @@ trainer:
   total_epochs: 1
   total_training_steps: 500
   save_freq: 100
-  test_freq: 100
+  test_freq: -1                 # baseline 训完离线统一评测,关 verl 内建验证
+  val_before_train: false       # 不训练前跑验证(918 query rollout 纯浪费+曾触发崩溃)
   critic_warmup: 0
   logger: [console]
   log_val_generations: 50
