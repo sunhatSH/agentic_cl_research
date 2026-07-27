@@ -390,7 +390,23 @@ def make_cl_scheduler_manager_cls():
                     )
                 return ids
 
-            prompt_ids = [_safe_tokenize(t.messages[:1]) for t in trajectories]
+            # Prompt tokens per row. Prefer the trajectory's first message, but a
+            # FAILED single-slot rollout returns a Trajectory with EMPTY messages
+            # (scheduler's per-slot error fallback), so t.messages[:1] == [] and
+            # apply_chat_template([]) dies with IndexError deep in transformers
+            # (the 10:05 "success"-but-0-step crash). trajectories align 1:1 with
+            # `queries` by index, so fall back to the KNOWN input query -- the
+            # prompt is deterministic input, not something a failed rollout can
+            # lose. This keeps the row (its empty response is handled downstream)
+            # instead of crashing the whole step on one bad slot.
+            def _prompt_msgs(traj, idx):
+                m = traj.messages[:1] if getattr(traj, "messages", None) else []
+                if m:
+                    return m
+                q = queries[idx] if idx < len(queries) else ""
+                return [{"role": "user", "content": str(q)}]
+
+            prompt_ids = [_safe_tokenize(_prompt_msgs(t, i)) for i, t in enumerate(trajectories)]
             pad_id = getattr(tokenizer, "pad_token_id", 0) or 0
             # Carry each row's observer diff evidence so the training judge can
             # ground completion on it. Do NOT pass uids -- verl's own uid drives

@@ -235,9 +235,19 @@ echo "[train_cl] rank=${RANK:-0}: 同步完成"
 # 3. 分发：master 训，worker 连 Ray
 if [ "${RANK:-0}" = "0" ]; then
   echo "[train_cl] master: 启动训练"
-  if [ "$BUCKETS" = "1" ]; then _run_buckets; else _run_single "$@"; fi
-  echo "[train_cl] master: 训练结束，ray stop"
+  # 捕获训练退出码。绝不无条件打「训练结束」——否则 cl_main 崩溃(如 rollout
+  # IndexError)退出后脚本照样打「成功」+ret 0,平台误判为成功、0 checkpoint 却
+  # 显示完成(2026-07-27 10:05 的假成功)。ray stop 始终执行清理,但脚本 exit code
+  # 必须等于训练 exit code,让平台看到真实成败。
+  _train_rc=0
+  if [ "$BUCKETS" = "1" ]; then _run_buckets || _train_rc=$?; else _run_single "$@" || _train_rc=$?; fi
+  if [ "$_train_rc" -eq 0 ]; then
+    echo "[train_cl] master: 训练正常结束 (rc=0)，ray stop"
+  else
+    echo "[train_cl] master: !!! 训练失败 rc=$_train_rc（非正常结束，见上方 Traceback）ray stop 清理后以该码退出" >&2
+  fi
   ray stop --force
+  exit "$_train_rc"
 else
   echo "[train_cl] worker: ray start --address $MASTER_ADDR:6379 --block"
   ray start --address "$MASTER_ADDR:6379" --block

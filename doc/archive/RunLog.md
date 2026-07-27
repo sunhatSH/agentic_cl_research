@@ -1021,3 +1021,35 @@ timing 修复后系统排查 verl fit() 对我们 rollout 返回值的其余无�
 - **留痕**:注释写明这是 verl 契约占位;若将来做多模态,空 dict 会显眼提示需填真值。
 
 本机 pytest 350 passed（唯一 fail=test_sandbox_dockerfile,既有,无关）。待集群验。
+
+---
+
+## 2026-07-27 假成功排查：per-row 空 messages → IndexError；脚本把崩溃伪装成「训练结束」
+
+### 现象
+用户观察「系统显示成功、但 baseline 停了、0 checkpoint」。日志有 `[train_cl] master:
+训练结束，ray stop` + `Stopped all 46 Ray processes`（像正常收尾），实际是**假成功**。
+
+### 根因(两个,都修)
+1. **IndexError（真死因）**：`fit():1420 → generate_sequences:393 → _safe_tokenize(t.messages[:1])
+   → apply_chat_template([])`。某条 per-row 单 slot rollout **失败** → scheduler 的
+   per-slot 兜底返回 **messages 为空** 的 Trajectory → `t.messages[:1]==[]` →
+   transformers `conversation[0]` 越界 `IndexError`。一条坏 slot 崩掉整个 step,一步没训。
+2. **脚本假成功**：`_train_impl.sh` 在 `python -m trainer.cl_main` 后**无条件**打
+   「训练结束」并 `ray stop`、退出 0,**不检查 python 退出码** → cl_main 崩溃退出后
+   平台仍看到 rc=0「成功」。崩溃被伪装成成功,持续误导。
+
+### 修复
+- `cl_rollout_manager.generate_sequences`：prompt tokenize 改用 `_prompt_msgs(t,i)`——
+  优先用 traj 首条 message,**空则回退到已知输入 query**（trajectories 与 queries 1:1
+  对齐,prompt 是确定性输入,失败 rollout 不该丢它）。保住该行(空 response 下游处理),
+  不再因一个坏 slot 崩整步。
+- `_train_impl.sh`：捕获 `_run_single`/`_run_buckets` 退出码,`ray stop` 后 `exit $rc`；
+  失败打明确 `!!! 训练失败 rc=N` 到 stderr,不再把崩溃打成「训练结束」。
+
+本机 pytest 12 passed（相关）/ bash -n OK / py_compile OK。待集群验。
+
+### 进展
+崩点从「rollout 中途」推进证明:per-row 契约、reward manager、timing、multi_modal_inputs
+全过了,rollout 已能大量产出;唯一剩的是「失败 slot 的空轨迹」这个边界。修完后一条坏
+slot 不再拖垮整步。
