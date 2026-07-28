@@ -535,6 +535,7 @@ def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
     import ray
     from omegaconf import OmegaConf
     from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
+    import os
 
     cfg = merge_verl_config(cfg)
 
@@ -544,7 +545,20 @@ def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
         ray_init_kwargs = OmegaConf.create(
             {**OmegaConf.to_container(ray_init_kwargs), "runtime_env": runtime_env}
         )
-        ray.init(**OmegaConf.to_container(ray_init_kwargs))
+        ray_init_dict = OmegaConf.to_container(ray_init_kwargs)
+        # Ray worker actor(CLTaskRunner / WorkerDict)不继承 driver 的 shell env —— 只有
+        # runtime_env.env_vars 里显式列的才传得进去。我们的自定义 env 开关(CL_FAKE_ROLLOUT
+        # 跳过沙箱直验训练阶段;CL_FAKE_ROLLOUT_LEN 控假 response 长度)不在 verl 的白名单,
+        # 若不透传,generate_sequences 里 os.environ.get 恒为空 → 开关静默失效、照走真实 rollout。
+        _passthrough = {}
+        for _k in ("CL_FAKE_ROLLOUT", "CL_FAKE_ROLLOUT_LEN"):
+            _v = os.environ.get(_k)
+            if _v is not None:
+                _passthrough[_k] = _v
+        if _passthrough:
+            ray_init_dict.setdefault("runtime_env", {}).setdefault("env_vars", {}).update(_passthrough)
+            print(f"[verl_runner] 透传 env 到 Ray worker: {_passthrough}", flush=True)
+        ray.init(**ray_init_dict)
 
     task_runner_class = ray.remote(num_cpus=1)(CLTaskRunner)
     runner = task_runner_class.remote()
