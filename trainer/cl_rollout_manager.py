@@ -323,7 +323,14 @@ def make_cl_scheduler_manager_cls():
             )
             agent_fn = make_react_agent_fn(
                 gen_fn,
-                max_turns=int(rcfg.get("multi_turn", {}).get("max_turns", 16)),
+                # ReAct 多轮上限:优先读 verl 合法字段 max_assistant_turns(multi_turn 是
+                # verl 严格 dataclass MultiTurnConfig,只认它;自造 max_turns 会 TypeError,§27),
+                # 回退旧的 max_turns 键,再回退 16。
+                max_turns=int(
+                    (rcfg.get("multi_turn", {}) or {}).get("max_assistant_turns")
+                    or (rcfg.get("multi_turn", {}) or {}).get("max_turns")
+                    or 16
+                ),
                 # 整条多轮轨迹的 response token 总长上限(治本:见 debug §24)。
                 # max_tokens(上面 sampling)只管【单次】生成;多轮 ReAct 把每轮拼成一条
                 # response,不加总长闸门会累积到数万 token(实测 52758)→ 训练激活/dynamic_bsz

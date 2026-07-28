@@ -377,3 +377,16 @@ verl 的 rearrange_micro_batches 把整条序列作不可分割单位打包(asse
 缺省回退 response_length),单次生成 max_tokens 用它;整条闸门仍用 _max_total_response_tokens()。
 
 **显存:** budget 20480→28672(+40%),step1 实测 53.6GB → 估 ~65-70GB,需真实验证。
+
+
+## §27 max_turns 塞进 verl 严格段崩(同 §21 类,2026-07-28)
+
+**症状:** 真实训练启动即 `TypeError: MultiTurnConfig.__init__() got an unexpected keyword argument 'max_turns'`。
+
+**根因:** 为把 max_turns 16→8,在 config 的 rollout.multi_turn 段加了 `max_turns: 8`。但该段被 verl
+解析为 MultiTurnConfig(严格 dataclass),只认 max_assistant_turns/max_user_turns 等,不认自造的
+max_turns → 构造时 unexpected keyword 崩。第三次撞"自定义 key 塞进 verl 严格段"(§19 ref.path、
+§21 sessions_per_step、§27 max_turns)。
+
+**修复:** 复用 verl 合法字段 max_assistant_turns=8(不再自造 key);代码 cl_rollout_manager 改为优先读
+multi_turn.max_assistant_turns、回退 max_turns、再回退 16。共性教训1 再次印证。

@@ -82,10 +82,9 @@ actor_rollout_ref:
       enable: false
       format: qwen3_coder
       reasoning_format: qwen3
-      max_turns: 8              # ★ 代码实际读这个键(cl_rollout_manager: rcfg.multi_turn.max_turns,缺省16)。
-                               # 16→8 提速 rollout(砍多轮长尾:真实轨迹中位数5轮、p90=17,8 截断~30% 长任务)。
-                               # 每减一轮=每条少一次 LLM 生成+一次工具执行,砍长尾对 wall-clock 提速明显。
-      max_assistant_turns: 8   # lightllm 引擎侧上限,与 max_turns 对齐(原 20 是死配置,代码不读它)。
+      max_assistant_turns: 8   # ReAct 多轮上限=8(16→8 提速,砍长尾)。verl MultiTurnConfig 的合法字段;
+                               # 代码(cl_rollout_manager)读它作 max_turns。不要加自造的 max_turns 键——
+                               # multi_turn 段是 verl 严格 dataclass,非法 key 会 TypeError(§21/§27)。
     checkpoint_engine:
       update_weights_bucket_megabytes: 2048
     engine_kwargs:
