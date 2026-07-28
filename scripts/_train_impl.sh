@@ -74,10 +74,11 @@ export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
 export ROLLOUT_GPU_MEM_UTIL="$GPU_MEM_UTIL"
 export HF_DATASETS_CACHE="/tmp/hf_datasets_cache" HF_HOME="/tmp/hf_home"
 export VLLM_GDN_PREFILL_BACKEND="${VLLM_GDN_PREFILL_BACKEND:-triton}"
-# 显存碎片治理:训练阶段 update_actor 曾 OOM(想分 2MB 却只剩 2.5MB——总量够、碎成小块)。
-# expandable_segments 让 CUDA 分配器用可扩展段,回收 reserved-but-unallocated 碎片,
-# 消除"够但分不出"的边界 OOM。PyTorch OOM 报错本身即建议此项。见 doc/debug 16GPU §22。
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+# 注:不要开 PYTORCH_CUDA_ALLOC_CONF=expandable_segments —— 它与 lightllm 的
+# torch_memory_saver 互斥(报 "TorchMemorySaver is disabled ... expandable_segments
+# not supported"),会导致 lightllm 启动失败、整训练崩(见 debug doc §22)。
+# torch_memory_saver(训练时让 lightllm sleep 让出显存)是 util 0.7 不 OOM 的前提,须保留。
+# 边界碎片 OOM 改用降 ppo_max_token_len 治理,不动全局分配器。
 
 _NV="$VENV/lib/python3.11/site-packages/nvidia"
 if [ -d "$_NV" ]; then
@@ -130,22 +131,27 @@ _exp_name() {
 }
 
 # ── 日志重定向到 AFS（所有 shell + Python 输出都落盘）─────────────────
-# 默认：覆写本 rank 的日志（每次启动从干净日志开始，避免历次叠加到同一文件）。
-# 多机各 rank 写各自的文件（rank0=train.log，rank>0=train.rank<N>.log），
-#   避免两节点 tee 同一文件互相截断/交错。
-# TRAIN_LOG_KEEP=1：不覆写——改写到带时间戳的新文件 train[.rankN]-<UTC>.log，
-#   保留上一次日志（不追加，故不会越滚越大）。
+# 存放约定：当前一次训练始终写 train.log（rank0）/ train.rank<N>.log（rank>0）；
+#   启动时若上一次的同名日志还在，自动移进 archive/ 子目录并带 UTC 时间戳保存，
+#   于是 train.log 永远是"最新一次"，历史全部沉到 logs/experiments/<exp>/archive/。
+# 多机各 rank 写各自的文件，避免两节点 tee 同一文件互相截断/交错。
 _exp=$(_exp_name)
 _LOGDIR="$ROOT_DIR/logs/experiments/$_exp"
 mkdir -p "$_LOGDIR"
 _rank="${RANK:-0}"
 if [ "$_rank" = "0" ]; then _rank_sfx=""; else _rank_sfx=".rank$_rank"; fi
-if [ "${TRAIN_LOG_KEEP:-0}" = "1" ]; then
-  _LOGFILE="$_LOGDIR/train$_rank_sfx-$(date -u +%Y%m%dT%H%M%SZ).log"
-else
-  _LOGFILE="$_LOGDIR/train$_rank_sfx.log"
+_LOGFILE="$_LOGDIR/train$_rank_sfx.log"
+# 归档上一次:把已存在的同名日志移到 archive/，文件名带其自身的“归档时刻”UTC 戳。
+if [ -f "$_LOGFILE" ]; then
+  mkdir -p "$_LOGDIR/archive"
+  mv "$_LOGFILE" "$_LOGDIR/archive/train$_rank_sfx-$(date -u +%Y%m%dT%H%M%SZ).log" 2>/dev/null || true
 fi
-# tee 不带 -a → 覆写；换文件模式下文件本就是新的。stderr 合并到同一流。
+# 一次性把历史遗留的 train.archive-*.log（旧手工归档）也归拢进 archive/。
+for _old in "$_LOGDIR"/train.archive-*.log "$_LOGDIR"/train*-20*Z.log; do
+  [ -f "$_old" ] || continue
+  mkdir -p "$_LOGDIR/archive"; mv "$_old" "$_LOGDIR/archive/" 2>/dev/null || true
+done
+# tee 不带 -a → 写全新的 train.log（旧的已移走）。stderr 合并到同一流。
 exec > >(tee "$_LOGFILE") 2>&1
 echo "[train_cl] === $(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) rank=${RANK:-0}/${WORLD_SIZE:-${NNODES}} pid=$$ log=$_LOGFILE ==="
 echo "[train_cl] RANK=${RANK:-0} MASTER_ADDR=${MASTER_ADDR:-N/A} NNODES=$NNODES WORLD_SIZE=${WORLD_SIZE:-$NNODES}"

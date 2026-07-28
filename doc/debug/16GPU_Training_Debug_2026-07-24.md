@@ -231,6 +231,49 @@ generate_sequences、根本不建那些 actor,只是借它的数值当线程并�
 OOM 报错本身即建议)。可扩展段分配器回收 reserved 碎片,消除"总量够、分不出小块"的边界 OOM。
 `${VAR:-default}` 形式保留可被外部覆盖。**后备**(若仍 OOM):`ppo_max_token_len_per_gpu` 32768→24576。
 
+**❌ 修复反转(2026-07-28,同日):** 上面的 `expandable_segments` 方案**当场把训练搞崩了**,已撤销。
+lightllm 启动即报 `RuntimeError: TorchMemorySaver is disabled for the current process because
+expandable_segments is not supported yet` → lightllm 起不来 → 整训练 rc=1。
+根因:`PYTORCH_CUDA_ALLOC_CONF` 是**进程级全局**,会连带影响同机的 lightllm 进程;而 lightllm 依赖
+`torch_memory_saver`(训练时 sleep 让出 ~6GB 显存的机制,是 util 0.7 不 OOM 的前提),二者**互斥**。
+不能为治训练侧碎片而牺牲推理侧的 memory saver。
+**正解(改用不碰 lightllm 的手段):** 降 `ppo_max_token_len_per_gpu` 32768→24576,减小单卡前向激活
+峰值腾出那 0.07GB 边界余量——纯训练侧参数,不影响 lightllm。`_train_impl.sh` 里明确注释禁用
+expandable_segments。**教训**:全局 CUDA 分配器 env 会波及 colocate 的推理引擎,改它前先想清楚同机
+还有谁在用 CUDA;能用局部(config 字段)解决的别动全局 env。
+
 **教训补充:** OOM 要分清"绝对不够"(§20,靠降 micro/max_token)vs"够但碎"(§22,靠分配器策略)。
 报错里 `free` 极小 + `reserved-but-unallocated` 极小 + 需求极小(2MB)= 碎片,不是缺量;此时降 batch
 收效甚微,该换分配器。另:lightllm 残留权重(TP shard)是训练态一块拿不掉的固定占用,做显存核算要算进去。
+
+
+## §23 max_response_length 从 53886→16384 + k3 大块 OOM(2026-07-28)
+
+**触发:** k3(kl_strong)07:12 启动,穿过 rollout,进 `update_actor` OOM,rc=1。
+
+**k3 OOM 画像(与 b1 §22 的碎片型不同,是"大块需求型"):**
+```
+Tried to allocate 11.31 GiB. GPU 0 total 79.32, of which 11.28 GiB free.
+Process(训练) 61.25GB;Process(lightllm) 6.70GB;PyTorch allocated 53.22GB,reserved 169MB。
+```
+- 想一次分配 **11.31GB**,而 free 只有 **11.28GB** —— 差一点点、真·大块不够,不是碎片(reserved 才 169MB)。
+- k3 有 KL → 建 ref policy(π_ref),比 b1 多一份 ref 前向 + all-gather,显存需求更大,更早触顶。
+- 那个 11.31GB 大块与序列长度强相关(激活 ∝ seq_len)。
+
+**根因(更上游):`max_response_length=53886`(≈54K)设错了。**
+- train.parquet 是 RL 数据,**只有 prompt、无 response**(response 是 rollout 在线生成)。故 53886 不是
+  训练数据实测值,号称"claude opus 轨迹 p90",来源不明。
+- 实测手上冷启动轨迹(rollouts/cold_start*.jsonl):response **p90≈2.5-7K token、max≈9K**;
+  早期 RunLog 亦写过"max_response 起步 8K / 8192"。**54K 严重偏大(6-8×)。**
+- 54K 作为生成 max_tokens 上限 → 放任 temp=1.0 早期 RL 的重复退化跑飞到几万 token → 长序列激活
+  炸显存,正是 §20/§22/§23 一系列 OOM 的上游推手。
+
+**修复:** 18 个 `configs/run/*_16gpu.yaml` 的 `max_response_length` 统一 53886→**16384**。
+- 16K 覆盖真实 max≈9K 有近一倍余量,**真实分布零截断**(不影响训练 loss);
+- 只砍跑飞的超长生成(本就该砍),是"防跑飞保险";
+- 对大块型 OOM(k3):若崩溃大块来自长序列激活,cap 降到 16K 使该块需求缩到约 1/3,11.28GB 余量够。
+
+**关于"降 cap 是否治 OOM"的准确说法:** 训练张量宽度 `R=max(batch 实际生成长度)`(动态,见
+cl_rollout_manager.py:136),**不按 cap 静态预留**。故:模型实际不超长时,cap 高低不直接影响激活;
+只有当模型确实生成到接近 cap 的超长序列时,降 cap 才直接削峰。因此 16K 对 b1(碎片型)是"保险",
+对 k3(大块型、且大块疑似长序列激活)更可能是"直接解药"。真实效果需集群重跑验证。
