@@ -198,3 +198,17 @@ verl 用严格 dataclass 解析 config 各段（actor→FSDPActorConfig、agent�
 4. **脚本要如实报退出码**：崩溃被脚本打成「训练结束」+rc 0 会持续误导（`aa9ede3` 修）。任何"成功"都要能对上退出码。
 5. **显存分层看**：rollout 阶段(lightllm) vs 训练阶段(FSDP)分时复用，OOM 要看是哪个阶段；激活值(不 offload)是长序列训练的真正大头。
 
+
+## §21 后续修正:并发参数落位 num_workers → cl.rollout.sessions_per_step（语义正确）
+
+§21 初版把并发借用 verl 合法字段 `agent.num_workers`——**能跑但语义不对**:num_workers
+在 verl 是"创建几个 AgentLoopWorker Ray actor"(agent_loop.py:1048),我们重写了
+generate_sequences、根本不建那些 actor,只是借它的数值当线程并发数;且 num_workers 还是
+验证路径的 pad divisor(ray_trainer.py:592),512 会让验证 batch pad 到 512 倍(验证虽关
+但是潜在雷)。
+
+**最终修法(语义干净)**:并发参数放进 `cl:` 顶层段(verl 从不 .get() cl 段,零校验、零副作用),
+用回正确的字段名 `cl.rollout.sessions_per_step`。manager 的 `self.config` 是全量 config
+(agent_loop.py:217),故 `self.config.cl.rollout.sessions_per_step` 可达。agent 段恢复干净
+(无自定义 key,num_workers 回默认)。这印证共性教训 1 的正解:**自定义参数放 verl 不解析的
+顶层段(cl:),而非借用 verl 段的字段**。

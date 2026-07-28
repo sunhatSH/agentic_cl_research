@@ -48,9 +48,6 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: 1
     agent:
       agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
-      num_workers: 512                  # rollout 并发(=同时跑的轨迹数;per-row slots=1)。
-                                        # verl AgentLoopConfig 合法字段;我方代码读它做沙箱并发上限。
-                                        # 512条/step 分1批。必须 <= lightllm running_max_req_size。
     multi_turn:
       enable: false
       format: qwen3_coder
@@ -98,6 +95,8 @@ data:
 # ── CL 参数 ──────────────────────────────────────────────────────────────────
 cl:
   lambda_replay: 0.8
+  rollout:
+    sessions_per_step: 512          # rollout 并发 512(per-row);verl 不解析 cl 段,放这里避开 AgentLoopConfig 严格校验
   replay_batch_size: 512
   buffer:
     enabled: true

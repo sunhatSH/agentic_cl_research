@@ -328,13 +328,22 @@ def make_cl_scheduler_manager_cls():
             # slots=1: each input row is ONE independent single-turn rollout. verl
             # already repeated the query ×n, so the n GRPO samples of a query are n
             # separate input rows here (n separate 1-slot sessions), not n slots of
-            # one pool. Concurrency = num_workers (verl AgentLoopConfig's own field,
-            # so it passes verl's strict dataclass parse -- a custom key like
-            # `sessions_per_step` in the agent section crashes AgentLoopConfig.__init__
-            # with "unexpected keyword argument"). Fall back to legacy sessions_per_step
-            # then to 64 for older configs / off-cluster tests.
+            # one pool.
+            # Concurrency = cl.rollout.sessions_per_step. It lives in the `cl:`
+            # section (verl NEVER parses that top-level section), NOT in
+            # rollout.agent -- the agent section is AgentLoopConfig, a strict
+            # dataclass that raises "unexpected keyword argument" on any custom key
+            # (debug doc §21). self.config is the FULL config (agent_loop.py:217),
+            # so self.config.cl.rollout is reachable here. Fallbacks: legacy
+            # agent.sessions_per_step, then agent.num_workers, then 64
+            # (off-cluster tests where cl.rollout may be absent).
+            cl_cfg = self.config.get("cl", {}) if hasattr(self.config, "get") else {}
+            cl_rollout = (cl_cfg.get("rollout", {}) or {}) if hasattr(cl_cfg, "get") else {}
             _concurrency = int(
-                agent_cfg.get("num_workers", agent_cfg.get("sessions_per_step", 64)) or 64
+                cl_rollout.get("sessions_per_step")
+                or agent_cfg.get("sessions_per_step")
+                or agent_cfg.get("num_workers")
+                or 64
             )
             return RolloutScheduler(
                 agent_fn,

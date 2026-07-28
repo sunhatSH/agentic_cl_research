@@ -104,6 +104,13 @@ reward:
 # Continual Learning -- replay buffer config (read by trainer/cl_main.py)
 cl:
   lambda_replay: 0.0              # lambda_3, set per experiment
+  # 自定义 rollout 参数(verl 不解析 cl 段,故放这里而非 rollout.agent —— 后者是
+  # AgentLoopConfig 严格 dataclass,塞自定义 key 会 TypeError,见 debug doc §21)。
+  # 由 trainer/cl_rollout_manager 从 self.config.cl.rollout 读。
+  rollout:
+    sessions_per_step: 64         # rollout 并发:同时跑的轨迹数(per-row,每 session 1 条)。
+                                  # 512条/step;=64→8批,=512→1批。须 <= lightllm running_max_req_size。
+                                  # 每实验在 run/ 覆盖。
   replay_batch_size: 64           # buffer 回放，拼在 train_batch(256) 上。20% 回放比
                                   # batch 前向消化显存。足量以覆盖 9 桶 + 每 mini batch 都
                                   # 有 replay 行(CL loss 每步生效)。旧值 32 太稀疏(~2/mini batch)
