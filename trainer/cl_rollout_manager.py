@@ -322,6 +322,11 @@ def make_cl_scheduler_manager_cls():
             agent_fn = make_react_agent_fn(
                 gen_fn,
                 max_turns=int(rcfg.get("multi_turn", {}).get("max_turns", 16)),
+                # 整条多轮轨迹的 response token 总长上限(治本:见 debug §24)。
+                # max_tokens(上面 sampling)只管【单次】生成;多轮 ReAct 把每轮拼成一条
+                # response,不加总长闸门会累积到数万 token(实测 52758)→ 训练激活/dynamic_bsz
+                # 预算爆掉。取 data.max_response_length 作总预算(与 verl 侧语义对齐)。
+                max_total_response_tokens=self._max_total_response_tokens(),
             )
             observer = Observer(use_llm=False)  # deterministic diff-driven, no model call
             questioner = Questioner()
@@ -367,6 +372,20 @@ def make_cl_scheduler_manager_cls():
                 tk = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
                 self._cl_tokenizer = tk
             return tk
+
+        def _max_total_response_tokens(self):
+            # 整条多轮轨迹的 response token 总长上限(治本,debug §24)。取
+            # data.max_response_length —— 与 verl 训练侧 response 张量宽度语义对齐:
+            # rollout 累积的整条 response 不得超过它,否则训练激活 / dynamic_bsz 的
+            # ppo/log_prob token 预算会被单条超长轨迹撑爆(实测未限制时到 52758)。
+            # data 段缺失时返回 None(不限,保持旧行为 / 兼容 off-cluster 测试)。
+            cfg = self.config
+            data = cfg.get("data", {}) if hasattr(cfg, "get") else {}
+            v = data.get("max_response_length") if hasattr(data, "get") else None
+            try:
+                return int(v) if v else None
+            except (TypeError, ValueError):
+                return None
 
         @auto_await
         async def generate_sequences(self, prompts):  # type: ignore[override]

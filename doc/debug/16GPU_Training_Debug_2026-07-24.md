@@ -277,3 +277,65 @@ Process(训练) 61.25GB;Process(lightllm) 6.70GB;PyTorch allocated 53.22GB,reser
 cl_rollout_manager.py:136),**不按 cap 静态预留**。故:模型实际不超长时,cap 高低不直接影响激活;
 只有当模型确实生成到接近 cap 的超长序列时,降 cap 才直接削峰。因此 16K 对 b1(碎片型)是"保险",
 对 k3(大块型、且大块疑似长序列激活)更可能是"直接解药"。真实效果需集群重跑验证。
+
+一、size/长度类配置全盘点(b1_9b_16gpu.yaml)
+
+  配置: max_prompt_length
+  值: 2048 
+  限制什么: 单条 prompt 长度
+  超了怎么处理: 丢弃(filter_overlong_prompts=true,整条剔除不训)      
+  ────────────────────────────────────────
+  配置: max_response_length
+  值: 16384
+  限制什么: ①单次生成上限(sampling max_tokens) ②rollout 整条 response 总长闸门(我新加)
+  超了怎么处理: ①单次截断停止生成 ②整条截断(当轮后停止后续轮)
+  ────────────────────────────────────────
+  配置: max_total_response_tokens(代码,=max_response_length)
+  值: 16384
+  限制什么: 多轮 ReAct 整条累积 response
+  超了怎么处理: 截断(停后续轮,当轮完整保留)
+  ────────────────────────────────────────
+  配置: ppo_max_token_len_per_gpu
+  值: 40960
+  限制什么: dynamic_bsz 每 micro-batch token 打包上限
+  超了怎么处理: 不截不丢——超了 assert 崩(须≥最坏序列,已保证)
+  ────────────────────────────────────────
+  配置: log_prob_max_token_len(=ppo×2)
+  值: 81920
+  限制什么: log_prob 阶段打包上限
+  超了怎么处理: 同上
+  ────────────────────────────────────────
+  配置: max_model_len
+  值: 65536
+  限制什么: lightllm 引擎单请求上下文上限
+  超了怎么处理: 引擎层截断
+  ────────────────────────────────────────
+  配置: max_num_batched_tokens / batch_max_tokens
+  值: 8192
+  限制什么: lightllm 单批 prefill token 数
+  超了怎么处理: 引擎调度(分批,不丢)
+  ────────────────────────────────────────
+  配置: running_max_req_size / graph_max_batch_size
+  值: 512
+  限制什么: 推理并发请求数
+  超了怎么处理: 排队(不丢)
+  ────────────────────────────────────────
+  配置: train_batch_size / gen_batch_size
+  值: 64
+  限制什么: 每 step query 数
+  超了怎么处理: 无所谓超
+  ────────────────────────────────────────
+  配置: ppo_mini_batch_size
+  值: 64
+  限制什么: 每次参数更新的样本数
+  超了怎么处理: —
+  ────────────────────────────────────────
+  配置: sessions_per_step
+  值: 512
+  限制什么: rollout 并发轨迹数
+  超了怎么处理: —
+
+  截断 vs 丢弃小结:
+  - 丢弃:只有 max_prompt_length(超长 prompt 整条剔除)。
+  - 截断:max_response_length(单次+整条)、max_model_len(引擎)。
+  - 崩(assert):ppo/log_prob_max_token_len 若 < 最坏序列。已设 40960 ≥ 34816,安全。

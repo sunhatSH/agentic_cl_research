@@ -37,11 +37,28 @@ actor_rollout_ref:
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
     ppo_mini_batch_size: 64             # 对齐 train_batch=64
-    ppo_micro_batch_size_per_gpu: 1     # 2→1:治训练 OOM(update_actor 阶段激活峰值减半)
-                                        # 之前 micro=2 时 update_actor 吃 ~76GB/卡→CUDA OOM
-    ppo_max_token_len_per_gpu: 32768    # 65536→32768:压激活(与其余 16gpu 配置统一)。
-                                        # 注:真正治 OOM 的是 max_response_length 53886→16384
-                                        # (旧值离谱放任长序列跑飞),见 debug §23;此处不再降到 24576。
+    # ── 变长打包 + 整条轨迹总长治理(2026-07-28,仅 b1 先试)──────────────────────
+    # use_dynamic_bsz=true:micro-batch 按每条【实际长度】(attention_mask.sum())打包到
+    #   token 预算,而非按固定条数 pad。数据短则真省激活显存。核心:
+    #   verl/utils/seqlen_balancing.py::rearrange_micro_batches。
+    # ⚠️ 风险(需集群验证):dynamic 路径走 NO_PADDING(变长/nested 张量,engine/utils.py:110
+    #   assert),通常伴 flash-attn varlen;而本模型 use_remove_padding=false(混合 GatedDeltaNet
+    #   开不了 flash-attn,见 §20)。兼容性本机无法验,若报 nested/varlen 相关错则回退
+    #   use_dynamic_bsz=false。先只在 b1 试,其余 17 个维持 false。
+    # ⚠️ token 预算约束(§24 教训):必须 ≥ batch 内最坏序列长度,否则 rearrange_micro_batches
+    #   的 assert(max_token_len >= max_seq_len)会崩。首跑就崩在这:多轮 ReAct 整条 response
+    #   实测累积到 52758(max_response_length 只管单次生成,不管整条累积)。
+    #   已在 rollout 端(collect.py make_react_agent_fn)加整条 response 总长闸门=
+    #   data.max_response_length(16384),但闸门是"当轮后检查",最后一轮完整保留 →
+    #   最坏 response = 16384(闸门) + 16384(末轮单次上限) = 32768,+prompt2048 = 34816。
+    #   故 token 预算须 ≥ 34816;取 40960 留余量。dynamic_bsz 下预算大≠激活大(激活按真实
+    #   长度 + gradient_checkpointing 走),故设大只为不撞 assert,不额外吃显存。
+    use_dynamic_bsz: true
+    ppo_micro_batch_size_per_gpu: 1     # dynamic_bsz=true 时被忽略(改由 token 预算切 micro)
+    ppo_max_token_len_per_gpu: 40960    # ≥ 最坏序列 34816(见上"token 预算约束"注释),避免
+                                        # dynamic_bsz 的 rearrange_micro_batches assert 崩。
+                                        # dynamic_bsz 下这是打包上限,≠激活峰值(激活按真实长度+
+                                        # gradient_checkpointing);设大只为不撞 assert,不额外吃显存。
     ulysses_sequence_parallel_size: 2   # SP=2 → DP=8（16卡÷2）
     fsdp_config:
       param_offload: true

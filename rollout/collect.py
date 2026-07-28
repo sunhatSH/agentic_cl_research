@@ -97,6 +97,7 @@ def make_react_agent_fn(
     max_turns: int = 6,
     default_bucket: str | None = None,
     system_prompt: str | None = _REACT_SYSTEM_PROMPT,
+    max_total_response_tokens: int | None = None,
 ):
     """Build an AgentFn for SessionSandboxPool that runs a native-collection ReAct loop.
 
@@ -110,6 +111,16 @@ def make_react_agent_fn(
             the <toolcall> format. Default: a minimal ReAct instruction. Set to
             None to disable (for verl training where the model already knows the
             format, or when the model's own system prompt covers tool use).
+        max_total_response_tokens: Hard ceiling on the WHOLE trajectory's
+            response length (generated + observation tokens, summed across all
+            turns). None = no limit. This is DISTINCT from the per-call
+            ``max_tokens`` sampling param (which only caps ONE generation): a
+            multi-turn ReAct loop concatenates every turn into one response, so
+            without this ceiling a 16-turn session can balloon to tens of
+            thousands of tokens (observed 52758) and blow up training activation
+            / dynamic_bsz token budget (debug §24). When the running total
+            reaches this ceiling, the loop stops after the CURRENT turn completes
+            (no mid-turn split -- keeps token/logprob/mask alignment intact).
     """
 
     def agent_fn(
@@ -132,6 +143,7 @@ def make_react_agent_fn(
         full_text_parts: list[str] = []
         prompt_tokens_total = 0
         completion_tokens_total = 0
+        _truncated_total = False
 
         for _turn in range(max_turns):
             step = generate_fn(prefix + turns)
@@ -142,6 +154,13 @@ def make_react_agent_fn(
             full_text_parts.append(step.text)
             prompt_tokens_total += step.prompt_tokens
             completion_tokens_total += step.completion_tokens
+
+            # Whole-trajectory token ceiling: stop after this (complete) turn once
+            # the accumulated response length hits the budget. Prevents multi-turn
+            # runaway that blows training activation / dynamic_bsz assert (§24).
+            if max_total_response_tokens is not None and len(all_resp_ids) >= max_total_response_tokens:
+                _truncated_total = True
+                break
 
             call = parse_tool_call(step.text)
             if call is None:
@@ -157,6 +176,12 @@ def make_react_agent_fn(
             all_logprobs.extend([0.0] * len(obs_ids))  # not policy tokens
             response_mask.extend([0] * len(obs_ids))  # masked out of loss
             full_text_parts.append(obs)
+
+            # Also check after appending observation (a huge tool output can
+            # single-handedly blow the budget).
+            if max_total_response_tokens is not None and len(all_resp_ids) >= max_total_response_tokens:
+                _truncated_total = True
+                break
 
         full_text = "\n".join(full_text_parts)
         bucket = parse_domain(full_text) or default_bucket
