@@ -1,0 +1,126 @@
+# 单机 8 卡验证配置（1 节点 × 8 卡）= b1_9b_16gpu 的减半版。
+# 用途：单节点验证训练链路（dynamic_bsz + 总长闸门 + update_actor 不 OOM/不 assert），
+#   nnodes=1 不走多机 barrier，不会卡在等 worker。规模相对 16 卡减半。
+#
+# 减半对照（16GPU → 8GPU）：总卡16→8；train_batch64→32；ppo_mini64→32；
+#   sessions_per_step512→256；total_steps500→250；save_freq100→50。
+# 并行度(8卡)：SP=2 → DP=4（8÷2）；推理 TP=2。
+# 整除：train_batch32%DP4=0✓ ppo_mini32%DP4=0✓ 8%SP2=0✓ 并发256=32×n8✓。
+# 保留 16 卡的：use_dynamic_bsz、max_response_length=16384、ppo_max_token_len=40960、总长闸门。
+#
+# 启动（单机，不需多机 env）：bash scripts/train.sh 8gpu --config configs/run/b1_9b_8gpu.yaml
+
+defaults:
+  - ../_generated_ppo_trainer
+  - ../base
+
+actor_rollout_ref:
+  model:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    use_fused_kernels: false
+    override_config:
+      attn_implementation: sdpa
+
+  actor:
+    strategy: fsdp
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+    entropy_coeff: 0.001
+    optim:
+      lr: 2.0e-6
+      lr_warmup_steps_ratio: 0.03
+      lr_scheduler_type: constant
+    ppo_mini_batch_size: 32             # 64→32（减半），对齐 train_batch=32
+    use_dynamic_bsz: true               # 与 16gpu 一致：按实际长度打包
+    ppo_micro_batch_size_per_gpu: 1     # dynamic_bsz=true 时被忽略
+    ppo_max_token_len_per_gpu: 40960    # ≥ 最坏序列 34816，不撞 dynamic_bsz assert
+    ulysses_sequence_parallel_size: 2   # SP=2 → DP=4（8卡÷2）
+    fsdp_config:
+      param_offload: true
+      optimizer_offload: true
+
+  rollout:
+    name: lightllm
+    mode: async
+    tensor_model_parallel_size: 2
+    gpu_memory_utilization: 0.7
+    n: 8
+    load_format: auto
+    max_model_len: 65536
+    max_num_batched_tokens: 8192
+    enable_chunked_prefill: false
+    calculate_log_probs: true
+    log_prob_micro_batch_size_per_gpu: 1
+    agent:
+      agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
+    multi_turn:
+      enable: false
+      format: qwen3_coder
+      reasoning_format: qwen3
+      max_assistant_turns: 20
+    checkpoint_engine:
+      update_weights_bucket_megabytes: 2048
+    engine_kwargs:
+      lightllm:
+        batch_max_tokens: 8192
+        enable_multimodal: false
+        enable_torch_memory_saver: true
+        graph_max_batch_size: 256       # 512→256，配合 256 并发
+        running_max_req_size: 256       # 512→256
+        sampling_backend: triton
+        disable_vision: true
+        disable_audio: true
+
+  ref:
+    log_prob_micro_batch_size_per_gpu: 1
+    fsdp_config:
+      param_offload: true
+
+reward:
+  reward_model:
+    enable: false
+    rollout:
+      name: vllm
+
+data:
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
+  val_files: null
+  train_batch_size: 32                # 64→32：32 query × n8 = 256 轨迹/step
+  gen_batch_size: 32
+  max_prompt_length: 2048
+  max_response_length: 16384
+  shuffle: false
+  return_raw_chat: true
+  filter_overlong_prompts: true
+  trust_remote_code: true
+  dataloader_num_workers: 4
+  cache_dir: /tmp/verl_rlhf_cache
+
+cl:
+  lambda_replay: 0.0
+  rollout:
+    sessions_per_step: 256          # 512→256：rollout 并发（per-row）
+  buffer:
+    enabled: false
+
+trainer:
+  nnodes: 1                         # 单节点：不走多机 barrier
+  n_gpus_per_node: 8
+  total_epochs: 1
+  total_training_steps: 250         # 500→250
+  save_freq: 50                     # 100→50
+  test_freq: -1
+  val_before_train: false
+  critic_warmup: 0
+  logger: [console]
+  log_val_generations: 50
+  project_name: agentic-cl
+  experiment_name: qwen35_9b_b1_8gpu
+  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_b1_8gpu}
+
+ray_kwargs:
+  ray_init:
+    address: null                  # 单机:null=verl 自己新起本地 Ray(不连已存在集群)。
+                                    # 不能用 auto——auto 会读 /tmp/ray 残留、连上次多机的死 head
+                                    # (10.120.3.77:6379)导致 GCS 连接超时。
+    num_cpus: null

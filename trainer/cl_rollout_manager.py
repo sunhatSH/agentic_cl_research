@@ -400,34 +400,68 @@ def make_cl_scheduler_manager_cls():
 
             tokenizer = self._get_tokenizer()
             queries = extract_queries_from_prompts(prompts, tokenizer)
-            scheduler = self._build_scheduler()
 
-            # One SessionSpec per input row; scheduler runs up to
-            # sessions_per_step in parallel (each a 1-slot single-turn session ->
-            # exactly 1 trajectory). Batched so we never spawn all N sandboxes at
-            # once. Order is preserved: batch k covers rows [k*S : (k+1)*S].
-            step = max(1, int(scheduler.sessions_per_step))
-            all_trajs: list[Any] = []
-            for start in range(0, len(queries), step):
-                chunk = queries[start : start + step]
-                specs = [
-                    SessionSpec(session_id=str(start + j), queries=[q]) for j, q in enumerate(chunk)
-                ]
-                chunk_trajs = await asyncio.to_thread(scheduler.run_step, specs)
-                all_trajs.extend(chunk_trajs)
+            # ── 训练阶段快验开关(CL_FAKE_ROLLOUT=1)────────────────────────────
+            # 跳过真实沙箱 rollout,直接造假轨迹喂进 reward → update_actor。用途:双机/
+            # 单机验证【训练阶段】(FSDP update_actor + dynamic_bsz 打包 + token 预算 +
+            # OOM/assert)时,省掉十几分钟的沙箱采样。造的假 response 长度可控(默认取
+            # data.max_response_length,可用 CL_FAKE_ROLLOUT_LEN 覆盖,模拟最坏序列)。
+            # 只在显式设开关时生效,正式训练路径完全不受影响。
+            import os as _os
+            if _os.environ.get("CL_FAKE_ROLLOUT", "") in ("1", "true", "True"):
+                from rollout.session_pool import Trajectory as _Traj
+                n_rows = len(prompts.batch) if prompts.batch is not None else len(queries)
+                _budget = self._max_total_response_tokens() or 16384
+                _flen = int(_os.environ.get("CL_FAKE_ROLLOUT_LEN", str(_budget)))
+                print(f"[cl_rollout] CL_FAKE_ROLLOUT=1: 跳过沙箱,造 {n_rows} 条假轨迹 "
+                      f"(每条 response {_flen} token) 直喂训练阶段", flush=True)
+                vocab = int(getattr(tokenizer, "vocab_size", 30000) or 30000)
+                fake = []
+                for i in range(n_rows):
+                    q = queries[i] if i < len(queries) else "hello"
+                    ids = [(j % (vocab - 1)) + 1 for j in range(_flen)]  # 非零 token
+                    fake.append(_Traj(
+                        slot_idx=0,
+                        trajectory_id=f"fake-{i}",
+                        messages=[{"role": "user", "content": str(q)},
+                                  {"role": "assistant", "content": "fake response"}],
+                        reward=0.5,  # 恒定假 reward(GRPO 组内会归一化)
+                        response_token_ids=ids,
+                        logprobs=[0.0] * _flen,
+                        bucket="workflow",
+                        meta={"response_mask": [1] * _flen, "observer_report": ""},
+                    ))
+                trajectories = fake
+                # 复用下面同一套 trajectories_to_dataproto 逻辑(跳过 scheduler 分支)
+            else:
+                scheduler = self._build_scheduler()
 
-            # verl contract: 1 trajectory per input row, same order. `prompts.batch`
-            # is always present after `_get_gen_batch` (train AND val), so compare
-            # against it directly. A mismatch means a row's rollout was dropped
-            # (crashed slot / isolated session error) -- that is a bug to surface,
-            # not data to pad.
-            expected_n = len(prompts.batch) if prompts.batch is not None else len(queries)
-            assert len(all_trajs) == expected_n, (
-                f"per-row yield {len(all_trajs)} != verl expected {expected_n} "
-                f"(queries={len(queries)}); a row's rollout was dropped "
-                "(isolated session error?). Investigate rollout/scheduler.run_step logs."
-            )
-            trajectories = all_trajs
+                # One SessionSpec per input row; scheduler runs up to
+                # sessions_per_step in parallel (each a 1-slot single-turn session ->
+                # exactly 1 trajectory). Batched so we never spawn all N sandboxes at
+                # once. Order is preserved: batch k covers rows [k*S : (k+1)*S].
+                step = max(1, int(scheduler.sessions_per_step))
+                all_trajs: list[Any] = []
+                for start in range(0, len(queries), step):
+                    chunk = queries[start : start + step]
+                    specs = [
+                        SessionSpec(session_id=str(start + j), queries=[q]) for j, q in enumerate(chunk)
+                    ]
+                    chunk_trajs = await asyncio.to_thread(scheduler.run_step, specs)
+                    all_trajs.extend(chunk_trajs)
+
+                # verl contract: 1 trajectory per input row, same order. `prompts.batch`
+                # is always present after `_get_gen_batch` (train AND val), so compare
+                # against it directly. A mismatch means a row's rollout was dropped
+                # (crashed slot / isolated session error) -- that is a bug to surface,
+                # not data to pad.
+                expected_n = len(prompts.batch) if prompts.batch is not None else len(queries)
+                assert len(all_trajs) == expected_n, (
+                    f"per-row yield {len(all_trajs)} != verl expected {expected_n} "
+                    f"(queries={len(queries)}); a row's rollout was dropped "
+                    "(isolated session error?). Investigate rollout/scheduler.run_step logs."
+                )
+                trajectories = all_trajs
 
             def _safe_tokenize(messages):
                 ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
