@@ -328,10 +328,17 @@ def make_cl_scheduler_manager_cls():
             # slots=1: each input row is ONE independent single-turn rollout. verl
             # already repeated the query ×n, so the n GRPO samples of a query are n
             # separate input rows here (n separate 1-slot sessions), not n slots of
-            # one pool. sessions_per_step = concurrency cap over rows.
+            # one pool. Concurrency = num_workers (verl AgentLoopConfig's own field,
+            # so it passes verl's strict dataclass parse -- a custom key like
+            # `sessions_per_step` in the agent section crashes AgentLoopConfig.__init__
+            # with "unexpected keyword argument"). Fall back to legacy sessions_per_step
+            # then to 64 for older configs / off-cluster tests.
+            _concurrency = int(
+                agent_cfg.get("num_workers", agent_cfg.get("sessions_per_step", 64)) or 64
+            )
             return RolloutScheduler(
                 agent_fn,
-                sessions_per_step=int(agent_cfg.get("sessions_per_step", 64)),
+                sessions_per_step=_concurrency,
                 slots=1,
                 backend=agent_cfg.get("sandbox_backend", "e2b"),
                 simulated=True,

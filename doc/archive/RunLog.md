@@ -1325,3 +1325,26 @@ out of memory. Tried to allocate 12.97 GiB. GPU0 total 79.32GB, 训练进程已�
 ### 待集群验证的风险
 1. micro=1 是否真把训练压进 80GB(激活估算不确定,若仍 OOM 需再降 max_token 或 batch)。
 2. e2b 沙箱配额需 ≥512(512 并发=一次开 512 沙箱),不足则大量 crashed-session 占位。
+
+---
+
+## 2026-07-28 baseline 崩:sessions_per_step 放进 agent 段被 verl 严格 dataclass 拒绝
+
+### 现象
+02:39 启动(新配置 micro=1/util0.7/并发512),init 即崩:
+`TypeError: AgentLoopConfig.__init__() got an unexpected keyword argument 'sessions_per_step'`。
+
+### 根因
+上一轮把 rollout 并发写成 `actor_rollout_ref.rollout.agent.sessions_per_step: 512`,但
+verl 的 agent 段是 AgentLoopConfig(BaseConfig dataclass,严格),不认 `sessions_per_step`
+这个自定义 key → 构造即崩(同 ref.path/FSDPActorConfig 那类 verl 严格解析问题)。
+sessions_per_step 是我方 cl_rollout_manager 读的,不是 verl 字段。
+
+### 修复
+- config:agent 段改用 verl 合法字段 `num_workers: 512`(AgentLoopConfig 有此字段;
+  它另作验证路径 pad divisor,但验证已关 test_freq=-1 无副作用)。删 sessions_per_step。
+- 代码 cl_rollout_manager._build_scheduler:并发读 num_workers(fallback sessions_per_step
+  →64)。agent_cfg 是 BaseConfig(Mapping),.get 对 num_workers/sandbox_backend/k_max
+  都安全(非字段返回默认,不崩)。
+
+本机 pytest 通过。18 config 一致:agent.num_workers=512。
