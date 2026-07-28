@@ -55,10 +55,10 @@ actor_rollout_ref:
     #   长度 + gradient_checkpointing 走),故设大只为不撞 assert,不额外吃显存。
     use_dynamic_bsz: true
     ppo_micro_batch_size_per_gpu: 1     # dynamic_bsz=true 时被忽略(改由 token 预算切 micro)
-    ppo_max_token_len_per_gpu: 20480    # 单 micro-batch token 上限 = dynamic_bsz 激活主旋钮。
-                                        # 40960→20480:实测 40960 下 update_actor 吃 72.5GB 爆卡(§25),
-                                        # dynamic_bsz 真把 micro 塞到接近 40960 → 激活~10.7GB。降到 20480
-                                        # → 激活~5.4GB。≥ 新最坏序列 18432(max_response 已降 8192),不撞 assert。
+    ppo_max_token_len_per_gpu: 28672    # 单 micro-batch token 上限 = dynamic_bsz 激活主旋钮。
+                                        # ≥ 最坏序列 26624(prompt2048+闸门16384+末轮8192,§26 解耦后)。
+                                        # 20480→28672:整条闸门提回 16384 保数据真实,靠解耦单次生成(8192)
+                                        # 压住末轮项,使 budget 只需 28672(非全 16384 的 34816)。SP 保持 2、DP 不降。
     ulysses_sequence_parallel_size: 2   # SP=2 → DP=8（16卡÷2）
     fsdp_config:
       param_offload: true
@@ -119,11 +119,9 @@ data:
   train_batch_size: 64                # 64 query/step × n8 = 512 轨迹/step
   gen_batch_size: 64
   max_prompt_length: 2048
-  max_response_length: 8192          # 单次生成上限 + 整条 response 闸门(同一值管两处)。
-                                      # 16384→8192:治 update_actor OOM(实测 40960 预算下训练进程吃 72.5GB
-                                      # 爆卡)。真实 response p90 才 2.5-7K,8192 覆盖绝大多数不损训练。
-                                      # 配合 ppo_max_token_len 20480:最坏序列 2048+8192+8192=18432<20480,
-                                      # 预算 < 原最坏 34816 仍正常训练(靠压最坏序列本身,不靠抬预算)。见 §24/§25。
+  max_response_length: 16384         # 整条 response 闸门(数据保真:整条可到 16K,实测 max≈9K 零截断)。
+                                      # 单次生成上限【解耦】到 cl.rollout.max_single_gen_tokens=8192(§26),
+                                      # 故最坏序列=prompt2048+闸门16384+末轮8192=26624,budget 28672 覆盖。
   shuffle: false                     # 按文件序（桶序排列）训，保证按桶顺序 → 可测遗忘
   return_raw_chat: true
   filter_overlong_prompts: true
@@ -136,6 +134,9 @@ cl:
   lambda_replay: 0.0
   rollout:
     sessions_per_step: 512          # rollout 并发 512(per-row);verl 不解析 cl 段,放这里避开 AgentLoopConfig 严格校验
+    max_single_gen_tokens: 8192     # 【单次】LLM 生成上限,与整条闸门(max_response_length=16384)解耦(§26)。
+                                    # 整条可累积到 16384(数据真实),但单次不超 8192(实测单次 p90 才 2.5-7K),
+                                    # 从而压低最坏序列的末轮项 → budget 只需 28672 而非 34816,省激活不降 DP。
   buffer:
     enabled: false
 

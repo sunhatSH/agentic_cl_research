@@ -316,7 +316,9 @@ def make_cl_scheduler_manager_cls():
                 self._get_tokenizer(),
                 sampling_params={
                     "temperature": float(rcfg.get("temperature", 1.0)),
-                    "max_tokens": int(rcfg.get("response_length", 1024) or 1024),
+                    # 单次生成上限,与整条闸门解耦(§26):读 cl.rollout.max_single_gen_tokens,
+                    # 缺省回退 response_length。压小单次 → 压低最坏序列末轮项 → 省 budget/激活。
+                    "max_tokens": self._max_single_gen_tokens(),
                 },
             )
             agent_fn = make_react_agent_fn(
@@ -386,6 +388,23 @@ def make_cl_scheduler_manager_cls():
                 return int(v) if v else None
             except (TypeError, ValueError):
                 return None
+
+        def _max_single_gen_tokens(self):
+            # 【单次】LLM 生成的 max_tokens(与整条闸门解耦,debug §26)。
+            # 整条 response 闸门 = data.max_response_length(可到 16384,保数据真实);
+            # 但【单次】生成不必那么长(实测单次 p90 才 2.5-7K)。把单次压小 → 压低
+            # "最坏序列 = prompt + 闸门 + 末轮单次" 里的末轮项 → 压低 dynamic_bsz 所需
+            # token 预算与激活,不牺牲整条长度。读 cl.rollout.max_single_gen_tokens,
+            # 缺省回退 rollout.response_length(=旧行为,单次=整条)。
+            cl = self.config.get("cl", {}) if hasattr(self.config, "get") else {}
+            clr = cl.get("rollout", {}) if hasattr(cl, "get") else {}
+            v = clr.get("max_single_gen_tokens") if hasattr(clr, "get") else None
+            if v:
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    pass
+            return int(self.rollout_config.get("response_length", 1024) or 1024)
 
         @auto_await
         async def generate_sequences(self, prompts):  # type: ignore[override]

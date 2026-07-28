@@ -358,3 +358,22 @@ verl 的 rearrange_micro_batches 把整条序列作不可分割单位打包(asse
 **修复:** max_response_length 16384→8192(同时管单次生成+整条闸门)+ ppo_max_token_len 40960→20480。
 新最坏=2048+8192+8192=18432<20480,不撞 assert;单 micro 激活 10.7GB→5.4GB。真实 response p90
 才 2.5-7K,8192 覆盖绝大多数不损训练。**预算 20480 < 原最坏 34816 仍正常训练——靠压最坏序列本身。**
+
+
+## §26 单次生成与整条闸门解耦(保 response 真实,2026-07-28)
+
+**需求(用户):** response 长度尽量不砍以保数据真实,用别的手段省显存,不降 DP。
+
+**分析:** 降并发对训练激活无效(只影响 rollout 阶段);"单条多段"verl dynamic_bsz 原生
+做不到(整条序列必进一个 micro)。真正杠杆是 SP(会降 DP)或解耦单次/整条。
+
+**方案(解耦):** max_response_length 一值原本同时管【单次生成】和【整条闸门】。拆开:
+- 整条闸门 = data.max_response_length = 16384(数据保真,整条可到 16K)
+- 单次生成 = cl.rollout.max_single_gen_tokens = 8192(实测单次 p90 才 2.5-7K,够)
+- 最坏序列 = prompt2048 + 闸门16384 + 末轮单次8192 = 26624(而非全16384的34816)
+- ppo_max_token_len = 28672(≥26624)。SP=2/DP=8 不降。
+
+**代码:** cl_rollout_manager 加 _max_single_gen_tokens()(读 cl.rollout.max_single_gen_tokens,
+缺省回退 response_length),单次生成 max_tokens 用它;整条闸门仍用 _max_total_response_tokens()。
+
+**显存:** budget 20480→28672(+40%),step1 实测 53.6GB → 估 ~65-70GB,需真实验证。
