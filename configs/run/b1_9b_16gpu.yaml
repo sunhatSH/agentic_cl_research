@@ -67,8 +67,8 @@ actor_rollout_ref:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.7         # KV 池支撑 512 并发(训练时 lightllm sleep 让出;训练 OOM 已由 micro=1 治理,残留~7GB 吃得下)
-                                        # sleep 让出;训练 OOM 已由 micro=1 + max_token 减半治理)
+    gpu_memory_utilization: 0.6         # lightllm KV 池显存上限比例(0.7→0.6,降 rollout 阶段显存压力)。
+                                        # 训练时 lightllm sleep 让出;256 并发下 KV 池 0.6 够(并发已从 512 减半)。
     n: 8
     load_format: auto
     max_model_len: 65536
