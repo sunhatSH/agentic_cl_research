@@ -55,10 +55,10 @@ actor_rollout_ref:
     #   长度 + gradient_checkpointing 走),故设大只为不撞 assert,不额外吃显存。
     use_dynamic_bsz: true
     ppo_micro_batch_size_per_gpu: 1     # dynamic_bsz=true 时被忽略(改由 token 预算切 micro)
-    ppo_max_token_len_per_gpu: 40960    # ≥ 最坏序列 34816(见上"token 预算约束"注释),避免
-                                        # dynamic_bsz 的 rearrange_micro_batches assert 崩。
-                                        # dynamic_bsz 下这是打包上限,≠激活峰值(激活按真实长度+
-                                        # gradient_checkpointing);设大只为不撞 assert,不额外吃显存。
+    ppo_max_token_len_per_gpu: 20480    # 单 micro-batch token 上限 = dynamic_bsz 激活主旋钮。
+                                        # 40960→20480:实测 40960 下 update_actor 吃 72.5GB 爆卡(§25),
+                                        # dynamic_bsz 真把 micro 塞到接近 40960 → 激活~10.7GB。降到 20480
+                                        # → 激活~5.4GB。≥ 新最坏序列 18432(max_response 已降 8192),不撞 assert。
     ulysses_sequence_parallel_size: 2   # SP=2 → DP=8（16卡÷2）
     fsdp_config:
       param_offload: true
@@ -119,7 +119,11 @@ data:
   train_batch_size: 64                # 64 query/step × n8 = 512 轨迹/step
   gen_batch_size: 64
   max_prompt_length: 2048
-  max_response_length: 16384
+  max_response_length: 8192          # 单次生成上限 + 整条 response 闸门(同一值管两处)。
+                                      # 16384→8192:治 update_actor OOM(实测 40960 预算下训练进程吃 72.5GB
+                                      # 爆卡)。真实 response p90 才 2.5-7K,8192 覆盖绝大多数不损训练。
+                                      # 配合 ppo_max_token_len 20480:最坏序列 2048+8192+8192=18432<20480,
+                                      # 预算 < 原最坏 34816 仍正常训练(靠压最坏序列本身,不靠抬预算)。见 §24/§25。
   shuffle: false                     # 按文件序（桶序排列）训，保证按桶顺序 → 可测遗忘
   return_raw_chat: true
   filter_overlong_prompts: true

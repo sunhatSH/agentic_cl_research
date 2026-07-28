@@ -339,3 +339,22 @@ cl_rollout_manager.py:136),**不按 cap 静态预留**。故:模型实际不超�
   - 丢弃:只有 max_prompt_length(超长 prompt 整条剔除)。
   - 截断:max_response_length(单次+整条)、max_model_len(引擎)。
   - 崩(assert):ppo/log_prob_max_token_len 若 < 最坏序列。已设 40960 ≥ 34816,安全。
+
+## §25 update_actor OOM(dynamic_bsz 按 40960 塞满 micro-batch,2026-07-28)
+
+**症状:** §24 的 assert 修好后(dynamic_bsz+16K+40960+总长闸门),双机 b1 穿过打包,进
+`actor_rollout_update_actor()` CUDA OOM。训练进程吃 72.54GB(PyTorch allocated 70.04)+
+lightllm 6.70GB ≈ 79.24/79.32,爆卡。
+
+**根因:** `ppo_max_token_len_per_gpu=40960` 太大。dynamic_bsz 下它=单 micro-batch token 上限,
+打包时真把 micro 塞到接近 40960 token → 单次前向激活 ~10.7GB → 加模型/梯度/lightllm 残留爆 80GB。
+(先前误判"40960 是天花板不吃满显存"——错,dynamic_bsz 会尽量塞满预算。)
+
+**关键认知(用户指出):** 不该"抬预算迁就最坏序列 34816",而应"压最坏序列本身,让小预算够用"。
+verl 的 rearrange_micro_batches 把整条序列作不可分割单位打包(assert max_token_len>=max_seq_len),
+原生不支持把长序列切到多 micro。故正解=降最坏序列,不是绕 assert。34816=prompt2048+闸门16384+
+末轮16384,三者都是自设上限,压它们即可。
+
+**修复:** max_response_length 16384→8192(同时管单次生成+整条闸门)+ ppo_max_token_len 40960→20480。
+新最坏=2048+8192+8192=18432<20480,不撞 assert;单 micro 激活 10.7GB→5.4GB。真实 response p90
+才 2.5-7K,8192 覆盖绝大多数不损训练。**预算 20480 < 原最坏 34816 仍正常训练——靠压最坏序列本身。**
