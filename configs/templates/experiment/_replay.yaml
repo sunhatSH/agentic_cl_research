@@ -1,0 +1,54 @@
+# 【模板·实验语义层】Replay / Buffer 消融(R 系列)—— 开 9 桶 buffer + replay loss
+#
+# 区分维度:lambda_replay(λ3 回放强度)× buffer 采样/优先级策略。
+# 示例给 R4(主方案:λ3=0.5 + distance 桶采样 + anti-forgetting priority)。
+# 其余 R* 改 cl.lambda_replay / bucket_strategy / weighting.scheme 即可。
+
+defaults:
+  - ../../_generated_ppo_trainer
+  - ../../base
+  - ../hardware/16GPU_9BQwen3.5           # 换规格改这一行
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false                    # R 系列默认不叠 KL(R4-K 才叠,那时开)
+    kl_loss_coef: 0.0
+    entropy_coeff: 0.001
+
+reward:
+  reward_model:
+    enable: false
+    rollout:
+      name: vllm
+
+data:
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
+  val_files: null
+  shuffle: false
+  return_raw_chat: true
+  filter_overlong_prompts: true
+  trust_remote_code: true
+  dataloader_num_workers: 4
+  cache_dir: /tmp/verl_rlhf_cache
+
+# ── replay 语义:开 buffer,其余桶定义/容量/权重公式继承 base.yaml ──────────────
+cl:
+  lambda_replay: 0.5                      # λ3:R0-03=0.3 / R4=0.5 / R6=0.8
+  buffer:
+    enabled: true                         # ← baseline/KL 为 false
+    bucket_strategy: distance             # distance(主) / uniform(CLEAR 基线)
+  weighting:
+    scheme: W0                            # W0 均权(主);仅 R4-w 用 W2(U 形 0.88)
+
+trainer:
+  total_epochs: 1
+  total_training_steps: 500
+  save_freq: 100
+  test_freq: -1
+  val_before_train: false
+  critic_warmup: 0
+  logger: [console]
+  log_val_generations: 50
+  project_name: agentic-cl
+  experiment_name: qwen35_9b_r4_16gpu     # 各 R* 改名
+  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_r4_16gpu}

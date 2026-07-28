@@ -212,3 +212,25 @@ generate_sequences、根本不建那些 actor,只是借它的数值当线程并�
 (agent_loop.py:217),故 `self.config.cl.rollout.sessions_per_step` 可达。agent 段恢复干净
 (无自定义 key,num_workers 回默认)。这印证共性教训 1 的正解:**自定义参数放 verl 不解析的
 顶层段(cl:),而非借用 verl 段的字段**。
+
+
+## §22 update_actor 边界碎片 OOM(2026-07-28,512 并发 + micro=1 下仍崩)
+
+**症状:** 05:37 启动的 baseline,穿过 rollout(内存 60% / 显存 85%,健康),进 `update_actor`
+时 `CUDA OOM: Tried to allocate 2.00 MiB. GPU 0 total 79.18 GiB, of which 2.50 MiB is free`。
+崩在 `actor_rollout_update_actor()`,训练阶段,rc=1。
+
+**根因(与 §20 的"绝对不够"不同,这次是"够但碎"):**
+- PyTorch 已 allocated 65.47GB、**reserved-but-unallocated 仅 147MB** → 想分 2MB 都分不出,典型碎片化。
+- 显存拼图:训练进程 72.71GB + lightllm 残留进程(Process 3703)6.39GB = **79.1GB / 79.18GB,余量仅 0.07GB**。
+  lightllm 那 6.39GB 是 **TP2 下 9B 模型权重常驻**——即使 `enable_torch_memory_saver` 让它 sleep 让出
+  KV 池,**权重本身不释放**,`gpu_memory_utilization` 调低也降不掉这块。所以训练态可用显存被压到极限,
+  任何碎片都会触发边界 OOM。
+
+**修复:** `export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`(`scripts/_train_impl.sh`,PyTorch
+OOM 报错本身即建议)。可扩展段分配器回收 reserved 碎片,消除"总量够、分不出小块"的边界 OOM。
+`${VAR:-default}` 形式保留可被外部覆盖。**后备**(若仍 OOM):`ppo_max_token_len_per_gpu` 32768→24576。
+
+**教训补充:** OOM 要分清"绝对不够"(§20,靠降 micro/max_token)vs"够但碎"(§22,靠分配器策略)。
+报错里 `free` 极小 + `reserved-but-unallocated` 极小 + 需求极小(2MB)= 碎片,不是缺量;此时降 batch
+收效甚微,该换分配器。另:lightllm 残留权重(TP shard)是训练态一块拿不掉的固定占用,做显存核算要算进去。

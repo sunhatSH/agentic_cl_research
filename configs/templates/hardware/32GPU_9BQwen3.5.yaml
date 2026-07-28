@@ -1,0 +1,83 @@
+# 【模板·压力层】32 GPU × Qwen3.5-9B —— 推断起点,待压测
+#
+# ⚠️ 未实测。上集群按 doc/ops/Concurrency_Policy_by_GPU.md 的 checklist 压测后回填。
+# 相对 16GPU:总卡翻倍 → DP 翻倍(shard 更小、训练余量更大)、rollout 并发可上调
+# (但真上限受 sandbox e2b 吞吐 + judge serve QPS 约束,不一定线性)。
+# 硬件:H800 80GB × 32(4 节点 × 8)。布局 DP=16, SP=2, TP=2。
+
+actor_rollout_ref:
+  model:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    use_fused_kernels: false
+    override_config:
+      attn_implementation: sdpa
+
+  actor:
+    strategy: fsdp
+    ulysses_sequence_parallel_size: 2     # SP=2 → DP=16(32÷2)
+    ppo_mini_batch_size: 128              # 对齐 train_batch=128(须 % DP16==0)
+    ppo_micro_batch_size_per_gpu: 1       # 先 1;DP16 下 shard 更小,压测后或可试 2
+    ppo_max_token_len_per_gpu: 32768      # 先沿用 16GPU;余量够再回 65536(待压测)
+    optim:
+      lr: 2.0e-6
+      lr_warmup_steps_ratio: 0.03
+      lr_scheduler_type: constant
+    fsdp_config:
+      param_offload: true
+      optimizer_offload: true
+
+  rollout:
+    name: lightllm
+    mode: async
+    tensor_model_parallel_size: 2
+    gpu_memory_utilization: 0.7           # 先沿用;shard 更小→训练余量更大,或可提(待压测)
+    n: 8
+    load_format: auto
+    max_model_len: 65536
+    max_num_batched_tokens: 8192
+    enable_chunked_prefill: false
+    calculate_log_probs: true
+    log_prob_micro_batch_size_per_gpu: 1
+    agent:
+      agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
+    multi_turn:
+      enable: false
+      format: qwen3_coder
+      reasoning_format: qwen3
+      max_assistant_turns: 20
+    checkpoint_engine:
+      update_weights_bucket_megabytes: 2048
+    engine_kwargs:
+      lightllm:
+        batch_max_tokens: 8192
+        enable_multimodal: false
+        enable_torch_memory_saver: true
+        graph_max_batch_size: 1024        # 配合更高并发(待压测确认)
+        running_max_req_size: 1024
+        sampling_backend: triton
+        disable_vision: true
+        disable_audio: true
+
+  ref:
+    log_prob_micro_batch_size_per_gpu: 1
+    fsdp_config:
+      param_offload: true
+
+data:
+  train_batch_size: 128                   # 128 query × n8 = 1024 轨迹/step(翻倍)
+  gen_batch_size: 128
+  max_prompt_length: 2048
+  max_response_length: 53886
+
+cl:
+  rollout:
+    sessions_per_step: 1024               # 待压测:先 =train_batch×n8,按 sandbox/judge 吞吐调
+
+trainer:
+  nnodes: 4
+  n_gpus_per_node: 8
+
+ray_kwargs:
+  ray_init:
+    address: auto
+    num_cpus: null

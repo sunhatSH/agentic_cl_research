@@ -74,6 +74,10 @@ export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
 export ROLLOUT_GPU_MEM_UTIL="$GPU_MEM_UTIL"
 export HF_DATASETS_CACHE="/tmp/hf_datasets_cache" HF_HOME="/tmp/hf_home"
 export VLLM_GDN_PREFILL_BACKEND="${VLLM_GDN_PREFILL_BACKEND:-triton}"
+# 显存碎片治理:训练阶段 update_actor 曾 OOM(想分 2MB 却只剩 2.5MB——总量够、碎成小块)。
+# expandable_segments 让 CUDA 分配器用可扩展段,回收 reserved-but-unallocated 碎片,
+# 消除"够但分不出"的边界 OOM。PyTorch OOM 报错本身即建议此项。见 doc/debug 16GPU §22。
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 _NV="$VENV/lib/python3.11/site-packages/nvidia"
 if [ -d "$_NV" ]; then
