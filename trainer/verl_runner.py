@@ -90,29 +90,19 @@ def _persist_winners(winners: list, exp_name: str, step: int) -> None:
 
 
 def _log_training_metrics(result, exp_name: str, step: int) -> None:
-    """Persist per-step training metrics to JSONL (independent of SwanLab)."""
-    import json
-    from pathlib import Path
+    """DELETED / DEAD CODE (2026-07-28).
 
-    meta = getattr(result, "meta_info", None)
-    if not isinstance(meta, dict):
-        return
-    metrics = meta.get("metrics", {})
-    if not metrics:
-        return
+    此函数从 `_update_actor` 返回值的 meta_info["metrics"] 取指标 —— 但那里的 metrics
+    是【未 reduce 的原始态】且【只含 actor 子集】(pg_loss/grad_norm/entropy);而
+    reward/advantage/response_length 等是 verl 在 fit 主循环用 compute_data_metrics 单独
+    算的,不在 update_actor 返回里。外部 hook 够不到 fit 的局部 metrics 字典 →
+    metrics 恒空 → `if not metrics: return` 直接跳过 → logs/metrics/*.jsonl 从未生成。
 
-    out_dir = Path(f"logs/metrics/{exp_name}")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / "training_metrics.jsonl"
-
-    row = {"step": step}
-    for k, v in metrics.items():
-        if hasattr(v, "item"):
-            v = v.item()
-        if isinstance(v, (int, float)):
-            row[k] = round(float(v), 6)
-    with open(out_file, "a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    已改用 verl 原生 FileLogger(config logger:[...,file] + env VERL_FILE_LOGGER_PATH):
+    它在 fit 主循环拿到聚合后的完整 metrics 并每 step 实时写 JSONL(buffering=0)。
+    保留此桩仅为兼容可能的旧引用;不再调用。
+    """
+    return
 
 
 def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
@@ -184,8 +174,10 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
         step = getattr(trainer, "global_steps", buffer._step)
         buffer.set_step(step)
 
-        # 1.5: Persist training metrics per step → logs/metrics/{exp}.jsonl
-        _log_training_metrics(result, exp_name, step)
+        # 每 step metrics 落盘改用 verl 原生 FileLogger(logger:[...,file] + VERL_FILE_LOGGER_PATH),
+        # 它拿到 verl fit 聚合后的完整 metrics(reward/advantage/loss 全套)并实时写 JSONL。
+        # 旧的 _log_training_metrics 已删:它 hook 在 _update_actor 返回值上,那里 metrics 未 reduce
+        # 且不含 reward/advantage(在 fit 主循环 compute_data_metrics 算),取不到 → 从未生成文件。
 
         # 2. Post: activate forgetting_risk -- recompute current-policy log-probs
         #    for the just-replayed trajectories and backfill their priority.

@@ -158,8 +158,11 @@ echo "[train_cl] RANK=${RANK:-0} MASTER_ADDR=${MASTER_ADDR:-N/A} NNODES=$NNODES 
 
 _run_single() {
   local ckpt="$ROOT_DIR/ckpts/$_exp"
-  mkdir -p "$ckpt" "$_LOGDIR/rollout" "$_LOGDIR/val"
+  mkdir -p "$ckpt" "$_LOGDIR/rollout" "$_LOGDIR/val" "$ROOT_DIR/logs/metrics/$_exp"
   export CKPT_DIR="$ckpt" ROLLOUT_DATA_DIR="$_LOGDIR/rollout" VAL_DATA_DIR="$_LOGDIR/val"
+  # verl 原生 FileLogger 落盘路径(logger:[...,file] 时生效)。每 step 实时写 JSONL,
+  # 含 reward/advantage/loss 全套聚合 metrics。取代坏掉的 _log_training_metrics。
+  export VERL_FILE_LOGGER_PATH="$ROOT_DIR/logs/metrics/$_exp/metrics.jsonl"
 
   # auto-resume：检测最新 checkpoint，中断后续训
   local latest latest_step

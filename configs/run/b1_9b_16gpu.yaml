@@ -149,7 +149,9 @@ trainer:
   test_freq: -1                 # baseline 训完离线统一评测,关 verl 内建验证
   val_before_train: false       # 不训练前跑验证(918 query rollout 纯浪费+曾触发崩溃)
   critic_warmup: 0
-  logger: [console]
+  logger: [console, file]       # file=verl 原生 FileLogger,每 step 实时写 JSONL(buffering=0),
+                                # 含 reward/advantage/loss 全套聚合 metrics。路径由 VERL_FILE_LOGGER_PATH
+                                # 注入(_train_impl.sh)。取代此前坏掉的 _log_training_metrics(取不到完整metrics)。
   log_val_generations: 50
   project_name: agentic-cl
   experiment_name: qwen35_9b_b1_16gpu
