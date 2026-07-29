@@ -57,7 +57,9 @@ actor_rollout_ref:
     ppo_micro_batch_size_per_gpu: 1     # dynamic_bsz=true 时被忽略(改由 token 预算切 micro)
     ppo_max_token_len_per_gpu: 20480    # 单 micro-batch token 上限 = dynamic_bsz 激活主旋钮。
                                         # ≥ 最坏序列 18432(prompt2048+闸门8192+末轮8192)。response 回 8K。
-    ulysses_sequence_parallel_size: 2   # SP=2 → DP=8（16卡÷2）
+    ulysses_sequence_parallel_size: 4   # SP=4 → DP=4（16卡÷4）。单卡训练序列切4段→激活减半,
+                                        # 降训练阶段显存(用户观察训练也 95%)。16头%4=0、train_batch32%DP4=0。
+                                        # 代价:DP 8→4,每步梯度同步组变小。
     fsdp_config:
       param_offload: true
       optimizer_offload: true

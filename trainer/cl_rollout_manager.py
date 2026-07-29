@@ -62,6 +62,7 @@ def trajectories_to_dataproto(
     uids: list[str] | None = None,
     observer_reports: list[str] | None = None,
     rewards: list[float | None] | None = None,
+    max_response_tokens: int | None = None,
 ):
     """Assemble collected ``Trajectory`` objects into a verl-contract DataProto.
 
@@ -114,6 +115,27 @@ def trajectories_to_dataproto(
         list(t.meta.get("response_mask") or [1] * len(r)) for t, r in zip(trajectories, resp_ids, strict=True)
     ]
     logprobs = [list(t.logprobs or []) for t in trajectories]
+    # 进 verl 前的硬截断兜底(§28):verl 的 rearrange_micro_batches 有 assert
+    # max_token_len >= max_seq_len,一条超长序列(实测 319663)就让整个训练 rc=1 崩。
+    # 用户要求:正式训练不该被调试 assert 崩,超过就【丢弃超长尾部】。这里对每条 response
+    # 无条件截到 max_response_tokens,保证交给 verl 的序列绝不超标 → assert 永不触发。
+    # 三个并行数组(resp_ids/masks/logprobs)同步截断保持对齐。这是最后一道防线,即便
+    # rollout 端(collect.py)的逐轮/最终截断有遗漏,这里也兜住。
+    if max_response_tokens is not None and max_response_tokens > 0:
+        _n_cut = 0
+        for i in range(len(resp_ids)):
+            if len(resp_ids[i]) > max_response_tokens:
+                resp_ids[i] = resp_ids[i][:max_response_tokens]
+                resp_masks[i] = resp_masks[i][:max_response_tokens]
+                if logprobs[i]:
+                    logprobs[i] = logprobs[i][:max_response_tokens]
+                _n_cut += 1
+        if _n_cut:
+            print(
+                f"[rollout] {_n_cut}/{len(resp_ids)} trajectories 超过 max_response_tokens="
+                f"{max_response_tokens},已硬截断尾部(防 verl assert 崩训练,§28)",
+                flush=True,
+            )
     # rollout_log_probs is emitted only when EVERY row has a length-matched
     # logprob vector (verl consumes it as a dense [B, R] tensor -- a single
     # ragged row would misalign the whole batch). But dropping it silently
@@ -551,6 +573,7 @@ def make_cl_scheduler_manager_cls():
                 pad_token_id=pad_id,
                 observer_reports=observer_reports,
                 rewards=rewards,
+                max_response_tokens=self._max_total_response_tokens(),
             )
             # verl's fit() does `timing_raw.update(gen_output.meta_info["timing"])`
             # right after rollout (ray_trainer.py:1425) and the default

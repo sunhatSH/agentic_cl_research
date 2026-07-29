@@ -390,3 +390,29 @@ max_turns → 构造时 unexpected keyword 崩。第三次撞"自定义 key 塞�
 
 **修复:** 复用 verl 合法字段 max_assistant_turns=8(不再自造 key);代码 cl_rollout_manager 改为优先读
 multi_turn.max_assistant_turns、回退 max_turns、再回退 16。共性教训1 再次印证。
+
+
+## §28 超长序列(319663)撞 assert + SP2→4 + util0.6(2026-07-28~29)
+
+**症状:** 真实训练跑到 step 16(2 小时)崩:
+`AssertionError: max_token_len=40960 and max_seq_len=tensor(319663)`,崩在 compute_log_prob。
+
+**根因:** 某次 sandbox tool 输出巨大(cat 大文件 / ls -R / 循环打印),`obs_ids` 一次 extend
+就几万 token,整条 response 冲到 31 万。§24 的总长闸门是"当轮后"检查,挡不住"单次 tool
+输出就 31 万";且各 step response_length/max 普遍超 8192 闸门(step14 达 32037)。→ 撞 verl
+rearrange_micro_batches 的 assert,整个训练 rc=1 崩。
+
+**用户核心要求:** 正式训练【不该被调试 assert 崩】——超过就丢弃,不是 assert。assert 是
+调试用的,正式跑该丢弃超长。
+
+**修复(三层截断,让 verl 永远收不到超标序列 → assert 结构上不触发):**
+1. collect.py: 单次 tool 输出截断 max_obs_tokens=4096(治巨型 observation)。
+2. collect.py: 轨迹返回前【最终硬截断】整条 response 到 max_total_response_tokens(逐轮检查
+   的兜底,最后一轮完整保留仍可能略超)。
+3. cl_rollout_manager.trajectories_to_dataproto: 进 verl 前【再硬截断】每条 resp_ids/masks/
+   logprobs 到 max_response_tokens(=8192),同步截断保持对齐。这是最后一道防线。
+单测验证:5万token 巨型 tool 输出 + 319663 超长,两层都截到 8192,verl 收不到超标。
+
+**并行度调整(用户观察训练/推理都 95%):**
+- 推理 gpu_memory_utilization 0.7→0.6(降 rollout 阶段 KV 池)。
+- 训练 SP(ulysses)2→4 → DP 8→4(单卡序列切4段,训练激活减半)。16头%4=0、train_batch32%DP4=0。

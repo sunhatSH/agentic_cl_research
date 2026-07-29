@@ -98,6 +98,7 @@ def make_react_agent_fn(
     default_bucket: str | None = None,
     system_prompt: str | None = _REACT_SYSTEM_PROMPT,
     max_total_response_tokens: int | None = None,
+    max_obs_tokens: int | None = 4096,
 ):
     """Build an AgentFn for SessionSandboxPool that runs a native-collection ReAct loop.
 
@@ -167,6 +168,12 @@ def make_react_agent_fn(
                 break  # no tool call -> final answer
             tool, code = call
             obs, obs_ids = tool_exec(client, tool, code)
+            # Sandbox observation 单次截断(§28):一次 tool 输出可能是巨量 stdout(cat 大文件 /
+            # ls -R / 循环打印),无限 extend 会让整条 response 冲到几十万 token(实测 319663),
+            # 撞 verl rearrange_micro_batches 的 assert 崩整个训练。截到 max_obs_tokens。
+            if max_obs_tokens is not None and len(obs_ids) > max_obs_tokens:
+                obs_ids = obs_ids[:max_obs_tokens]
+                obs = obs[: max_obs_tokens * 4]  # 文本按 ~4 char/token 粗截,仅供 transcript
             # Use role='user' for sandbox observations (not role='tool').
             # OpenAI-compatible APIs require that 'tool' role messages follow
             # assistant messages with structured 'tool_calls'; our <toolcall>
@@ -185,6 +192,18 @@ def make_react_agent_fn(
 
         full_text = "\n".join(full_text_parts)
         bucket = parse_domain(full_text) or default_bucket
+
+        # 最终硬截断兜底(§28):即使上面逐轮检查,最后一轮的生成/observation 完整保留仍可能
+        # 略超预算;而 verl 的 assert 是"整条序列必须 <= max_token_len",超一点就崩。这里
+        # 无条件把整条 response 截到 max_total_response_tokens,保证交给 verl 的序列【绝不超标】,
+        # 那个 assert 结构上永不触发 —— 用【丢弃超长尾部】替代【assert 崩训练】(用户要求:
+        # 正式训练不该被调试断言崩掉,超过就丢弃)。三个并行数组同步截断以保持对齐。
+        if max_total_response_tokens is not None and len(all_resp_ids) > max_total_response_tokens:
+            _cut = max_total_response_tokens
+            all_resp_ids = all_resp_ids[:_cut]
+            all_logprobs = all_logprobs[:_cut]
+            response_mask = response_mask[:_cut]
+            _truncated_total = True
 
         # advance logical disk state (mock: agent may have written files)
         new_state = dict(state) if isinstance(state, dict) else {}
