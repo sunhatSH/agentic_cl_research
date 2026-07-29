@@ -66,6 +66,13 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: 1
     log_prob_max_token_len_per_gpu: 32768  # = max_token_length/SP,同 actor
     response_length: 65536              # 单次生成上限(与 data.max_response_length 一致)
+    agent:
+      # recipe_custom RolloutManager 读它构建 runner(hermes 沙箱 / single_turn)。
+      # 指向 gitignored exps/(含 e2b 凭证);dataset 的 agent_name 决定路由到哪个 runner。
+      agent_loop_config_path: exps/agent_loop_config.yaml
+      # 数据无 agent_name 字段 → 全批用这个默认 runner(rollout_manager.py:239 兜底)。
+      # 正式训练=hermes_agent(沙箱工具执行);先打通链路可临时改 single_turn_agent。
+      default_agent_loop: hermes_agent
     multi_turn:
       format: qwen3_coder
       reasoning_format: qwen3
