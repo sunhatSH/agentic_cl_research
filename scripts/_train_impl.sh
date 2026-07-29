@@ -74,19 +74,30 @@ export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
 export ROLLOUT_GPU_MEM_UTIL="$GPU_MEM_UTIL"
 export HF_DATASETS_CACHE="/tmp/hf_datasets_cache" HF_HOME="/tmp/hf_home"
 export VLLM_GDN_PREFILL_BACKEND="${VLLM_GDN_PREFILL_BACKEND:-triton}"
-# ── recipe_custom 原生 agent_loop 路线(迁移自自写 rollout,见 plan swift-juggling-toast)──
-# VERL_USE_EXTERNAL_MODULES=recipe_custom.bootstrap:加载 recipe_custom 的注册(lightllm replica、
-#   custom_language_model engine、Qwen3.5 GDN monkey_patch、omni reward、agent_loop 等)。
-#   这是让 Qwen3.5-9B 混合 GDN 结构能用 use_remove_padding+flash_attn3+长序列(65536) 的前提。
-# 其余照参考脚本 debug_rl_qwen35_9b.sh。${VAR:-} 保留可外部覆盖。
+# ══════════════════════════════════════════════════════════════════════════════
+# recipe_custom 原生 agent_loop 路线 env（迁移自自写 rollout；见 plan swift-juggling-toast /
+# debug §30）。所有值 ${VAR:-默认} 形式,可外部覆盖。env 三处来源分工：
+#   · 本区块          —— recipe_custom/verl 框架开关(下方,集中在此,不散落)
+#   · load_tencent_env —— 沙箱凭证 E2B_*/TENCENT_*(读 docker/sandbox/{tencent,image,runtime}.env)
+#   · load_training_env—— 训练凭证 SWANLAB/TOKENHUB(读 .env);judge 端点 REWARD_* 见下方 judge 段
+# ══════════════════════════════════════════════════════════════════════════════
+# (1) 加载 recipe_custom 注册:lightllm replica / custom_language_model engine / Qwen3.5 GDN
+#     monkey_patch(变长packed forward)/ omni reward / agent_loop。这是 Qwen3.5-9B 混合 GDN
+#     能用 remove_padding+flash_attn3+长序列(65536) 的前提。
 export VERL_USE_EXTERNAL_MODULES="${VERL_USE_EXTERNAL_MODULES:-recipe_custom.bootstrap}"
+export MODELING_BACKEND="${MODELING_BACKEND:-hf}"
+# (2) agent trace / transfer_queue(照参考脚本 debug_rl_qwen35_9b.sh)
 export VERL_AGENT_TRAINABLE_TRACE_TYPES="${VERL_AGENT_TRAINABLE_TRACE_TYPES:-agent,context_compression}"
 export VERL_FORCE_TQ_NESTED_READBACK="${VERL_FORCE_TQ_NESTED_READBACK:-1}"
-export RAY_DEDUP_LOGS="${RAY_DEDUP_LOGS:-1}"
-# lightllm 日志级别:默认 debug 会把 manager.py 的 "frozen token num / token used ratio"
-# 每秒刷屏(占 train.log ~70% 行数,无信息量)。改 info 以上,日志清爽、train.log 更小。
-# ${VAR:-info} 保留可外部覆盖(排障需要时临时设 debug)。
+# (3) 缓存 / 日志级别(降噪:lightllm/verl/TQ 的 debug 刷屏)
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/triton_cache}"
 export LIGHTLLM_LOG_LEVEL="${LIGHTLLM_LOG_LEVEL:-info}"
+export VERL_LOGGING_LEVEL="${VERL_LOGGING_LEVEL:-WARNING}"
+export TQ_LOGGING_LEVEL="${TQ_LOGGING_LEVEL:-WARNING}"
+export RAY_DEDUP_LOGS="${RAY_DEDUP_LOGS:-1}"
+# (4) e2b 沙箱:不校验 api_key 存在性(腾讯 e2b 兼容端点,E2B_API_KEY/E2B_DOMAIN 由 load_tencent_env
+#     从 docker/sandbox/tencent.env export,agent_loop_config.yaml 的 ${oc.env:E2B_*} 取用)
+export E2B_VALIDATE_API_KEY="${E2B_VALIDATE_API_KEY:-false}"
 # 注:不要开 PYTORCH_CUDA_ALLOC_CONF=expandable_segments —— 它与 lightllm 的
 # torch_memory_saver 互斥(报 "TorchMemorySaver is disabled ... expandable_segments
 # not supported"),会导致 lightllm 启动失败、整训练崩(见 debug doc §22)。
@@ -123,7 +134,8 @@ if [ "$SMOKE" = "1" ]; then
 else
   [ -f "$ROOT_DIR/scripts/env/load_training_env.sh" ] && { set -a; source "$ROOT_DIR/scripts/env/load_training_env.sh"; set +a; }
   [ -f "$ROOT_DIR/scripts/env/load_tencent_env.sh" ] && { set -a; source "$ROOT_DIR/scripts/env/load_tencent_env.sh"; set +a; }
-  export MODELING_BACKEND="${MODELING_BACKEND:-hf}"
+  # judge 端点权威来源 = configs/agents.yaml 的 reward 段(model_reward.py config-first 读它,
+  # 用 SUFY_API_KEY);env REWARD_* 仅 fallback。MODELING_BACKEND 已在上方集中区设,此处不重复。
 fi
 
 cd "$ROOT_DIR"
