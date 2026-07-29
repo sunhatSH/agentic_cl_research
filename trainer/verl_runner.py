@@ -494,7 +494,25 @@ class CLTaskRunner:
         )
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
-        trainer = RayPPOTrainer(
+        # 用 recipe_custom 的 RayPPOTrainerV1(继承标准 RayPPOTrainer,构造签名一致)。
+        # 它在 init_workers 里把 rollout 换成 recipe_custom 原生 agent_loop
+        # (RolloutManager) —— 从而 rollout 层交给 verl 处理(自动带 logprob、工具输出
+        # 截断、rollout_correction、Qwen3.5 GDN 变长打包),我们的 CL loss/buffer 注入
+        # 全部照旧(它用 DataProto、_update_actor(batch) 旧签名)。见 plan swift-juggling-toast。
+        # 回退:recipe_custom 不可用(off-cluster)时退回标准 RayPPOTrainer,保持本机可 import。
+        _TrainerCls = RayPPOTrainer
+        try:
+            from recipe_custom.ray_trainer_v1 import RayPPOTrainerV1
+
+            _TrainerCls = RayPPOTrainerV1
+            print("[cl] 使用 recipe_custom.RayPPOTrainerV1(原生 agent_loop rollout)", flush=True)
+        except Exception as exc:  # noqa: BLE001 -- recipe_custom absent off-cluster
+            print(
+                f"[cl] recipe_custom 不可用({exc}),回退标准 RayPPOTrainer(自写 rollout)",
+                flush=True,
+            )
+
+        trainer = _TrainerCls(
             config=config,
             tokenizer=tokenizer,
             processor=processor,

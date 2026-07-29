@@ -1,101 +1,85 @@
-# 16 卡 9B 定制训练配置（2 节点 × 8 卡）。
-# = b1_9b.yaml 同款 9B 引擎（沙箱 Hermes rollout + baseline 无 CL 防遗忘）+ 16 卡硬件覆盖。
+# 16 卡 9B 训练配置（2 节点 × 8 卡）——verl 原生 agent_loop 路线（2026-07-29 迁移）。
+# 从自写 rollout(cl_rollout_manager)迁到 recipe_custom 原生 agent_loop(RayPPOTrainerV1)。
+# 关键:Qwen3.5-9B 混合 GDN 结构【能】用 use_remove_padding+flash_attn3(verl 已实现 GDN 变长
+# packed forward,靠 VERL_USE_EXTERNAL_MODULES=recipe_custom.bootstrap + model_type=
+# custom_language_model),不再退回 sdpa/短序列。参考 debug_rl_qwen35_9b.sh(同为9B,已验证)。
+# 长度照搬参考(与卡数无关);并发按 16 卡换算(用户决策):SP=4→DP=4,batch 32×n8=256轨迹/step。
 #
-# 规模（用户 2026-07-23 确认）：
-#   train_batch=64 query × n8 = 512 轨迹/step；total_training_steps=500；save_freq=100
-#   max_prompt=2048（实测 max 708）；max_response=16384（实测冷启动轨迹 p90≈2.5-7K、max≈9K，
-#     16K 覆盖真实分布零截断；旧值 53886 来源不明且撞 OOM，已下调，见 debug §23）；
-#   micro=2（9B+56k序列+16卡；36d9881 试跑值）；ppo_mini=64（全 batch 单次更新）
-#
-# 启动：bash scripts/train_16gpu.sh --buckets --config configs/run/b1_9b_16gpu.yaml
+# 启动：bash scripts/train.sh 16gpu --config configs/run/b1_9b_16gpu.yaml
 
 defaults:
   - ../_generated_ppo_trainer
   - ../base
 
-# ── 模型（Qwen3.5-9B）──────────────────────────────────────────────────────────
+# ── 模型（Qwen3.5-9B，开 remove_padding + flash_attn3 变长打包）──────────────────
 actor_rollout_ref:
   model:
     path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
-    use_fused_kernels: false
+    use_remove_padding: true            # 变长打包:GDN 层走 packed forward(cu_seqlens),full-attn 走 FA3 varlen
+    use_fused_kernels: true             # fused CE loss 等 kernel(配合 remove_padding)
     override_config:
-      attn_implementation: sdpa
+      attn_implementation: flash_attention_3
+      model_type: custom_language_model # → CustomFSDPEngineWithLMHead(recipe_custom,支持 GDN 变长+路由重放)
 
-  # ── 训练引擎（16 GPU FSDP, micro=2）─────────────────────────────────────────
+  # ── 训练引擎（16 GPU FSDP2, SP=4 → DP=4）─────────────────────────────────────
   actor:
-    strategy: fsdp
+    strategy: fsdp2                     # 参考脚本用 fsdp2(长序列131K内存管理更优);配 remove_padding
     use_kl_loss: false
     kl_loss_coef: 0.0
     entropy_coeff: 0.001
+    use_torch_compile: false
+    clip_ratio_low: 0.2                 # 参考脚本 PPO clip(信任域);logprob 已带回,clip 真正生效
+    clip_ratio_high: 0.28
+    clip_ratio_c: 10.0
     optim:
-      lr: 2.0e-6                          # 峰值 lr(warmup 从0线性爬到此)
-      # 峰值 lr 2e-6(比 1e-6 更有学习动力,仍在 9B RL 微调保守~中档区间)。
-      # warmup:前 3% step 从 0 线性升到峰值(500 步→前~15 步),step0≈0、step15=2e-6。
-      # RL 早期梯度方差大 + 自定义 rollout/reward 首批分布未稳,warmup 抵消提 lr 的早期
-      # 跑飞风险。warmup 后 constant(不衰减)——防遗忘场景后期新桶仍需学得动。
-      # 优化器默认 AdamW(FP32 态)。若评测发现遗忘偏重可回调 lr(看曲线定)。
+      lr: 2.0e-6                        # 9B 峰值 lr(warmup 前3% step 0→2e-6,后 constant)
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
-    ppo_mini_batch_size: 32             # 对齐 train_batch=32(减半;32%DP8=0)
-    # ── 变长打包 + 整条轨迹总长治理(2026-07-28,仅 b1 先试)──────────────────────
-    # use_dynamic_bsz=true:micro-batch 按每条【实际长度】(attention_mask.sum())打包到
-    #   token 预算,而非按固定条数 pad。数据短则真省激活显存。核心:
-    #   verl/utils/seqlen_balancing.py::rearrange_micro_batches。
-    # ⚠️ 风险(需集群验证):dynamic 路径走 NO_PADDING(变长/nested 张量,engine/utils.py:110
-    #   assert),通常伴 flash-attn varlen;而本模型 use_remove_padding=false(混合 GatedDeltaNet
-    #   开不了 flash-attn,见 §20)。兼容性本机无法验,若报 nested/varlen 相关错则回退
-    #   use_dynamic_bsz=false。先只在 b1 试,其余 17 个维持 false。
-    # ⚠️ token 预算约束(§24 教训):必须 ≥ batch 内最坏序列长度,否则 rearrange_micro_batches
-    #   的 assert(max_token_len >= max_seq_len)会崩。首跑就崩在这:多轮 ReAct 整条 response
-    #   实测累积到 52758(max_response_length 只管单次生成,不管整条累积)。
-    #   已在 rollout 端(collect.py make_react_agent_fn)加整条 response 总长闸门=
-    #   data.max_response_length(16384),但闸门是"当轮后检查",最后一轮完整保留 →
-    #   最坏 response = 16384(闸门) + 16384(末轮单次上限) = 32768,+prompt2048 = 34816。
-    #   故 token 预算须 ≥ 34816;取 40960 留余量。dynamic_bsz 下预算大≠激活大(激活按真实
-    #   长度 + gradient_checkpointing 走),故设大只为不撞 assert,不额外吃显存。
-    use_dynamic_bsz: true
-    ppo_micro_batch_size_per_gpu: 1     # dynamic_bsz=true 时被忽略(改由 token 预算切 micro)
-    ppo_max_token_len_per_gpu: 20480    # 单 micro-batch token 上限 = dynamic_bsz 激活主旋钮。
-                                        # ≥ 最坏序列 18432(prompt2048+闸门8192+末轮8192)。response 回 8K。
-    ulysses_sequence_parallel_size: 4   # SP=4 → DP=4（16卡÷4）。单卡训练序列切4段→激活减半,
-                                        # 降训练阶段显存(用户观察训练也 95%)。16头%4=0、train_batch32%DP4=0。
-                                        # 代价:DP 8→4,每步梯度同步组变小。
+    ppo_mini_batch_size: 32             # =train_batch(全 batch 单次更新);内部 ×n8=256 轨迹 % DP4=0
+    use_dynamic_bsz: true               # 变长打包:按实际 token 数切 micro(配 remove_padding)
+    # ppo_max_token_len = max_token_length / SP = 131072 / 4 = 32768(参考脚本同法)。
+    # remove_padding+变长下这是单卡 micro-batch 的 token 预算,激活按真实长度算。超长由 rollout 端
+    # max_tool_response_length 截断,不会撞 assert(见 §28 教训,现由 verl 原生处理)。
+    ppo_max_token_len_per_gpu: 32768
+    ulysses_sequence_parallel_size: 4   # SP=4 → DP=16÷4=4。16头%4=0;单卡序列切4段降激活
     fsdp_config:
       param_offload: true
       optimizer_offload: true
+      reshard_after_forward: true
+      model_dtype: bfloat16
 
-  # ── rollout：沙箱 Hermes（lightllm 后端，TP2）────────────────────────────────
+  # ── rollout：recipe_custom 原生 agent_loop（lightllm 后端，TP2）─────────────────
+  # 注:不再设 agent.agent_loop_manager_class —— RayPPOTrainerV1.init_workers 会强制设为
+  # recipe_custom.agent_loop.rollout_manager.RolloutManager(原生 agent_loop)。自写的
+  # trainer.cl_rollout_manager 不再使用(logprob/工具截断/契约由 verl 原生处理)。
   rollout:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.6         # lightllm KV 池显存上限比例(0.7→0.6,降 rollout 阶段显存压力)。
-                                        # 训练时 lightllm sleep 让出;256 并发下 KV 池 0.6 够(并发已从 512 减半)。
+    gpu_memory_utilization: 0.75        # 照搬参考(remove_padding 训练省显存,rollout 可给 KV 池更多)
     n: 8
     load_format: auto
-    max_model_len: 65536
-    max_num_batched_tokens: 8192
+    max_model_len: 131072               # = max_token_length(prompt8196+response65536+余量)
+    max_num_batched_tokens: 6144        # 照搬参考
     enable_chunked_prefill: false
-    calculate_log_probs: true
+    calculate_log_probs: true           # rollout 带回 logprob → old_log_prob(PPO clip/ppo_kl 生效)
     log_prob_micro_batch_size_per_gpu: 1
-    agent:
-      agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
+    log_prob_max_token_len_per_gpu: 32768  # = max_token_length/SP,同 actor
+    response_length: 65536              # 单次生成上限(与 data.max_response_length 一致)
     multi_turn:
-      enable: false
       format: qwen3_coder
       reasoning_format: qwen3
-      max_assistant_turns: 8   # ReAct 多轮上限=8(16→8 提速,砍长尾)。verl MultiTurnConfig 的合法字段;
-                               # 代码(cl_rollout_manager)读它作 max_turns。不要加自造的 max_turns 键——
-                               # multi_turn 段是 verl 严格 dataclass,非法 key 会 TypeError(§21/§27)。
+      max_assistant_turns: 8            # ReAct 多轮上限
+      max_tool_response_length: 16384   # ★ 单次工具输出截断(治 §28 那个31万token:verl原生处理)
     checkpoint_engine:
-      update_weights_bucket_megabytes: 2048
+      update_weights_bucket_megabytes: 3072
     engine_kwargs:
       lightllm:
-        batch_max_tokens: 8192
+        batch_max_tokens: 6144
         enable_multimodal: false
         enable_torch_memory_saver: true
-        graph_max_batch_size: 512       # 配合 512 并发
-        running_max_req_size: 512       # 推理端一次并发上限=512
+        graph_max_batch_size: 256       # 配合 256 并发
+        running_max_req_size: 256       # 推理端一次并发上限=256(=train_batch32×n8)
         sampling_backend: triton
         disable_vision: true
         disable_audio: true
@@ -112,32 +96,36 @@ reward:
       name: vllm
 
 # ── 数据 ──────────────────────────────────────────────────────────────────────
-# 单轮化（2026-07-23）：训练数据 = queries_train.jsonl 转的 parquet（scripts/queries_to_parquet.py）。
-# 每个 query 一条轨迹（单轮），按桶配额采样（小桶全取、大桶截断 per-bucket-cap=3600）。
-# baseline 无 CL 防遗忘，shuffle=false 按桶序训（可测遗忘）。
+# 单轮化:每 query 一条轨迹,按桶配额采样。baseline shuffle=false 按桶序训(可测遗忘)。
+# 长度照搬参考脚本(与卡数无关):prompt 8196 / response 65536(remove_padding 变长打包能扛)。
 data:
   train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
   val_files: null
-  train_batch_size: 32                # 32 query/step × n8 = 256 轨迹/step(减半:降显存/加速)
+  train_batch_size: 32                # 32 query/step × n8 = 256 轨迹/step
   gen_batch_size: 32
-  max_prompt_length: 2048
-  max_response_length: 8192          # 整条 response 闸门 = 8192(单次生成也 8192,见 cl.rollout)。
-                                      # 最坏序列=prompt2048+闸门8192+末轮8192=18432<budget20480,不撞 assert。
-  shuffle: false                     # 按文件序（桶序排列）训，保证按桶顺序 → 可测遗忘
+  max_prompt_length: 8196
+  max_response_length: 65536          # 整条 response 上限(变长打包,不再需三层截断硬扛)
+  shuffle: false                     # 按文件序（桶序排列）训 → 可测遗忘
   return_raw_chat: true
   filter_overlong_prompts: true
   trust_remote_code: true
   dataloader_num_workers: 4
   cache_dir: /tmp/verl_rlhf_cache
 
+# ── 算法：rollout/训练 policy 的 IS 修正(处理 old_log_prob≠rollout_log_prob)──────────
+algorithm:
+  adv_estimator: grpo
+  rollout_correction:
+    rollout_is: token                 # token 级 importance sampling 修正(参考脚本同)
+    rollout_is_threshold: 2.0
+
 # ── baseline 语义（无 KL、无 replay/buffer）──────────────────────────────────────
+# 注:cl.rollout.sessions_per_step / max_single_gen_tokens 已删——那是自写 rollout
+# (cl_rollout_manager)的参数,迁到原生 agent_loop 后不再读。并发由 rollout 段的
+# running_max_req_size + train_batch×n 决定。CL loss/buffer 语义仍由 cl 段驱动。
 cl:
   lambda_replay: 0.0
-  replay_batch_size: 32           # 回放量减半 64→32(跟随 train_batch 减半)。b1 buffer 关,当前不生效;
-                                  # R 系列继承本值时按减半后的回放比。base.yaml 全局仍 64,只覆盖 b1。
-  rollout:
-    sessions_per_step: 256          # rollout 并发(采样量)256=train_batch32×n8(减半)。verl 不解析 cl 段。
-    max_single_gen_tokens: 8192     # 【单次】LLM 生成上限(§26 解耦字段保留);当前=整条闸门 8192。
+  replay_batch_size: 32           # 回放量(b1 buffer 关不生效;R 系列继承)。base 全局仍 64,只覆盖 b1。
   buffer:
     enabled: false
 

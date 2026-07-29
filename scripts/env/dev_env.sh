@@ -19,7 +19,7 @@
 set -euo pipefail
 
 _ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-_VERL_DIR="/mnt/afs_toolcall/sunhao4/workspace/verl"
+_VERL_DIR="/mnt/afs_toolcall/sunhao4/dependencies/verl"
 _LIGHTLLM_DIR="/mnt/afs_toolcall/sunhao4/workspace/LightLLM"
 
 # 校验源码在位（AFS 没挂载时给出明确提示，而不是静默设个坏路径）

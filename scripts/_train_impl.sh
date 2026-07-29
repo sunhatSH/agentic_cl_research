@@ -18,7 +18,7 @@ GPU_MEM_UTIL=0.75
 CUDA_DEVICES=""
 EXP_NAME=""
 VENV="/opt/conda"
-VERL_DIR="/mnt/afs_toolcall/sunhao4/workspace/verl"
+VERL_DIR="/mnt/afs_toolcall/sunhao4/dependencies/verl"
 LIGHTLLM_DIR="/mnt/afs_toolcall/sunhao4/workspace/LightLLM"
 SMOKE=0
 BUCKETS=0
@@ -74,6 +74,15 @@ export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
 export ROLLOUT_GPU_MEM_UTIL="$GPU_MEM_UTIL"
 export HF_DATASETS_CACHE="/tmp/hf_datasets_cache" HF_HOME="/tmp/hf_home"
 export VLLM_GDN_PREFILL_BACKEND="${VLLM_GDN_PREFILL_BACKEND:-triton}"
+# ── recipe_custom 原生 agent_loop 路线(迁移自自写 rollout,见 plan swift-juggling-toast)──
+# VERL_USE_EXTERNAL_MODULES=recipe_custom.bootstrap:加载 recipe_custom 的注册(lightllm replica、
+#   custom_language_model engine、Qwen3.5 GDN monkey_patch、omni reward、agent_loop 等)。
+#   这是让 Qwen3.5-9B 混合 GDN 结构能用 use_remove_padding+flash_attn3+长序列(65536) 的前提。
+# 其余照参考脚本 debug_rl_qwen35_9b.sh。${VAR:-} 保留可外部覆盖。
+export VERL_USE_EXTERNAL_MODULES="${VERL_USE_EXTERNAL_MODULES:-recipe_custom.bootstrap}"
+export VERL_AGENT_TRAINABLE_TRACE_TYPES="${VERL_AGENT_TRAINABLE_TRACE_TYPES:-agent,context_compression}"
+export VERL_FORCE_TQ_NESTED_READBACK="${VERL_FORCE_TQ_NESTED_READBACK:-1}"
+export RAY_DEDUP_LOGS="${RAY_DEDUP_LOGS:-1}"
 # lightllm 日志级别:默认 debug 会把 manager.py 的 "frozen token num / token used ratio"
 # 每秒刷屏(占 train.log ~70% 行数,无信息量)。改 info 以上,日志清爽、train.log 更小。
 # ${VAR:-info} 保留可外部覆盖(排障需要时临时设 debug)。
