@@ -438,3 +438,42 @@ clipfrac=0。PPO 的信任域裁剪【实际失效】,退化成 vanilla policy g
 **审查副产:** 本 session 的三层截断(§28)经单测确认未引入对齐漏洞——所有场景 resp_ids==
 response_mask(不等才会崩训练);reward 写 rm_scores[rlen-1] 用截断后 rlen,位置自动跟随不越界。
 logprob 错位是本节根因(预先存在),非截断引入。
+
+
+## §30 大迁移:自写 rollout → verl 原生 agent_loop(recipe_custom, 2026-07-29)
+
+**动机:** §22-§29 一连串崩溃(超长 assert、logprob 缺失致 ppo_kl=0、OOM)的病根都在自写 rollout
+(cl_rollout_manager+collect.py)产出的数据质量。verl 原生/recipe_custom 的 agent_loop 全处理好了。
+
+**关键认知(推翻 §20):** Qwen3.5-9B 混合 GatedDeltaNet 结构【能】用 use_remove_padding+
+flash_attention_3+dynamic_bsz。verl 已为它实现 GDN 变长(packed)forward
+(verl/models/transformers/qwen3_5.py + recipe_custom/models/transformers/qwen3_5.py),GDN 层
+用 cu_seqlens+_packed_chunk_gated_delta_rule,full-attn 层走 FA3 varlen。前提是开
+VERL_USE_EXTERNAL_MODULES=recipe_custom.bootstrap + model_type=custom_language_model。这就是
+参考脚本(debug_rl_qwen35_9b.sh,同为9B)能 max_response=65536 而我们只能 8192 的原因——我们
+之前退回了 sdpa+关 remove_padding。
+
+**迁移(RayPPOTrainerV1 桥接,CL 注入不改):**
+- VERL_DIR → dependencies/verl(GitLab dev-0.8.0)。
+- trainer 换 recipe_custom.ray_trainer_v1.RayPPOTrainerV1(继承标准 RayPPOTrainer,用 DataProto,
+  init_workers 把 rollout 换成原生 agent_loop RolloutManager)。CL loss(set_loss_fn)+buffer hook
+  (_update_actor patch)照旧。
+- 引擎:remove_padding+fused_kernels+flash_attn3+custom_language_model+fsdp2+dynamic_bsz;
+  SP=4→DP=4;长度 8196/65536/131072;ppo_max_token=131072/4=32768;rollout_correction.rollout_is=token。
+- 沙箱:exps/agent_loop_config.yaml 的 hermes_agent runner(template=agentic-cl-sandbox 自己的镜像);
+  项目本就用 hermes(collect.py make_hermes_agent_fn),与 recipe_custom HermesHarness 同源。
+- 数据:不转格式。标准 RLHFDataset 消费现有 parquet;default_agent_loop=hermes_agent 兜底 agent_name;
+  add_reward_fn.py 给 reward_model 补 reward_fn。
+- reward:保留 omni 壳,实际 judge 仍是项目 model_reward.py(端点/模型不变),model_reward_omni.py 适配
+  omni 调用约定;reward_fn={"_function_name":"trainer.model_reward_omni.compute_score"}。
+
+**超长处理(禁 assert,§28 诉求):** verl 原生 max_tool_response_length=16384 截工具输出;
+remove_padding+dynamic_bsz 变长打包,ppo_max_token 只需 ≥ 单卡最长(131072/4=32768),不撞
+seqlen_balancing assert。
+
+**b1 层面 CL 状态:** buffer.enabled=false+lambda_replay=0 → buffer/replay 本就不运行(遗忘下界);
+CL loss 走 no_replay 分支。R 系列(buffer.enabled=true)跑前需适配 extract_trajectories_from_batch
+——原生 agent_loop non_tensor_batch 无 messages/bucket 字段。
+
+**待集群验证:** 镜像能否被 HermesHarness 驱动;e2b 凭证/template;端到端 ppo_kl 非0/reward有差异/
+不 OOM 不 assert。commit f72d3de(阶段1)/1b1a7e4(阶段2)/27d5e45(阶段3)。
