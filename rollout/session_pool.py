@@ -109,7 +109,7 @@ def _default_sync(slots: list[_Slot], winner_state: Any) -> None:
 class SessionSandboxPool:
     def __init__(
         self,
-        master_template: str = "agentic-cl-code-interpreter",
+        master_template: str = "agentic-cl-sandbox",
         slots: int = 8,
         *,
         backend: str = "local",

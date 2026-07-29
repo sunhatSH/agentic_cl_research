@@ -7,8 +7,12 @@
   "NetworkConfiguration": {
     "NetworkMode": "VPC",
     "VpcConfig": {
-      "SubnetIds": ["subnet-ljfuh7ln"],
-      "SecurityGroupIds": ["sg-irz5h5ed"]
+      "SubnetIds": [
+        "subnet-ljfuh7ln"
+      ],
+      "SecurityGroupIds": [
+        "sg-irz5h5ed"
+      ]
     }
   },
   "RoleArn": "qcs::cam::uin/100048510516:roleName/AgentOS-260506-test",

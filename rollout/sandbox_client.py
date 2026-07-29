@@ -139,7 +139,7 @@ class E2BSandbox:
     on 2026-06-26 (see doc/sandbox/Sandbox_规格与run_code踩坑.md §四).
     """
 
-    def __init__(self, template: str = "agentic-cl-code-interpreter", timeout: int = 600):
+    def __init__(self, template: str = "agentic-cl-sandbox", timeout: int = 600):
         import os
 
         api_key = os.environ.get("E2B_API_KEY")
@@ -251,7 +251,7 @@ register_backend("local", lambda **kw: LocalSandbox(timeout=kw.get("timeout", 30
 register_backend(
     "e2b",
     lambda **kw: E2BSandbox(
-        template=kw.get("template", "agentic-cl-code-interpreter"),
+        template=kw.get("template", "agentic-cl-sandbox"),
         timeout=kw.get("timeout", 300),
     ),
 )

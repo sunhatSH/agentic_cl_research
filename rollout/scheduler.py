@@ -40,7 +40,7 @@ class RolloutScheduler:
         sessions_per_step: int = 16,
         slots: int = 8,
         backend: str = "local",
-        master_template: str = "agentic-cl-code-interpreter",
+        master_template: str = "agentic-cl-sandbox",
         pool_factory: Callable[..., SessionSandboxPool] | None = None,
         max_session_workers: int | None = None,
         seed: int = 0,
