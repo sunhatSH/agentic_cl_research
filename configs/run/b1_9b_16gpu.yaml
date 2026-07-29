@@ -97,6 +97,12 @@ actor_rollout_ref:
       param_offload: true
 
 reward:
+  # omni RewardManager(recipe_custom):从每条数据 reward_model.reward_fn 取打分函数。
+  # 我们的 reward_fn={"_function_name":"trainer.model_reward_omni.compute_score"}(已由
+  # scripts/add_reward_fn.py 写进 parquet),omni 直接 import 该 fqdn → 转发到项目 LLM judge
+  # (trainer/model_reward.py),observer diff 经 extra_info["observer_report"] 传入(保留§16取证链)。
+  reward_manager:
+    name: omni
   reward_model:
     enable: false
     rollout:
