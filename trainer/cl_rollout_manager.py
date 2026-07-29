@@ -341,6 +341,12 @@ def make_cl_scheduler_manager_cls():
                     # 单次生成上限,与整条闸门解耦(§26):读 cl.rollout.max_single_gen_tokens,
                     # 缺省回退 response_length。压小单次 → 压低最坏序列末轮项 → 省 budget/激活。
                     "max_tokens": self._max_single_gen_tokens(),
+                    # ★ 请求 rollout logprob(§29):verl lightllm client 从 sampling_params["logprobs"]
+                    # 读是否返回 logprob(async_lightllm_server.py:220 .pop("logprobs",False)),默认 False。
+                    # 之前没传 → 每步 log_probs=None → 整批 drop → verl 重算 old_log_prob → old==new →
+                    # ppo_kl=0、clipfrac=0(PPO clip 实际失效,退化成 vanilla PG)。设 True 让 rollout
+                    # 带回逐 token logprob(server 里 token_id 与 logprob 同循环 append,长度天然对齐)。
+                    "logprobs": True,
                 },
             )
             agent_fn = make_react_agent_fn(

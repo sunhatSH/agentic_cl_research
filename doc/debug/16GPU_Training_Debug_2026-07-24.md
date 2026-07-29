@@ -416,3 +416,25 @@ rearrange_micro_batches 的 assert,整个训练 rc=1 崩。
 **并行度调整(用户观察训练/推理都 95%):**
 - 推理 gpu_memory_utilization 0.7→0.6(降 rollout 阶段 KV 池)。
 - 训练 SP(ulysses)2→4 → DP 8→4(单卡序列切4段,训练激活减半)。16头%4=0、train_batch32%DP4=0。
+
+
+## §29 ppo_kl/clipfrac 全 0:rollout 没请求 logprob(2026-07-29)
+
+**现象:** 首次真实训练 16 step,actor/ppo_kl 和 actor/pg_clipfrac 全程恒 0。日志每步
+"256/256 dropping rollout_log_probs → verl recompute old_log_prob"(批级 drop 17 次)。
+
+**根因(源码确认,非推断):** verl lightllm client `generate()` 从 `sampling_params.pop("logprobs",
+False)` 读是否返回 logprob(async_lightllm_server.py:220),默认 False。我们自定义 rollout 的
+sampling_params 只有 {temperature, max_tokens},没传 logprobs → server 返回 log_probs=None →
+generate.py 拿到 [] → 每步空 → cl_rollout_manager 的 _mismatched 检测到 len(logprob)!=len(resp)
+→ drop 整批 → verl 用当前策略重算 old_log_prob → old==new → ratio=exp(0)=1 → ppo_kl=0、
+clipfrac=0。PPO 的信任域裁剪【实际失效】,退化成 vanilla policy gradient(不崩,reward 仍涨,
+但失去 PPO 稳定性保护,是隐患)。
+注:config 的 rollout.calculate_log_probs:true 是 verl 训练侧开关,不影响我们自定义 rollout 的请求。
+
+**修复:** cl_rollout_manager sampling_params 加 "logprobs": True。server 里 token_id 与 logprob
+同循环 append(async_lightllm_server.py:277-278),长度天然对齐,不会引入 mismatch。零风险。
+
+**审查副产:** 本 session 的三层截断(§28)经单测确认未引入对齐漏洞——所有场景 resp_ids==
+response_mask(不等才会崩训练);reward 写 rm_scores[rlen-1] 用截断后 rlen,位置自动跟随不越界。
+logprob 错位是本节根因(预先存在),非截断引入。
