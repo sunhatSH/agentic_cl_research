@@ -74,6 +74,10 @@ export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
 export ROLLOUT_GPU_MEM_UTIL="$GPU_MEM_UTIL"
 export HF_DATASETS_CACHE="/tmp/hf_datasets_cache" HF_HOME="/tmp/hf_home"
 export VLLM_GDN_PREFILL_BACKEND="${VLLM_GDN_PREFILL_BACKEND:-triton}"
+# lightllm 日志级别:默认 debug 会把 manager.py 的 "frozen token num / token used ratio"
+# 每秒刷屏(占 train.log ~70% 行数,无信息量)。改 info 以上,日志清爽、train.log 更小。
+# ${VAR:-info} 保留可外部覆盖(排障需要时临时设 debug)。
+export LIGHTLLM_LOG_LEVEL="${LIGHTLLM_LOG_LEVEL:-info}"
 # 注:不要开 PYTORCH_CUDA_ALLOC_CONF=expandable_segments —— 它与 lightllm 的
 # torch_memory_saver 互斥(报 "TorchMemorySaver is disabled ... expandable_segments
 # not supported"),会导致 lightllm 启动失败、整训练崩(见 debug doc §22)。

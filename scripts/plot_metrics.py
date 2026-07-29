@@ -154,12 +154,29 @@ def main():
     cols = numeric_cols(df)
     print(f"读入 {len(df)} step, {len(cols)} 个数值指标 → {outdir}")
 
-    # 中文标题字体(缺失则回退,不报错)
-    try:
-        plt.rcParams["font.sans-serif"] = ["Noto Sans CJK SC", "SimHei", "DejaVu Sans"]
-        plt.rcParams["axes.unicode_minus"] = False
-    except Exception:
-        pass
+    # 中文标题字体:主动注册 ~/.fonts 下的中文字体(集群无外网,SimHei 已在 ~/.fonts),
+    # 再设为默认 sans-serif。缺失则回退 DejaVu(英文正常,中文显方框,不报错)。
+    import os as _os
+    import matplotlib.font_manager as _fm
+
+    _zh_name = None
+    for _fp in (
+        _os.path.expanduser("~/.fonts/simhei.ttf"),
+        _os.path.expanduser("~/.local/share/fonts/simhei.ttf"),
+    ):
+        if _os.path.exists(_fp):
+            try:
+                _fm.fontManager.addfont(_fp)
+                _zh_name = _fm.FontProperties(fname=_fp).get_name()
+                break
+            except Exception:
+                pass
+    plt.rcParams["font.sans-serif"] = ([_zh_name] if _zh_name else []) + [
+        "Noto Sans CJK SC",
+        "WenQuanYi Zen Hei",
+        "DejaVu Sans",
+    ]
+    plt.rcParams["axes.unicode_minus"] = False
 
     # 1) 关键指标总览
     plot_overview(df, outdir / "00_overview.png")
