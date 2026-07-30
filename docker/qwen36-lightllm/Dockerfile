@@ -81,6 +81,14 @@ RUN python -c "import flashinfer" 2>/dev/null \
     && echo "[docker] flashinfer already present in base image, skip" \
     || { echo "[docker] flashinfer missing, installing flashinfer-python"; \
          python -m pip install flashinfer-python; }
+# flashinfer-cubin：预编译 cubin 二进制（配套包），提前备好消除首次运行的 kernel 编译/下载开销。
+# 【尽力装、不致命】：装不上大不了首次运行慢点，不该 block 构建（core 包 flashinfer-python 才是必需）。
+# 探测用 importlib.metadata（cubin 无独立 import 名，装在 flashinfer 命名空间下的数据包）。
+RUN python -c "import importlib.metadata as m; m.version('flashinfer-cubin')" 2>/dev/null \
+    && echo "[docker] flashinfer-cubin already present, skip" \
+    || { echo "[docker] installing flashinfer-cubin (预编译 kernel 加速首次运行, 失败不致命)"; \
+         python -m pip install flashinfer-cubin \
+         || echo "[docker] flashinfer-cubin install failed (非致命, 首次运行会即时编译/下载 kernel)"; }
 
 # ---- 构建期自检：关键训练依赖 import + 版本对齐 ----
 # 任一不满足直接 build 失败，避免推出缺依赖的镜像。
