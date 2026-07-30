@@ -40,6 +40,11 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
     cl = cfg.get("cl", {}) or {}
     lambda_replay = float(cl.get("lambda_replay", 0.0))
     replay_batch_size = int(cl.get("replay_batch_size", 512))
+    # replay_ratio: 新:旧 的比值（默认 5 → 每 5 条新轨迹配 1 条回放，占比恒定 1/6）。
+    # >0 时回放量按【本 step 实际新轨迹数】动态算 ceil(new / ratio)，不再用固定 replay_batch_size，
+    # 使回放随新数据等比缩放——新轨迹因沙箱失败缩水时回放同步缩小，占比不漂移（见 RunLog 2026-07-30）。
+    # <=0 时退回旧行为（固定 replay_batch_size）。replay_batch_size 仍作为上限兜底。
+    replay_ratio = float(cl.get("replay_ratio", 5.0))
     replay_warmup_size = int(cl.get("replay_warmup_size", 0))
     stats_log_freq = int(cl.get("buffer_stats_log_freq", 1))
     forgetting_update_freq = int(cl.get("forgetting_update_freq", 1))
@@ -73,8 +78,20 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
 
         # ── 1. PRE：从 9桶 buffer 采旧桶 winner，掺进 tq + 合并 KVBatchMeta ──
         if lambda_replay > 0:
+            # 回放量：replay_ratio>0 时按【本 step 实际新轨迹数】动态算 ceil(new/ratio)，
+            # 新轨迹数 = 非 padding 行数（掺入前的 rl_batch）。否则退回固定 replay_batch_size。
+            eff_replay = replay_batch_size
+            if replay_ratio > 0:
+                new_count = sum(
+                    not tag.get("is_padding", False) for tag in getattr(rl_batch, "tags", []) or []
+                )
+                # ceil(new_count / ratio)，整数除法实现，避免 import math
+                eff_replay = -(-new_count // int(replay_ratio)) if new_count > 0 else 0
+                # replay_batch_size 作上限兜底（buffer 再大也不超它）
+                if replay_batch_size > 0:
+                    eff_replay = min(eff_replay, replay_batch_size)
             replay_rows = prepare_replay_rows(
-                buffer, weighting, tokenizer, replay_batch_size, warmup_size=replay_warmup_size
+                buffer, weighting, tokenizer, eff_replay, warmup_size=replay_warmup_size
             )
             if replay_rows:
                 shuffle_seed = int(getattr(trainer, "global_steps", 0) or 0)
