@@ -72,6 +72,16 @@ RUN python -m pip install \
 # numpy<2.0：verl setup.py / requirements.txt 硬要求 numpy<2.0.0（numpy 2.x 与旧 torch/
 # verl 链路不兼容）。泽寰 base 装 verl 时已满足；显式 pin 兜底，防后续包把 numpy 拉到 2.x。
 
+# ---- flashinfer（lightllm rollout sampling_backend=flashinfer 运行时依赖）----
+# configs/run/*.yaml 的 rollout.engine_kwargs.lightllm.sampling_backend=flashinfer（对齐参考脚本
+# debug_rl_qwen35_9b.sh）。泽寰 base 镜像理论已带（参考脚本同栈跑通），但 base 若缺则 lightllm 起
+# 采样时才 ImportError → 整训练崩。这里先探测 import，缺失才装 pip 包（flashinfer-python），
+# 已有则跳过（不覆盖 base 版本，避免与泽寰栈冲突）。
+RUN python -c "import flashinfer" 2>/dev/null \
+    && echo "[docker] flashinfer already present in base image, skip" \
+    || { echo "[docker] flashinfer missing, installing flashinfer-python"; \
+         python -m pip install flashinfer-python; }
+
 # ---- 构建期自检：关键训练依赖 import + 版本对齐 ----
 # 任一不满足直接 build 失败，避免推出缺依赖的镜像。
 # 注：verl 本体是定制版，在 /mnt/afs 挂载进容器，不在镜像里——自检跳过 verl 本体 import，
@@ -106,6 +116,10 @@ print("[selfcheck] transformers qwen3_5 + Mistral OK")
 # --- 3. fla 可 import（Qwen3.6 GDN kernel）---
 import fla  # noqa: F401
 print("[selfcheck] fla import OK")
+
+# --- 3a. flashinfer 可 import（lightllm rollout sampling_backend=flashinfer）---
+import flashinfer  # noqa: F401
+print("[selfcheck] flashinfer import OK", getattr(flashinfer, "__version__", "?"))
 
 # --- 3b. OmegaConf 能把 logger 字面 list 正常 resolve（复刻 verl_runner 流程）---
 # configs/*.yaml 的 trainer.logger 是字面 [console, swanlab]；旧 omegaconf resolve 对

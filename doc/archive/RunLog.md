@@ -1348,3 +1348,193 @@ sessions_per_step 是我方 cl_rollout_manager 读的,不是 verl 字段。
   都安全(非字段返回默认,不崩)。
 
 本机 pytest 通过。18 config 一致:agent.num_workers=512。
+
+---
+
+## 2026-07-29 迁移:自写 rollout → verl 原生 main_ppo + custom_sync(recipe_custom)
+
+### 背景
+本 session 训练一路崩(§22-§29),病根=自写 rollout(cl_rollout_manager+collect.py,~6000行)
+数据质量(超长 assert/漏 logprob/激活爆显存)。用户已单轮化、无 Questioner → 全量切 verl
+原生 agent_loop。对齐参考脚本 debug_rl_qwen35_9b.sh(同 Qwen3.5-9B 已验证):
+`python -m verl.trainer.main_ppo` + use_v1 + trainer_mode=custom_sync + RemoteAgentLoopManager。
+
+### 关键更正(推翻上一版 f72d3de~27d5e45)
+上一版用 RayPPOTrainerV1 桥接 + 默认 RolloutManager —— 错。默认 manager 跑的是 ToolAgentLoop
+(本地 tool),非沙箱 harness。E2BAgentRunner/HermesHarness/gateway 反向隧道那套活代码的入口
+是 RemoteAgentLoopManager,必须显式配 agent_loop_manager_class。已回退覆盖。
+
+### 六阶段(本机能验全绿:354 单测无回归 / config 全解析 / 真 tq KVBatchMeta.concat 冒烟)
+- A 入口:verl_runner.py 新增 CLTaskRunnerV1(复刻 verl TaskRunnerV1 三步 init→
+  init_agent_loop_manager→fit,init 后 fit 前注入 CL);run_cl_ppo 改调 main_ppo.run_ppo(
+  task_runner_class=CLTaskRunnerV1)。_generated_ppo_trainer.yaml 覆盖为 verl 当前版(含 v1 段)。
+- B config:b1_9b_16gpu.yaml 加 use_v1/trainer_mode=custom_sync/agent_loop_manager_class=
+  RemoteAgentLoopManager/remote_agent(gw8/sw8/to1000)/transfer_queue.enable。
+- C CL loss:set_loss_fn 注入(engine_workers.py:496 v1 仍在);CL loss 已是 v1 签名
+  (cl_loss.py:4 = ppo_loss(config,model_output,data,dp_group))几乎零改。b1 走 no_replay。
+- D 9桶 buffer:【用我们自己方案,不子类化 v1 ReplayBuffer(那是 online off-policy 采样器)】。
+  cl_replay_hook_v1.py:hook custom_sync _update_actor(KVBatchMeta);PRE kv_batch_put 回放张量
+  +KVBatchMeta.concat 掺行,POST kv_batch_get_by_meta 抽 winner 入库。trajectory_adapter_v1.py
+  从 KVBatchMeta 抽轨迹。b1 不触发(buffer.enabled=false),仅 R 系列。
+- E fs-seed:cl_agent_dataset.py CLAgentDataset(RLHFDataset),按 record_id 注入
+  data/taskspecs_w3/<rid>/files 到沙箱 ./inputs(agent_assets/type=dir)。保持本地 parquet,
+  不依赖 aoss_client/OSS。config data.custom_cls 指向它。前500条465命中输入文件目录。
+  数据流确认:dataset→collate→session_worker(worker.py:497 白名单含 agent_assets)→
+  E2BAgentRunner.write_agent_assets。
+- F observer+reward 回流:observer_hook.py ObserverDiffHook(AgentRunHook,【零 LLM】,复用
+  agents/observer.py 探针+diff)。prepare 拍 before、run 拍 after+diff→reward_info
+  ["observer_report"]。沙箱关闭前当场 diff(hook.run 在 sandbox.close 前),结果随 reward_info
+  带走(不需沙箱活到 reward 阶段)。model_reward_omni.py 零侵入从 omni 传的
+  data_non_tensor_batch["reward_info"] 取 observer_report/answer_key 并进 extra_info→judge。
+  judge 输入=actor 完整轨迹(response_ids 多轮 token,trajectory_buffer.record_turn 累进)+
+  diff 铁证。observer_hook_register.py monkey-patch hook factory 认 FQN(不改 verl 源码,
+  与 reward _function_name/dataset custom_cls 同类机制),FQN 挂载 patch 三分支冒烟通过。
+
+### 全轨迹确认(源码链路)
+gateway/response_decoder.py 解析每轮 LLM 响应→reasoning_parser 拆思考链+llm_tool_parser 解
+tool_calls;trajectory_buffer.record_turn 把 context_tokens(mask0)+response_tokens(mask1)累进
+response_ids,message_history 保留完整多轮。→ 训练看到的是完整多轮(system+user+assistant含
+tool_calls+tool 响应),非 system+user。冷启动 1429 条只有(system,user)是纯 query 池(未采集),
+性质不同。
+
+### 待集群实测(各文件 CLUSTER-TODO)
+custom_sync 起链路 / RemoteAgentLoopManager 起沙箱 / buffer 回放行字段与 tq 对齐 / observer
+探针在 agentic-cl-sandbox 镜像跑通 / hook FQN 挂载 / 端到端 ppo_kl 非0+reward 有差异+不 OOM 不 assert。
+
+### 待办
+- verl/lightllm 指向:VERL_DIR=dependencies/verl,LIGHTLLM=workspace/LightLLM(_train_impl.sh)。
+- 遗留坏测试(引用已删脚本 validate_sandbox_dockerfile.sh/prepare_queries/qc_trajectory/
+  convert_dataset)非本次改动,待清理。
+
+---
+
+## 2026-07-29 集群 16卡 端到端拉起：迁移后逐关口 debug（append-only 证据）
+
+自写 rollout → verl 原生 main_ppo+custom_sync 迁移后，首次上 16卡2节点集群端到端。
+逐个关口崩→修，每关都比上一关更深（证明修复有效在推进）：
+
+### 关口与修复（按崩溃先后）
+1. **import verl 崩 TE**：`transformer_engine has no attribute 'pytorch'`。
+   根因=镜像 flash_attn 是残缺 shim(仅 bert_padding)，recipe_custom→megatron→TE 要
+   `flash_attn.flash_attn_interface`，shim 无 → 崩。真 FA3 装在 site-packages/flash_attn_3/。
+   修=给 shim 加 flash_attn_interface.py(转发 flash_attn_3 + __getattr__ 兜底) +
+   _train_impl.sh PYTHONPATH 前置 AFS shim(docker/qwen36-lightllm/flash_attn_shim)。
+2. **数据加载崩**：`assert src[-1]` NoneType。根因=v1 _init_dataloader 无条件建 val dataset，
+   我们 val_files=null。修=CLTaskRunnerV1.run 里 val 空/缺失 alias 到 train_files。
+3. **lightllm 起 server 崩**：`OSError:98 Address already in use`。根因=recipe_custom
+   async_lightllm_server 的 pd_master_port(1212)/multinode_httpmanager_port(12345)/
+   multinode_router_gloo_port(20001) 用 argparse 写死 default，16卡=8replica/每节点4个同
+   端口撞(迁移前用 verl.experimental v0 AgentLoopManager 那套端口对，v1 recipe_custom 这套有 bug)。
+   修=三端口改 get_free_port 动态分配(async_lightllm_server.py)。验证:重启后 8 replica 各拿
+   独立端口(41031/41101/38531...)不撞，KV池 profile 成功(max_total_token_num=3022788)。
+4. **rollout 崩**：`Unknown post-run hook: 'trainer.observer_hook.ObserverDiffHook'` →
+   All rollouts failed 32/32。根因=observer FQN patch(monkey-patch create_hook)只在 driver
+   进程生效，create_hook 实际在 AgentSessionWorker(另一 ray actor 进程)调，patch 传不过去。
+   修=(a)直接改 recipe_custom hooks/factory.py 内建 FQN 分支(name 含"." → load_class_from_fqn)，
+   跨进程天然生效；(b)verl_runner 把 PYTHONPATH 透传进 ray runtime_env.env_vars(verl
+   get_ppo_ray_runtime_env 不传 PYTHONPATH，否则 worker import trainer.observer_hook 会 ImportError)。
+
+### 已跨过的关口(证明链路通)
+import verl ✅ / 模型加载(Qwen3_5 9.41B)✅ / FSDP+16卡组网(Gloo 15 peers)✅ /
+lightllm 8 replica 起+端口不撞+KV池 ✅ / 进 rollout 沙箱采样(AgentSessionWorker+fs-seed
+注入 ./inputs)✅。observer hook 修复后重启验证中(14:46 任务)。
+
+### 集群多机(手动组 Ray)
+- 网络隔离(本地 ssh 不到集群)，改动全落 AFS、集群即见。
+- master IP 10.120.x(每次新机变)，worker→master 6379/29503 TCP 通(ping 不通但 TCP 通，禁 ICMP)。
+- scripts/train_manual_2node.sh(RANK=0 master/RANK=1 worker)；平台也注入 SENSECORE_* 主机名。
+- 每次重启是新机:镜像自带依赖 + AFS 上 shim/verl 补丁/PYTHONPATH 生效，无需每机手动配。
+
+### 遗留(不阻塞跑通)
+- fla/causal-conv1d torch fallback(GDN kernel 慢，CUDA13 编译不出，需重 build 镜像补)。
+- FlashInferAllReduce disabled / MFU=0(custom_language_model 不在 MFU 表) —— 均无害。
+
+## 2026-07-30 4卡/16卡 9B 训练崩 compute_log_prob(triton CE assert)——model_type 放错层
+
+- **现象**：`logs/experiments/qwen35_9b_b1_4gpu/train.log` step 0 的 `_compute_old_log_prob` 崩，
+  `verl/utils/kernel/kernels.py:582 assert hidden.shape[0]==labels.shape[0] and hidden.shape[1]==weight.shape[1]`
+  AssertionError（4 个 rank 全崩）。栈顶是 `dense_common.py:189 forward_with_triton_backend`。
+- **根因（代码 + 日志双证）**：`configs/run/b1_9b_{4gpu,16gpu}.yaml` 把 `model_type: custom_language_model`
+  写进了 `actor_rollout_ref.model.override_config`，而参考脚本 `debug_rl_qwen35_9b.sh` 是放在**顶层**
+  `+actor_rollout_ref.model.model_type=`。两处语义完全不同：
+  1. **顶层 `model.model_type`** = 引擎选择键。`engine_workers.py:128 EngineRegistry.new(model_type=config.model_type)`
+     用它选 `CustomFSDPEngineWithLMHead`（recipe_custom，GDN 变长+路由重放）；该引擎 `__init__` 随即把
+     `hf_config.model_type` **复位回 `language_model`**，所以 `apply_monkey_patch` 读到的是真实 `qwen3_5`，
+     走 `qwen3_5.py::forward_with_triton_backend`——SP>1 时对 `rolled_labels` 也做 `ulysses_pad_and_slice_inputs`。
+  2. **`override_config.model_type`** 会经 `verl/utils/model.py::update_model_config` 直接改 **HF config.model_type**
+     → `custom_language_model`。于是 `apply_monkey_patch`（`monkey_patch.py:270` 按 `model.config.model_type` 分派）
+     匹配不到 `qwen3_5`，落到 `else` 分支 `dense_common.py::forward_with_triton_backend`——**该分支不对 labels 做 SP-slice**。
+     SP=2 下 hidden 被切成 1/SP（行数 = total_nnz/2 + pad），labels 仍是全长 total_nnz → 行数不等 → triton CE assert 崩。
+  - 日志实证：`train.log:216` `override_config` 里含 `model_type: custom_language_model`；`:1046` 打印
+    `Using Triton backend ... Qwen3_5ForConditionalGeneration`（说明 patch 确实生效但走了通用分支）；
+    `grep "enable_routing_replay in CustomFSDPEngineWithLMHead"` = **0 次** → 证明 `CustomFSDPEngineWithLMHead`
+    根本没被选中（退化成 base `FSDPEngineWithLMHead`，路由重放也一并丢失）。即"size 不匹配"与"自定义引擎没生效"
+    是同一个错配的两个后果。
+- **修复**：两份 config 把 `model_type: custom_language_model` 从 `override_config` 提到 `model:` 顶层，
+  `override_config` 只留 `attn_implementation: flash_attention_3`。`trainer/cl_main.py::load_config` 用 OmegaConf.merge
+  且 `model_type` 是 `HFModelConfig` 合法字段（默认 `language_model`），加顶层键无 struct 冲突。
+  改后 `load_config` 校验：两份 config `model.model_type=custom_language_model`、`override_config={attn_implementation:...}` ✓。
+- **状态**：config 已改已校验；重跑 4 卡 debug 待执行（同代码路径，结论适用 16 卡）。
+
+### 2026-07-30 订正:上条"size 不匹配"机制描述有误
+上条我写的"hidden 切 1/SP、labels 仍全长"是错的(未 trace 代码的猜测)。逐行 grep 后的**准确机制**:
+- SP 切分在引擎层 `prepare_model_inputs` 做,`input_ids`(`transformer_impl.py:1106`)和 labels
+  (`input_ids_rmpad_rolled`,`:1112`)**两个都** `ulysses_pad_and_slice_inputs` 切成 `total_nnz/SP+pad`;
+  fused 路径 `:1211` 把已切好的 local labels 作 `shift_labels` 传入。故**两条前向路径拿到的 labels 都是 local 长度**,不存在"labels 全长"。
+- 真正差异在 **`cu_seqlens` 有没有 thread 进模型**。Qwen3.5 是混合结构(GDN 线性注意力层 + full-attn 层):
+  full-attn 靠 ulysses monkey-patch(all-gather→变长 FA→scatter)两条路都有;但 **GDN 层
+  `qwen3_5_gated_delta_net_forward` 必须拿 `cu_seqlens` 才能正确做变长 packed + SP 分片记账**
+  (`qwen3_5.py:210-226` 看到 local seq_len != cu_seqlens[-1] 就建 CP context 按 local 产出)。
+  - 正确路径 `qwen3_5.py::forward_with_triton_backend` **传** cu_seqlens 给 `self.model`;
+  - 错配后落到的 `dense_common.py::forward_with_triton_backend` 里 `forward_base_model` 签名**根本没有 cu_seqlens**(grep 确认)。
+- 结论:`model_type` 放 override_config → HF config 被改 → monkey_patch 匹配不到 qwen3_5 → 前向换成通用
+  dense_common 版 → **GDN 层拿不到 cu_seqlens → 变长 packed+SP token 记账错乱 → hidden token 数与 local labels 对不齐**
+  → `linear_cross_entropy` assert `hidden.shape[0]==labels.shape[0]` 崩。(未实测具体数值差,但链条来自逐行代码。)
+
+## 2026-07-30 全量对齐:19 份 9B + 27B/64GPU(cluster.yaml) 迁到新路线
+
+- **背景**:修 §31(model_type 放错层)后,发现 configs/run 下其余配置仍在旧路线,与已迁的
+  b1_9b_4gpu/16gpu 不一致。用户决策:9B 其余全对齐、27B/64GPU 也对齐(64GPU 仅 27B 无 9B)。
+- **旧路线特征(待迁)**:`strategy=fsdp` + `agent_loop_manager_class=trainer.cl_rollout_manager.AgentLoopManager`
+  (自写 winner-sync rollout)+ 无 `use_v1/transfer_queue/use_remove_padding` + `use_fused_kernels=false`(k*/r*)
+  或 `true 但 impl_backend=torch 默认+无 model_type`(cluster)+ `attn=sdpa`。且 `_train_impl.sh` 已导
+  `VERL_USE_EXTERNAL_MODULES=recipe_custom.bootstrap`(新路线),旧 config 与启动 env 不自洽。
+- **动作**:
+  - 17 份 `{k1,k2,k2-r,k3,r0-03,r0-08,r0-10k,r0-25k,r3,r4,r4-k,r4-w,r5,r6,r7,r8,r9}_9b_16gpu.yaml`:
+    以 `b1_9b_16gpu.yaml` 为模板用一次性生成器 `scripts/_migrate_9b_configs.py` 重写——机制层
+    (model/actor/rollout/trainer/transfer_queue)逐字对齐标准答案,**只保留各自 CL/KL 语义**
+    (use_kl_loss/kl_loss_coef、lambda_replay、buffer.{enabled,num_buckets,total_capacity,priority_type}、
+    weighting.{scheme,gamma,delta,...}、experiment_name)。生成器已删(一次性工具)。
+  - `configs/cluster.yaml`(27B/64GPU 共用引擎 overlay):同法迁新路线——model 加 `model_type` 顶层 +
+    `impl_backend=triton` + `use_remove_padding` + `attn=flash_attention_3`;actor `fsdp→fsdp2` +
+    torch_compile off + clip_ratio_low + reshard/model_dtype;rollout 换 RemoteAgentLoopManager +
+    custom.remote_agent(gateway/worker 8);reward_manager=omni;加 `use_v1:custom_sync` + `transfer_queue`;
+    data.max_response_length 8192→12288。`b1.yaml`/`r4.yaml`(27B thin overlay)自动继承,无需单独改。
+  - Qwen3.6-27B 经 config.json 确认**同为 qwen3_5 混合 GDN**(full_attention_interval=4),故 §31 修复同样适用。
+- **暂不动**(用户指示):`b1_9b.yaml`(4卡SP1)/`b1_9b_8gpu.yaml`(8卡SP2)——非 train.sh 启动路径的本地测试残留;
+  `b1_8b.yaml`(8B 另一模型,不在本次范围)。
+- **校验**:`load_config` 全量扫描 21 份(2 份 4/16gpu + 17 份 k*/r* + b1/r4)全 OK:model_type 顶层、
+  override_config 只剩 attn_implementation、fsdp2、fused+triton、use_v1、RemoteAgentLoopManager。0 失败。
+- **状态**:config 全绿;真机重跑(4卡 debug 先行,再 16/64)待执行。
+
+## 2026-07-30 长度/并发按权威参考(wuzehuan debug_rl_qwen35_9b.sh)统一 19 份 9B
+
+- **背景**:上一轮 9B 迁移时对齐的是 dependencies 里的旧版参考,长度/后端与**权威参考**
+  `/mnt/afs_toolcall/wuzehuan/Documents/verl/recipe_custom/scripts/e2b_agent/debug_rl_qwen35_9b.sh`
+  不一致。本轮按权威参考统一(用户决策,逐项确认)。
+- **改动(19 份:17 k*/r* + b1_9b_16gpu + b1_9b_4gpu)**:
+  - 长度**照搬参考**:max_prompt_length 4096→**8196**;max_response_length 12288→**65536**;
+    rollout.max_model_len/response_length 65536/12288→**131072/65536**;
+    ppo_max_token_len_per_gpu = log_prob_max_token_len_per_gpu = **131072/SP**(16卡SP4=32768、4卡SP2=65536)。
+    ★ 之前缩到 12288 是 §28/§31 **错误归因**下的规避——§31 查明崩溃真因是 model_type 放错层(GDN 丢
+    cu_seqlens),非长度;权威参考同代码路径已验证能跑 131072,故恢复设计长度。§28 的 total_nnz 现象
+    改由真机 4 卡 debug 验证,不再预防性缩短。
+  - 后端**照参考**:sampling_backend triton→**flashinfer**;update_weights_bucket 6144→**3072**。
+  - **不照抄**(规模相关,保留):rollout.n=**8**(项目 GRPO traj/query 设计,参考的 2 是 debug 省算力);
+    running_max_req_size/graph_max_batch_size 按各配置 **train_batch×n** 保留(16卡256、4卡32)——参考的
+    32 是 1 卡 debug 值,抄了会让 16 卡并发压到 32、rollout 串 8 批慢 8 倍。
+  - nccl_timeout:**多机(16卡)3600 / 单机(4卡)1200**——多卡同步超时阈值(跨节点+131072 长序列 all-gather
+    易超默认 600s);设大不影响正常速度,只在真卡住时晚报错。
+- **校验**:load_config 全 19 份 OK,长度/ppo/后端/并发逐项核对无误,0 失败。
+- **27B/cluster.yaml**:用户指示后续再改,本轮未动。
+- **状态**:config 全绿;真机 4 卡 debug 验证 65536 长序列是否触发 §28 total_nnz 现象,待执行。
