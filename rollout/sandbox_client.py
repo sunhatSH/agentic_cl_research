@@ -147,6 +147,11 @@ class E2BSandbox:
         if not api_key or not domain:
             raise RuntimeError("E2B_API_KEY and E2B_DOMAIN must be set for e2b backend")
 
+        # 注:不动 e2b 连接池/HTTP2 设置 —— 用 SDK 原生默认(keepalive=20,复用长连接,
+        # 短任务省资源/低延迟)。GOAWAY(入口网关单连接 ~1000 stream 后回收)只在【长任务】
+        # 触发,短任务遇不到。长任务需要时再按需开:E2B_MAX_KEEPALIVE_CONNECTIONS 调大分散
+        # stream,或对 RemoteProtocolError 重试一次。当前采集/训练以短任务为主,不改。
+
         # The e2b SDK reads E2B_API_KEY / E2B_DOMAIN from env itself; they are
         # already set (validated above), so create() picks the Tencent endpoint.
         from e2b_code_interpreter import Sandbox

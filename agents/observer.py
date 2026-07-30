@@ -116,6 +116,12 @@ _RUNTIME_FILES = frozenset(
         ".python_history",
         ".wget-hsts",
         "AGENTS.md",
+        # Sandbox runtime logs (envd/uvicorn/agent runtime) — 持续写入，会制造 diff
+        # 噪声且非 agent 交付物。按 basename 过滤（_is_runtime_file 用 basename 匹配）。
+        "envd.log",
+        "uvicorn.log",
+        "envd.pid",
+        ".agentic_cl_persona",  # seed_workspace 落的种子标记，非交付物
     }
 )
 # Rich binary formats we extract to text in the sandbox (a). Libs are in the
@@ -137,19 +143,23 @@ class ReadOnlySandbox(Protocol):
 # --------------------------------------------------------------------------- #
 _SNAPSHOT_PROBE = (
     "import os, json, hashlib\n"
-    "ROOT='.'; MAX_TEXT=65536; MAX_FILES=200\n"
-    "SKIP={'.git','__pycache__','node_modules','.cache','.ipynb_checkpoints','.venv','.hermes','.npm','.local','.config','.cache','.gradle','.m2'}\n"
+    "ROOT='.'; MAX_TEXT=65536; MAX_FILES=500\n"
+    # 非 dot 的运行时/缓存目录（dot 开头的由下方统一略过，不必列）。
+    "SKIP={'__pycache__','node_modules','node-compile-cache'}\n"
     "out={}\n"
     "for root, dirs, files in os.walk(ROOT):\n"
-    "    if root.count(os.sep) > 5:\n"
+    "    if root.count(os.sep) > 7:\n"
     "        dirs[:]=[]; continue\n"
-    "    dirs[:]=[d for d in dirs if d not in SKIP]\n"
+    # 略过所有 . 开头的目录（.git/.hermes/.cache/.venv/... 一网打尽）+ 具名 SKIP。
+    "    dirs[:]=[d for d in dirs if not d.startswith('.') and d not in SKIP]\n"
     "    for fn in files:\n"
+    # 略过所有 . 开头的文件（.bashrc/.python_history/... 运行时痕迹）。交付物如
+    # output/、inputs/、env.* 等不以 . 开头,不受影响。\n"
+    "        if fn.startswith('.'):\n"
+    "            continue\n"
     "        p=os.path.join(root, fn)\n"
-    # Belt-and-suspenders: skip any path whose components hit a runtime dir.
-    # (os.walk pruning can miss when a SKIP dir is created between snapshots or
-    # when ROOT resolution differs; this guarantees .hermes/etc never leak in.)
-    "        if any(seg in SKIP for seg in p.split(os.sep)):\n"
+    # Belt-and-suspenders: skip any path whose components hit a SKIP/dot dir.
+    "        if any(seg in SKIP or seg.startswith('.') for seg in p.split(os.sep) if seg not in ('.','..')):\n"
     "            continue\n"
     "        try:\n"
     "            st=os.stat(p)\n"
@@ -406,8 +416,15 @@ def _run_json_probe(sandbox: ReadOnlySandbox | None, probe: str) -> dict:
 
 
 def _is_runtime_file(path: str) -> bool:
-    """True for framework/runtime files that are never user deliverables."""
-    return path.rsplit("/", 1)[-1] in _RUNTIME_FILES
+    """True for framework/runtime files that are never user deliverables.
+
+    命中条件（任一）：具名 runtime 文件（.bashrc/envd.log/...）；或运行时日志/pid 后缀
+    （*.log/*.pid，如 jupyter.log/uvicorn.log/envd.log —— 沙箱服务持续写、非 agent 交付物）。
+    """
+    base = path.rsplit("/", 1)[-1]
+    if base in _RUNTIME_FILES:
+        return True
+    return base.endswith((".log", ".pid"))
 
 
 def snapshot_workspace(sandbox: ReadOnlySandbox | None) -> dict[str, dict]:

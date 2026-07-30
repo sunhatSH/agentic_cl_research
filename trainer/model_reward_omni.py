@@ -35,11 +35,28 @@ def compute_score(response: str, ground_truth: str = "", **kwargs: Any) -> dict[
     """omni 调用约定 → 转发到 trainer.model_reward.compute_score。
 
     omni 传法（omni.py:196-212）：第 1 位=response(=solution_str)，第 2 位=ground_truth，
-    其余全 kwargs（extra_info / data_source / user_question / judge_model_url / ...）。
-    我们的 compute_score 需要 (data_source, solution_str, ground_truth, extra_info=)。
+    其余全 kwargs（extra_info / data_source / user_question / judge_model_url /
+    data_non_tensor_batch / ...）。我们的 compute_score 需要 (data_source, solution_str,
+    ground_truth, extra_info=)。
+
+    阶段 F（observer 回流）：ObserverDiffHook（trainer/observer_hook.py）把沙箱 before/after
+    diff 取证写进 state.reward_info["observer_report"] + ["answer_key"]，session_worker 存进
+    non_tensor_batch["reward_info"]，omni 又把整个 non_tensor_batch 经 data_non_tensor_batch
+    传进来（omni.py:201）。这里【零侵入】从 data_non_tensor_batch["reward_info"] 取出
+    observer_report/answer_key 并进 extra_info → judge 拿到确定性证据交叉核对模型自述
+    （保留 §16 claim→diff 取证链）。b1 不挂 hook 时 reward_info 无这些 key，自动跳过。
     """
     data_source = kwargs.get("data_source", "agentic_cl")
-    extra_info = kwargs.get("extra_info", None)
+    extra_info = dict(kwargs.get("extra_info") or {})
+
+    # ── observer 回流：reward_info(hook 写的取证) → extra_info(judge 读) ──
+    dntb = kwargs.get("data_non_tensor_batch") or {}
+    reward_info = dntb.get("reward_info")
+    if isinstance(reward_info, dict):
+        for _k in ("observer_report", "answer_key", "state_diff", "deliverable_count"):
+            if _k in reward_info and _k not in extra_info:
+                extra_info[_k] = reward_info[_k]
+
     # judge 由 model_reward 内部 env 解析（get_judge()）；judge_model_url 若 omni 传了，
     # 也放进 kwargs 透传（model_reward.compute_score 用 **kwargs 兜住，不影响）。
     result = _cl_compute_score(

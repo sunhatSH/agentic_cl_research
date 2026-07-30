@@ -540,39 +540,196 @@ class CLTaskRunner:
         trainer.fit()
 
 
+def _inject_cl_into_v1_trainer(trainer: Any, config: Any, buffer: Any | None = None) -> None:
+    """Inject CL loss + buffer hooks into a v1 trainer after ``trainer.init()``.
+
+    v1 (custom_sync) 路线：CL loss 经 ``actor_rollout_wg.set_loss_fn`` 注入（与 v0
+    同机制，``engine_workers.py:496``；CL loss 已是 v1 签名
+    ``fn(config, model_output, data, dp_group)``，见 ``trainer/cl_loss.py``）。
+
+    9桶 buffer（阶段 D）：用【我们自己的】方案 —— hook custom_sync 的
+    ``_update_actor(batch: KVBatchMeta, metrics)``（cl_replay_hook_v1.install_buffer_hooks_v1），
+    PRE 掺回放行(kv_batch_put+concat)、POST 抽 winner 入 9桶 buffer。【不】子类化 v1
+    ReplayBuffer（那是 online off-policy 采样器，维度不同）。b1 baseline buffer=None
+    → hook 空转，只有 CL loss。R 系列 buffer.enabled=true 才触发。
+    """
+    trainer.actor_rollout_wg.set_loss_fn(make_cl_loss_from_cfg(config))
+    print("[cl] v1: CL loss 已注入 (actor_rollout_wg.set_loss_fn)", flush=True)
+
+    if buffer is not None:
+        from trainer.cl_replay_hook_v1 import install_buffer_hooks_v1
+
+        install_buffer_hooks_v1(trainer, buffer, config)
+
+
 def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
-    """Initialize Ray and run CL training (production entry)."""
-    import ray
-    from omegaconf import OmegaConf
-    from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
+    """Initialize Ray and run CL training via verl **原生 main_ppo (v1)** 入口.
+
+    对齐参考脚本 debug_rl_qwen35_9b.sh：``python -m verl.trainer.main_ppo`` +
+    ``trainer.use_v1=True`` + ``trainer.v1.trainer_mode=custom_sync`` +
+    ``agent_loop_manager_class=RemoteAgentLoopManager``。我们不重写训练框架，只用
+    verl 原生 ``run_ppo(config, task_runner_class=...)`` 的 recipe 钩子（main_ppo.py:40
+    "For recipe to change TaskRunner"）注入 CL 资产。见 plan swift-juggling-toast 阶段 A。
+    """
     import os
 
+    import ray
+    from omegaconf import OmegaConf
+    from verl.trainer.main_ppo import run_ppo
+
     cfg = merge_verl_config(cfg)
+    if resume_from:
+        OmegaConf.update(cfg, "trainer.resume_mode", "resume_path", force_add=True)
+        OmegaConf.update(cfg, "trainer.resume_from_path", str(resume_from), force_add=True)
 
-    if not ray.is_initialized():
-        ray_init_kwargs = cfg.get("ray_kwargs", {}).get("ray_init", {})
-        runtime_env = OmegaConf.merge(get_ppo_ray_runtime_env(), ray_init_kwargs.get("runtime_env", {}))
-        ray_init_kwargs = OmegaConf.create(
-            {**OmegaConf.to_container(ray_init_kwargs), "runtime_env": runtime_env}
+    # 自定义 env 开关(CL_FAKE_ROLLOUT 等)透传到 Ray worker —— worker 不继承 driver
+    # shell env，只有 runtime_env.env_vars 列出的才传得进。放进 cfg.ray_kwargs 让
+    # run_ppo 的 ray.init 带上（run_ppo 内部 merge default_runtime_env + cfg 的）。
+    _passthrough = {
+        _k: os.environ[_k]
+        for _k in ("CL_FAKE_ROLLOUT", "CL_FAKE_ROLLOUT_LEN")
+        if os.environ.get(_k) is not None
+    }
+    # ★ PYTHONPATH 透传到所有 ray actor(含 AgentSessionWorker):verl 的
+    # get_ppo_ray_runtime_env 不传 PYTHONPATH,而 AgentSessionWorker 里 create_hook
+    # 要 import trainer.observer_hook.ObserverDiffHook(FQN hook)+ shim/verl 也需在
+    # 子进程 path 上。不传则 worker ImportError(2026-07-29 observer hook 定位)。
+    _pp = os.environ.get("PYTHONPATH")
+    if _pp:
+        _passthrough["PYTHONPATH"] = _pp
+    if _passthrough:
+        OmegaConf.update(
+            cfg,
+            "ray_kwargs.ray_init.runtime_env.env_vars",
+            {**(OmegaConf.select(cfg, "ray_kwargs.ray_init.runtime_env.env_vars") or {}), **_passthrough},
+            force_add=True,
         )
-        ray_init_dict = OmegaConf.to_container(ray_init_kwargs)
-        # Ray worker actor(CLTaskRunner / WorkerDict)不继承 driver 的 shell env —— 只有
-        # runtime_env.env_vars 里显式列的才传得进去。我们的自定义 env 开关(CL_FAKE_ROLLOUT
-        # 跳过沙箱直验训练阶段;CL_FAKE_ROLLOUT_LEN 控假 response 长度)不在 verl 的白名单,
-        # 若不透传,generate_sequences 里 os.environ.get 恒为空 → 开关静默失效、照走真实 rollout。
-        _passthrough = {}
-        for _k in ("CL_FAKE_ROLLOUT", "CL_FAKE_ROLLOUT_LEN"):
-            _v = os.environ.get(_k)
-            if _v is not None:
-                _passthrough[_k] = _v
-        if _passthrough:
-            ray_init_dict.setdefault("runtime_env", {}).setdefault("env_vars", {}).update(_passthrough)
-            print(f"[verl_runner] 透传 env 到 Ray worker: {_passthrough}", flush=True)
-        ray.init(**ray_init_dict)
+        print(f"[verl_runner] 透传 env 到 Ray worker: {list(_passthrough)}", flush=True)
 
-    task_runner_class = ray.remote(num_cpus=1)(CLTaskRunner)
-    runner = task_runner_class.remote()
-    ray.get(runner.run.remote(cfg, resume_from))
+    # verl 原生 run_ppo 负责 ray.init（含 transfer_queue env）+ 起 task runner actor。
+    # 传入我们的 CLTaskRunnerV1 替代默认 TaskRunnerV1（注入 CL loss/buffer）。
+    _ = ray  # ray import 触发 verl 的 ray 相关初始化路径一致性
+    run_ppo(cfg, task_runner_class=CLTaskRunnerV1)
+
+
+def _make_cl_task_runner_v1():
+    """Build the ``@ray.remote`` CLTaskRunnerV1 class.
+
+    复刻 verl ``TaskRunnerV1.run`` 三步(trainer.init → init_agent_loop_manager →
+    fit)，在 init 后 / fit 前插入 CL 注入。因 verl ``TaskRunnerV1`` 已是 ``@ray.remote``
+    actor（不能被继承再装饰），这里【复刻】而非子类化。延迟到函数内定义，避免模块
+    import 时就依赖 ray（off-cluster / 单测友好）。
+    """
+    import ray
+
+    @ray.remote
+    class CLTaskRunnerV1:
+        """CL 版 v1 TaskRunner：verl 原生 v1 流程 + CL loss/buffer 注入。"""
+
+        def __init__(self):
+            self.config = None
+            self.trainer = None
+            self.agent_loop_manager = None
+
+        def init_agent_loop_manager(self):
+            # 复刻 verl TaskRunnerV1.init_agent_loop_manager：按
+            # rollout.agent.agent_loop_manager_class 选 manager（我们配
+            # RemoteAgentLoopManager → 沙箱 harness 那套）。
+            from verl.trainer.ppo.v1 import AgentLoopManagerTQ
+            from verl.utils.import_utils import load_class_from_fqn
+
+            fqn = self.config.actor_rollout_ref.rollout.get("agent", {}).get("agent_loop_manager_class")
+            cls = load_class_from_fqn(fqn, "AgentLoopManager") if fqn else AgentLoopManagerTQ
+            self.agent_loop_manager = cls.create(
+                config=self.config,
+                llm_client=self.trainer.get_llm_client(),
+                teacher_client=self.trainer.get_teacher_client(),
+                reward_loop_worker_handles=self.trainer.get_reward_handles(),
+            )
+
+        def run(self, config):
+            from pprint import pprint
+
+            import transfer_queue as tq
+            from verl.trainer.ppo.v1 import get_trainer_cls
+
+            # 注册自定义 reward manager（@register("...")）—— import 触发注册，
+            # 让 omni/observer reward 在 trainer 解析 reward_manager 前就位。
+            try:
+                import trainer.observer_reward_manager  # noqa: F401
+            except Exception as exc:  # noqa: BLE001 -- registry absent off-cluster
+                print(f"[cl] observer reward manager 未注册({exc})", flush=True)
+
+            # 阶段 F：patch hook factory 认 FQN（让 ObserverDiffHook 能经 agent_loop_config
+            # 的 harness.hooks 挂上；不改 verl 源码）。import 即安装 patch。
+            try:
+                import trainer.observer_hook_register  # noqa: F401
+            except Exception as exc:  # noqa: BLE001 -- recipe_custom absent off-cluster
+                print(f"[cl] observer hook factory patch 未安装({exc})", flush=True)
+
+            trainer_cls = get_trainer_cls(config.trainer.v1.trainer_mode)  # custom_sync
+            config.transfer_queue.enable = True
+
+            # val_files alias：v1 _init_dataloader(trainer_base.py:597)无条件为 val 建 dataset,
+            # 不判空 → val_files=null 时 copy_to_local(None) 崩(assert src[-1],'NoneType')。
+            # b1 baseline 不做在线验证(test_freq=-1/val_before_train=false),val 仅占位 →
+            # 空/缺失时 alias 到 train_files(与 v0 CLTaskRunner 同逻辑)。保 config 的 null 原意。
+            import os as _os
+
+            _vf = config.data.get("val_files", None)
+            _val_missing = bool(_vf) and isinstance(_vf, str) and not _os.path.exists(_vf)
+            if not _vf or _val_missing:
+                _reason = "空" if not _vf else f"文件不存在({_vf})"
+                OmegaConf.update(config, "data.val_files", config.data.train_files, force_add=True)
+                print(f"[cl] data.val_files {_reason} → alias 到 train_files(v1 硬要求 val dataloader;"
+                      "在线验证已关,仅占位不实际验证)", flush=True)
+
+            pprint(OmegaConf.to_container(config, resolve=True))
+            OmegaConf.resolve(config)
+            self.config = config
+
+            # 9桶 buffer：b1(buffer.enabled=false/lambda=0) → None（hook 空转）；R 系列 → BucketReplayBuffer。
+            from trainer.cl_main import build_buffer
+
+            buffer = build_buffer(config)
+
+            tq.init(config.transfer_queue)
+            try:
+                self.trainer = trainer_cls(config=config)
+                self.trainer.init()
+                # ── CL 注入点：init(建 actor_rollout_wg)之后、fit 之前 ──
+                _inject_cl_into_v1_trainer(self.trainer, config, buffer)
+                self.init_agent_loop_manager()
+                self.trainer.fit(self.agent_loop_manager)
+            finally:
+                tq.close()
+
+    return CLTaskRunnerV1
+
+
+# 模块级惰性单例：首次 run_ppo 时构建（避免 import 期依赖 ray）。
+class _CLTaskRunnerV1Proxy:
+    """Lazy proxy so ``run_ppo(cfg, task_runner_class=CLTaskRunnerV1)`` works.
+
+    ``run_ppo`` 对 task_runner_class 调 ``.remote()`` / ``.options(...).remote()``。
+    这里在首次访问这两个属性时才真正构建 ray.remote 类。
+    """
+
+    _cls = None
+
+    def _resolve(self):
+        if _CLTaskRunnerV1Proxy._cls is None:
+            _CLTaskRunnerV1Proxy._cls = _make_cl_task_runner_v1()
+        return _CLTaskRunnerV1Proxy._cls
+
+    def remote(self, *a, **k):
+        return self._resolve().remote(*a, **k)
+
+    def options(self, *a, **k):
+        return self._resolve().options(*a, **k)
+
+
+CLTaskRunnerV1 = _CLTaskRunnerV1Proxy()
 
 
 def build_trainer(cfg: Any, buffer: Any | None = None):

@@ -27,9 +27,9 @@ PHASE_EXPS[5]="s1 s2"
 # ── topology presets ─────────────────────────────────────────────────────
 # key -> nnodes gpus/node rollout-tp ulysses-sp train-batch ppo-mini gpu-mem-util default-config
 declare -A TP=()
-TP[4gpu]="   1     4           2          1           32         32         0.30          configs/run/b1_9b.yaml"
+TP[4gpu]="   1     4           2          2            4          4         0.75          configs/run/b1_9b_4gpu.yaml"
 TP[8gpu]="   1     8           2          1          256         32         0.75          configs/run/b1_8b.yaml"
-TP[16gpu]="  2     8           2          2           64         64         0.30          configs/run/b1_9b_16gpu.yaml"
+TP[16gpu]="  2     8           2          4           32         32         0.75          configs/run/b1_9b_16gpu.yaml"
 TP[32gpu]="  4     8           4          4          512         64         0.75          configs/run/b1.yaml"
 TP[64gpu]="  8     8           4          4         1024         64         0.75          configs/run/b1.yaml"
 

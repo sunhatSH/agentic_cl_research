@@ -66,7 +66,13 @@ echo "[train_cl] ✓ 并行约束检查通过"
 
 # ── 环境变量 ────────────────────────────────────────────────────────────
 export PATH="$VENV/bin:$PATH"
-export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$ROOT_DIR:${PYTHONPATH:-}"
+# flash_attn shim 补丁(AFS 上,前置于镜像自带的 /opt/flash_attn_shim):补齐镜像 shim 缺的
+# flash_attn_interface(转发真 FA3 flash_attn_3)。镜像 shim 只有 bert_padding,导致
+# transformer_engine.pytorch(recipe_custom→megatron 链 import)找不到 flash_attn_interface
+# 而崩(2026-07-29 集群定位)。放 PYTHONPATH 最前 → 我方补丁版遮蔽镜像残缺版,改 AFS 即生效、
+# 不必重 build 镜像。补丁目录含完整 shim(bert_padding + flash_attn_interface)。
+_FA_SHIM="$ROOT_DIR/docker/qwen36-lightllm/flash_attn_shim"
+export PYTHONPATH="$_FA_SHIM:$LIGHTLLM_DIR:$VERL_DIR:$ROOT_DIR:${PYTHONPATH:-}"
 export PYTHON="$PY"
 export NNODES N_GPUS_PER_NODE="$GPUS_PER_NODE" ROLLOUT_TP_SIZE="$ROLLOUT_TP"
 export ULYSSES_SP_SIZE="$ULYSSES_SP" TRAIN_BATCH_SIZE="$TRAIN_BATCH" PPO_MINI_BATCH_SIZE="$PPO_MINI"
@@ -98,6 +104,9 @@ export RAY_DEDUP_LOGS="${RAY_DEDUP_LOGS:-1}"
 # (4) e2b 沙箱:不校验 api_key 存在性(腾讯 e2b 兼容端点,E2B_API_KEY/E2B_DOMAIN 由 load_tencent_env
 #     从 docker/sandbox/tencent.env export,agent_loop_config.yaml 的 ${oc.env:E2B_*} 取用)
 export E2B_VALIDATE_API_KEY="${E2B_VALIDATE_API_KEY:-false}"
+# 注:不设 E2B_MAX_KEEPALIVE_CONNECTIONS/E2B_MAX_CONNECTIONS —— 用 e2b SDK 原生默认
+# (keepalive=20,复用长连接,短任务省资源/低延迟)。GOAWAY(入口网关单连接~1000 stream
+# 后回收)只在长任务触发;本项目采集/训练以短任务为主,不改。长任务需要时再按需调大。
 # 注:不要开 PYTORCH_CUDA_ALLOC_CONF=expandable_segments —— 它与 lightllm 的
 # torch_memory_saver 互斥(报 "TorchMemorySaver is disabled ... expandable_segments
 # not supported"),会导致 lightllm 启动失败、整训练崩(见 debug doc §22)。

@@ -34,7 +34,7 @@ actor_rollout_ref:
     optim:
       lr: 1.0e-6
     ppo_mini_batch_size: 32             # 对齐 train_batch=32（一次更新用满 256 轨迹）
-    ppo_micro_batch_size_per_gpu: 2     # 4卡+9B+56k序列：试 micro=2（OOM 风险，OOM 退回 1）
+    ppo_micro_batch_size_per_gpu: 1     # 4卡+9B+56k序列：试 micro=2（OOM 风险，OOM 退回 1）
     ppo_max_token_len_per_gpu: 65536    # 覆盖 prompt2048+response53886≈56k
     ulysses_sequence_parallel_size: 1
     fsdp_config:
@@ -46,11 +46,11 @@ actor_rollout_ref:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.40
+    gpu_memory_utilization: 0.75
     n: 8                         # GRPO group size (traj/query)
     load_format: auto
     max_model_len: 65536
-    max_num_batched_tokens: 8192
+    max_num_batched_tokens: 6144
     enable_chunked_prefill: false
     calculate_log_probs: true
     log_prob_micro_batch_size_per_gpu: 1
@@ -69,10 +69,10 @@ actor_rollout_ref:
       update_weights_bucket_megabytes: 2048
     engine_kwargs:
       lightllm:
-        batch_max_tokens: 8192
+        batch_max_tokens: 6144
         enable_multimodal: false
         enable_torch_memory_saver: true
-        graph_max_batch_size: 64
+        graph_max_batch_size: 128
         running_max_req_size: 64
         sampling_backend: triton
         disable_vision: true
@@ -99,7 +99,7 @@ data:
   val_files: null
   train_batch_size: 32               # 32 query × rollout.n8 = 256 轨迹/step（GRPO 统计量下限）
   gen_batch_size: 32
-  max_prompt_length: 2048            # 数据实测 max 708
+  max_prompt_length: 4096            # 对齐参考脚本
   max_response_length: 53886         # 冷采集 claude opus 轨迹 p90；OOM 退路 → 10399（p50）
   shuffle: false                     # 按文件序（桶序排列）训，保证按桶顺序 → 可测遗忘
   return_raw_chat: true
