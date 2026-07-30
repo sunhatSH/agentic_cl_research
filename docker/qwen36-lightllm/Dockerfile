@@ -169,14 +169,22 @@ PY
 RUN conda install -y -c conda-forge nodejs=22
 RUN npm install -g @openai/codex
 
-# ---- flash_attn (CUDA 13.0 无预编译包，shim 兜底) ----
-# PyTorch 2.13 sdpa 内置 unpad_input / pad_input / index_first_axis，
-# 但 verl attention_utils.py 硬 import flash_attn.bert_padding。
-# 先尝试 pip install flash-attn（编译耗时，可能因 CUDA 13.0 失败），
-# 再落 shim 作为 fallback（torch sdpa 实现，同语义、0 依赖、无需编译）。
-RUN python -m pip install flash-attn --no-build-isolation 2>&1 | grep -E "Successfully|error" || echo "flash-attn install failed (expected on CUDA 13.0), shim will cover"
+# ---- flash_attn (CUDA 13.0 无预编译包，先试真包，shim 兜底) ----
+# verl / transformer_engine 硬 import flash_attn（bert_padding + flash_attn_interface）。
+# 优先装真 flash-attn；CUDA 13.0 大概率编译失败，则由 shim 兜底（bert_padding 纯 torch 实现，
+# flash_attn_interface 转发真 FA3 flash_attn_3，非假 kernel）。
+# 先探测：已有真包(非 shim)则跳过；缺失才试编译安装（失败不致命，shim 覆盖）。
+# 注意：此 RUN 在下方 ENV PYTHONPATH 设 shim 之前，故 import 测的是真包而非 shim。
+RUN python -c "import flash_attn, os; assert 'flash_attn_shim' not in (getattr(flash_attn,'__file__','') or ''); assert hasattr(flash_attn,'__version__')" 2>/dev/null \
+    && echo "[docker] real flash_attn already present, skip" \
+    || { echo "[docker] flash_attn missing, trying to build (may fail on CUDA 13.0)"; \
+         python -m pip install flash-attn --no-build-isolation 2>&1 | grep -E "Successfully|error" \
+         || echo "[docker] flash-attn build failed (expected on CUDA 13.0), shim will cover"; }
+# shim 放 PYTHONPATH 末位（优先级靠后）：真 flash_attn 在 site-packages 时优先用真包，
+# 缺失时才 fallback 到 shim。（注：PYTHONPATH 整体先于 site-packages，运行时 _train_impl.sh
+# 会按"真包在则不挂 shim"进一步处理，见该脚本。）
 COPY docker/qwen36-lightllm/flash_attn_shim/ /opt/flash_attn_shim/
-ENV PYTHONPATH="/opt/flash_attn_shim:${PYTHONPATH}"
+ENV PYTHONPATH="${PYTHONPATH}:/opt/flash_attn_shim"
 
 # ---- vllm 文件权限修复（base 镜像个别 .py 为 640 root:root，非 root 不可读）----
 # routed_experts_capturer.py / qwen3_moe_mtp.py 出厂 o-x，import vllm 直接 PermissionError。

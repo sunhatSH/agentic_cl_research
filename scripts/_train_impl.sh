@@ -66,13 +66,21 @@ echo "[train_cl] ✓ 并行约束检查通过"
 
 # ── 环境变量 ────────────────────────────────────────────────────────────
 export PATH="$VENV/bin:$PATH"
-# flash_attn shim 补丁(AFS 上,前置于镜像自带的 /opt/flash_attn_shim):补齐镜像 shim 缺的
-# flash_attn_interface(转发真 FA3 flash_attn_3)。镜像 shim 只有 bert_padding,导致
-# transformer_engine.pytorch(recipe_custom→megatron 链 import)找不到 flash_attn_interface
-# 而崩(2026-07-29 集群定位)。放 PYTHONPATH 最前 → 我方补丁版遮蔽镜像残缺版,改 AFS 即生效、
-# 不必重 build 镜像。补丁目录含完整 shim(bert_padding + flash_attn_interface)。
+# flash_attn shim(AFS 上,补齐镜像 shim 缺的 flash_attn_interface,转发真 FA3 flash_attn_3)。
+# 镜像 shim 只有 bert_padding,导致 transformer_engine.pytorch(recipe_custom→megatron 链
+# import)找不到 flash_attn_interface 而崩(2026-07-29 集群定位)。补丁目录含完整 shim
+# (bert_padding + flash_attn_interface)。
+# 优先级靠后：先探测真 flash_attn(非 shim 且带 flash_attn_interface)——在则【不挂 shim】,
+# 让真包(pip 装进 site-packages 的 flash-attn)优先;缺失/残缺才把 shim 前置兜底
+# (PYTHONPATH 整体先于 site-packages,故要真包优先只能"不挂 shim",而非调 shim 在 PYTHONPATH 内位置)。
 _FA_SHIM="$ROOT_DIR/docker/qwen36-lightllm/flash_attn_shim"
-export PYTHONPATH="$_FA_SHIM:$LIGHTLLM_DIR:$VERL_DIR:$ROOT_DIR:${PYTHONPATH:-}"
+export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$ROOT_DIR:${PYTHONPATH:-}"
+if "$PY" -c "import flash_attn; assert 'flash_attn_shim' not in (getattr(flash_attn,'__file__','') or ''); from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_func; from flash_attn.bert_padding import unpad_input" >/dev/null 2>&1; then
+  echo "[train_cl] 真 flash_attn 可用(含 interface+bert_padding),不挂 shim"
+else
+  echo "[train_cl] 真 flash_attn 缺失/残缺,前置 shim 兜底: $_FA_SHIM"
+  export PYTHONPATH="$_FA_SHIM:$PYTHONPATH"
+fi
 export PYTHON="$PY"
 export NNODES N_GPUS_PER_NODE="$GPUS_PER_NODE" ROLLOUT_TP_SIZE="$ROLLOUT_TP"
 export ULYSSES_SP_SIZE="$ULYSSES_SP" TRAIN_BATCH_SIZE="$TRAIN_BATCH" PPO_MINI_BATCH_SIZE="$PPO_MINI"

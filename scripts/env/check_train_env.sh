@@ -89,6 +89,38 @@ if [ "${#TO_INSTALL[@]}" -gt 0 ]; then
   fi
 fi
 
+# ── flashinfer（lightllm rollout sampling_backend=flashinfer 运行时依赖）──
+# 单列：pip 名(flashinfer-python) ≠ import 名(flashinfer)，塞进上面 NEEDED 会装错包。
+# configs/run/*.yaml 的 rollout.engine_kwargs.lightllm.sampling_backend=flashinfer 靠它；
+# 镜像层 Dockerfile 已兜底装，这里再兜一层（跑非我们镜像/旧镜像的机器）。有则跳过，
+# 缺则装 flashinfer-python（不 pin 版本，用镜像/base 兼容的最新）。
+if "$PY" -c "import flashinfer" >/dev/null 2>&1; then
+  echo "  OK   flashinfer $(_ver flashinfer-python)"
+elif [ "$CHECK_ONLY" = "1" ]; then
+  echo "[env] CHECK_ONLY=1：flashinfer 缺失（sampling_backend=flashinfer 需要）"
+  FAIL=1
+else
+  echo "[env] === 安装 flashinfer-python ==="
+  "$PY" -m pip install -i "$PIP_INDEX" flashinfer-python || {
+    echo "[env] ERROR: flashinfer-python 安装失败 —— 停止（sampling_backend=flashinfer 起不来）" >&2
+    exit 4; }
+fi
+
+# ── flash-attn（verl/TE 硬 import flash_attn；真包优先，装不出由 shim 兜底）──
+# 与 flashinfer 不同：flash-attn 在 CUDA 13.0 大概率编译失败，故【尽力装、不致命】——
+# 装不出时 _train_impl.sh 会前置 flash_attn_shim 兜底(bert_padding 纯 torch + interface 转发
+# 真 FA3)，训练照跑。这里只在【真包缺失】时试装一次，成功则运行时优先用真包(shim 让位)。
+# 探测排除 shim 自身(shim 也叫 flash_attn),确保测的是 site-packages 里的真包。
+if "$PY" -c "import flash_attn; assert 'flash_attn_shim' not in (getattr(flash_attn,'__file__','') or '')" >/dev/null 2>&1; then
+  echo "  OK   flash_attn (真包) $(_ver flash-attn)"
+elif [ "$CHECK_ONLY" = "1" ]; then
+  echo "  INFO flash_attn 真包缺失（非致命，运行时 shim 兜底）"
+else
+  echo "[env] === 尝试安装 flash-attn（CUDA13 可能编译失败，失败不致命，shim 兜底）==="
+  "$PY" -m pip install flash-attn --no-build-isolation 2>&1 | grep -E "Successfully|error" \
+    || echo "  INFO flash-attn 编译失败（CUDA13 预期），运行时由 flash_attn_shim 兜底"
+fi
+
 # ── 3. 关键 import 校验（装完必须真能用）──
 echo "[env] === 3. 关键能力校验 ==="
 
@@ -112,6 +144,10 @@ fi
 # fla（Qwen3.6 GDN kernel）
 "$PY" -c "import fla" >/dev/null 2>&1 \
   && echo "  OK   fla" || { echo "  FAIL fla import"; FAIL=1; }
+
+# flashinfer（lightllm sampling_backend=flashinfer；上面缺则已装，这里确认真能 import）
+"$PY" -c "import flashinfer" >/dev/null 2>&1 \
+  && echo "  OK   flashinfer" || { echo "  FAIL flashinfer import"; FAIL=1; }
 
 # oc.decode resolver 能把 env 里的 "[console,swanlab]" 解析成 list（configs/base.yaml:195
 # 的 logger 靠 oc.env→oc.decode 这层嵌套；旧 omegaconf 会解析失败 → 训练只能退回
