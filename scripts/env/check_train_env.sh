@@ -106,19 +106,6 @@ else
     exit 4; }
 fi
 
-# ── flashinfer-cubin（预编译 kernel，加速首次运行；配套包，尽力装、不致命）──
-# 无独立 import 名（数据包，装在 flashinfer 命名空间下），用 metadata 探测。装不上不影响
-# 正确性——首次运行 flashinfer 会即时编译/下载 kernel（慢一次），故【失败不致命，不 exit】。
-if "$PY" -c "import importlib.metadata as m; m.version('flashinfer-cubin')" >/dev/null 2>&1; then
-  echo "  OK   flashinfer-cubin $(_ver flashinfer-cubin)"
-elif [ "$CHECK_ONLY" = "1" ]; then
-  echo "  INFO flashinfer-cubin 缺失（非致命，首次运行即时编译/下载 kernel）"
-else
-  echo "[env] === 安装 flashinfer-cubin（加速首次运行，失败不致命）==="
-  "$PY" -m pip install -i "$PIP_INDEX" flashinfer-cubin \
-    || echo "  INFO flashinfer-cubin 安装失败（非致命，首次运行即时编译/下载 kernel）"
-fi
-
 # ── flash-attn（verl/TE 硬 import flash_attn；真包优先，装不出由 shim 兜底）──
 # 与 flashinfer 不同：flash-attn 在 CUDA 13.0 大概率编译失败，故【尽力装、不致命】——
 # 装不出时 _train_impl.sh 会前置 flash_attn_shim 兜底(bert_padding 纯 torch + interface 转发
