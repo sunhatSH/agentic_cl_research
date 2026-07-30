@@ -1538,3 +1538,34 @@ lightllm 8 replica 起+端口不撞+KV池 ✅ / 进 rollout 沙箱采样(AgentSe
 - **校验**:load_config 全 19 份 OK,长度/ppo/后端/并发逐项核对无误,0 失败。
 - **27B/cluster.yaml**:用户指示后续再改,本轮未动。
 - **状态**:config 全绿;真机 4 卡 debug 验证 65536 长序列是否触发 §28 total_nnz 现象,待执行。
+
+## 2026-07-30 §31 修复验证通过 + replay 动态比例 + 超长单条丢弃
+
+**验证(4卡 debug b1_9b_4gpu，接 §31/§32 长度对齐后首跑)**:
+- `Training Progress` 到 step 2，metrics.jsonl 落盘 2 条 → **§31 崩溃(model_type 放错层)彻底修复**：
+  compute_log_prob/update_actor 全过，长序列不再崩。step1 单步 1665s（rollout/feed 943s +
+  update_actor 516s + log_prob 198s），MFU 0.135，throughput 596 tok/s。
+- 实测长度：resp_mean ~1.5-2万 / resp_max step1=74346 step2=93183；prompt_max step1=88857
+  step2=102205；单条轨迹总长可达 15万+。显存 gpu_alloc 54.8→58.7GB / resv 60.6→66.0GB
+  （dynamic_bsz 按 token 预算切 micro-batch，显存不随 batch 增大线性膨胀）；CPU 166→172GB（双 offload 代价）。
+- flashinfer 后端验证通过并被选中（sampling_backend=flashinfer 生效，base 镜像自带）。
+- rollout 侧偶发 1 条 HERMES_TIMEOUT(900s, NO_LOG，同任务另一 session 599s 正常完成 →
+  沙箱端偶发起不来，非任务问题)；超时不重试、丢弃，min_group_success_ratio=0.5 兜底，不影响训练。
+
+**改动 1：replay 按新轨迹数动态比例(trainer/cl_replay_hook_v1.py)**
+- 新增 `cl.replay_ratio`(默认 5 = 新:旧 5:1)。每 step 回放量 = ceil(本步非padding新轨迹数 / ratio)，
+  取代原固定 replay_batch_size。回放随新数据等比缩放 → 占比恒定 ~1/6(16.7%)，不再因新轨迹
+  (沙箱失败)缩水而漂移升高(治 §370 附近记的"replay 占比失控淹没新任务")。replay_batch_size 降级为上限兜底。
+- replay_ratio<=0 退回固定行为(向后兼容)。ceil 用整数除 -(-a//b) 实现，未加 math import。
+
+**改动 2：超长单条轨迹进 verl 前丢弃(dependencies/verl recipe_custom/agent/session_worker/worker.py)**
+- 需求：单条超长在 verl 训练端 rearrange_micro_batches 撞 assert(max_token_len>=max_seq_len，单条切不开)会崩。
+  【不改 verl 的 assert】，而在 rollout 侧写 TransferQueue【之前】按长度过滤。
+- `_filter_trainable_trajectories` 加：len(prompt_ids)+len(response_ids) > max_trajectory_tokens 的单条丢弃
+  (打 AGENT_DROP_OVERLONG)。拦截点在行615过滤 → 行664写tq之前，超长轨迹根本进不了 tq/verl。
+- 阈值 `max_trajectory_tokens`：显式配 >0 用配置值；否则【自动推导】= actor.ppo_max_token_len_per_gpu ×
+  ulysses_sp(4卡65536×2 / 16卡32768×4，均=131072，正好 assert 边界)。
+- 丢弃单条后组内成功数减少 → 自动走 min_group_success_ratio(0.5)：组内丢太多则整组作废(占槽不进训练)。
+- 生效时机：改的是 dependencies/verl，当前运行的训练不热加载，下次重启生效；当前实测长度未触 131072，assert 暂不会崩。
+
+**待办**：两改动真机重启验证；replay_ratio/max_trajectory_tokens 是否显式写进 R 系列配置(现走默认/自动推导)未定。
