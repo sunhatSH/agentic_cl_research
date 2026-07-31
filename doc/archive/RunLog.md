@@ -1569,3 +1569,30 @@ lightllm 8 replica 起+端口不撞+KV池 ✅ / 进 rollout 沙箱采样(AgentSe
 - 生效时机：改的是 dependencies/verl，当前运行的训练不热加载，下次重启生效；当前实测长度未触 131072，assert 暂不会崩。
 
 **待办**：两改动真机重启验证；replay_ratio/max_trajectory_tokens 是否显式写进 R 系列配置(现走默认/自动推导)未定。
+
+---
+
+## 2026-07-31 §32 reward 恒 0 定案(两根因)+ 修复 + API-as-actor 端到端冒烟验证通过
+
+**现象**：qwen35_9b_b1_4gpu 训练 step1→52 reward 恒等于 0.0(metrics.jsonl 里 critic/rewards/critic/score 全 max=min=mean=0)，actor/pg_loss=0(GRPO 组内奖励全同→优势0→无梯度)。**结构性从头 0，不是逐渐耗额度。**
+
+**排查(全离线实证，不动 verl 不上 GPU)**：
+- reward 写回 `recipe_custom/agent/session_worker/worker.py:1107-1110`：`rm_scores=zeros`，仅 `trajectory.reward_score is not None` 才覆盖末位。
+- 打分入口 worker.py:897 `if self.reward_loop_worker_handles and ...`；判 0 不 crash：`model_reward.py:350 except` 兜住→judge_error=1+score0。
+- **排除的错误假设**：①"omni colocate 拿不到 reward_model→KeyError→0"错(enable=False 时 colocate 分支被跳过，走 agent-loop 内联打分)；②rollout dump(`_log_rollout_data` v1 版只写 uid，score 从 TQ rm_scores 取，不写 judge_error)对 H1/H2 无判别力。
+- **离线复现两个独立真根因(都致 uniform 0)**：
+  1. **judge key 没透传进 Ray worker**：SUFY_API_KEY 在 .env+load_training_env(set -a source)进 driver shell，但 `verl_runner.run_cl_ppo` 的 `_passthrough` 不含它(日志实证 `透传 env 到 Ray worker: ['PYTHONPATH']`)。Ray actor 不继承 driver shell env。缺 key 时 `agents/config._resolve_key` 静默返回 "sk-local"(不报错)→ judge 用假 key 打 sufy → 401 → except 兜 → judge_error=1 → reward 0。
+  2. **thinking judge 被 max_tokens 截断**：judge=deepseek-v4-flash(thinking)，`model_reward.py:197 max_tokens=4096`。离线实测该模型对一条真实轨迹 **reasoning_tokens=3781**，4096 几乎不留 JSON 空间 → finish_reason=length → `_raise_if_truncated` 抛 TruncatedOutputError → except → judge_error=1。**提到 16384 后同一轨迹 finish_reason=stop，verdict 正常出**(`{"safety":1,"completion":0,"robustness":0}`)。
+
+**修复(两处，均项目侧，不动 verl)**：
+- `trainer/model_reward.py`：OpenAIJudgeClient.max_tokens 变可配字段，默认 16384(env REWARD_JUDGE_MAX_TOKENS 可调)，取代硬编码 4096。
+- `trainer/verl_runner.py`：`_passthrough` 增 SUFY_API_KEY + REWARD_API_BASE/REWARD_MODEL/REWARD_API_KEY/REWARD_JUDGE_MAX_TOKENS，透传进所有 Ray actor(含 RewardLoopWorker)。
+
+**验证**：
+- 单测 `tests/test_model_reward.py` + `tests/test_judge_agreement.py` = 16 passed。
+- **新增 `scripts/reward_smoke_e2e.py`**：API-as-actor(OpenAIChatClient 包 GenerateFn)→ SessionSandboxPool(backend=local, 4 slot)真 ReAct rollout(沙箱 run_code)→ observer diff → 真 reward judge → 打分。**端到端跑通**：
+  - 每 slot reward = 0.1 / 0.2 / 0.1 / **1.0**，judge_error=0.0，gated=None(judge 真被调用且返回有效 verdict)。
+  - slot3 完整完成任务(completion=1.0)，其余部分完成 → **reward 有区分度 = GRPO 需要的优势信号回来了**(修复前全 0 → 零优势 → 不学习)。
+- 副发现：actor 默认模型 qwen3.7-max 当时 sufy 502 宕机 → 换 qwen3.6-plus 正常(能出 <toolcall> 格式)；本机 Python 用 miniconda3(训练用镜像内 /opt/conda，本机无)。
+
+**待办**：两处修复需真机重启训练验证 reward 真正非 0(改的是当前运行不热加载的代码)；正式 27B/64GPU 的 verl_runner 同一份，透传自动生效。

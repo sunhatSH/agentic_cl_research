@@ -597,6 +597,24 @@ def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
     _pp = os.environ.get("PYTHONPATH")
     if _pp:
         _passthrough["PYTHONPATH"] = _pp
+    # ★ reward judge 凭证透传到所有 ray actor(含 AgentSessionWorker 起的 RewardLoopWorker):
+    # reward 走 omni → trainer.model_reward_omni → model_reward.get_judge() →
+    # agents/config.resolve_judge() 读 SUFY_API_KEY(configs/agents.yaml reward 段 key_env)。
+    # worker 不继承 driver shell env,缺 key 时 _resolve_key 静默返回 "sk-local"(不报错)→
+    # judge 用假 key 打 sufy → 401 → compute_score except 兜住 → judge_error=1 → 每条
+    # reward 恒 0(reward=0-from-step-1 bug,2026-07-31 定案)。故必须经 runtime_env.env_vars
+    # 显式透传。REWARD_* 是 env fallback(config-first 之外的兜底);REWARD_JUDGE_MAX_TOKENS
+    # 让 thinking judge 的 max_tokens 也能外部调。见 memory/reward-zero-two-causes.md。
+    for _rk in (
+        "SUFY_API_KEY",
+        "REWARD_API_BASE",
+        "REWARD_MODEL",
+        "REWARD_API_KEY",
+        "REWARD_JUDGE_MAX_TOKENS",
+    ):
+        _rv = os.environ.get(_rk)
+        if _rv is not None:
+            _passthrough[_rk] = _rv
     if _passthrough:
         OmegaConf.update(
             cfg,

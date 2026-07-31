@@ -173,28 +173,41 @@ class OpenAIJudgeClient:
         api_key: str = "sk-local",
         timeout: float = 120.0,
         temperature: float = 0.0,
+        max_tokens: int | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.timeout = timeout
         self.temperature = temperature
+        # Thinking judges (deepseek-v4-flash/pro, gpt-5.x, claude-*-thinking) spend
+        # the ENTIRE token budget on hidden reasoning before emitting the JSON
+        # verdict. Measured: deepseek-v4-flash burns ~3.8k reasoning_tokens on one
+        # trajectory, so the old hardcoded 4096 left ~0 room for the JSON ->
+        # finish_reason=length -> TruncatedOutputError -> judge_error=1.0 -> a
+        # silent all-zero reward on EVERY row (the reward=0-from-step-1 bug,
+        # 2026-07-31). 16384 leaves ample headroom for reasoning + the small JSON.
+        # Env-overridable for even longer thinking budgets.
+        if max_tokens is None:
+            try:
+                max_tokens = int(os.environ.get("REWARD_JUDGE_MAX_TOKENS", "") or 16384)
+            except (TypeError, ValueError):
+                max_tokens = 16384
+        self.max_tokens = max_tokens
 
     def score(self, *, task, trajectory, rubric, data_source) -> Mapping[str, float]:
         import httpx
 
         messages = build_judge_prompt(task=task, trajectory=trajectory, rubric=rubric)
-        # Thinking judges (e.g. anthropic/claude-4.8-opus) can spend the whole
-        # budget on hidden reasoning before emitting the JSON verdict. 2048 was
-        # too tight and caused finish_reason=length -> judge_error=1.0 on long
-        # tasks. 4096 leaves headroom for the thinking + the (small) JSON.
+        # max_tokens is set on the client (default 16384, env REWARD_JUDGE_MAX_TOKENS).
+        # See __init__ for why 4096 was fatal for thinking judges.
         resp = httpx.post(
             f"{self.base_url}/chat/completions",
             json={
                 "model": self.model,
                 "messages": messages,
                 "temperature": self.temperature,
-                "max_tokens": 4096,
+                "max_tokens": self.max_tokens,
             },
             headers={"Authorization": f"Bearer {self.api_key}"},
             timeout=self.timeout,
