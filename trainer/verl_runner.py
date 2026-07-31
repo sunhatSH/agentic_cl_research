@@ -597,6 +597,24 @@ def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
     _pp = os.environ.get("PYTHONPATH")
     if _pp:
         _passthrough["PYTHONPATH"] = _pp
+    # ★ VERL_USE_EXTERNAL_MODULES 透传到所有 ray actor(含 AgentSessionWorker):worker
+    # 不继承 driver shell env,而 verl/__init__ 靠此 env 决定 import 哪些外部模块。不透传
+    # 则 worker 里 os.getenv 为空 → 外部 patch 模块(rollout.e2b_http1_patch 关 e2b http2 /
+    # trainer.observer_hook_register 让 create_hook 认 FQN hook)在 worker 进程根本不 import,
+    # 而这两个 patch 的目标(建沙箱 / create_hooks)恰恰都在 worker 执行 → 静默失效。
+    # 透传后外部模块在【每个】verl 进程 import verl 时都跑,patch 落到 worker。
+    _ext = os.environ.get("VERL_USE_EXTERNAL_MODULES")
+    if _ext:
+        _passthrough["VERL_USE_EXTERNAL_MODULES"] = _ext
+    # ★ 内存分配器 env 透传到所有 ray actor(含 GatewayActor):worker 不继承 driver
+    # shell env,_train_impl.sh 里 export 的 LD_PRELOAD/MALLOC_* 到不了 Ray worker,
+    # 必须经 runtime_env.env_vars 才生效。不透传则 gateway 仍走 glibc 默认 arena →
+    # 长跑碎片累积 OOM(2026-07-31 qwen35_9b_b1_4gpu step53 节点 512GB 打满,2 个
+    # GatewayActor 各 ~180GB)。见 memory/gateway-oom-jemalloc.md。
+    for _mk in ("LD_PRELOAD", "MALLOC_CONF", "MALLOC_ARENA_MAX", "MALLOC_TRIM_THRESHOLD_"):
+        _mv = os.environ.get(_mk)
+        if _mv is not None:
+            _passthrough[_mk] = _mv
     # ★ reward judge 凭证透传到所有 ray actor(含 AgentSessionWorker 起的 RewardLoopWorker):
     # reward 走 omni → trainer.model_reward_omni → model_reward.get_judge() →
     # agents/config.resolve_judge() 读 SUFY_API_KEY(configs/agents.yaml reward 段 key_env)。

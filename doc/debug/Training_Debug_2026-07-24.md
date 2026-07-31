@@ -606,3 +606,153 @@ cl_rollout_manager.AgentLoopManager + 无 use_v1/transfer_queue/remove_padding),
 - **暂不动**:b1_9b.yaml/b1_9b_8gpu.yaml(非启动路径本地测试残留,用户指示);b1_8b.yaml(8B 另模型)。
 - **校验**:load_config 全量 21 份全 OK(model_type 顶层 / override_config 只剩 attn / fsdp2 /
   fused+triton / use_v1 / RemoteAgentLoopManager),0 失败。真机重跑待执行。
+
+## §33 50+ 步后节点 OOM + GOAWAY + verl 净化(2026-07-31)
+
+§32 全量迁到新路线后，`qwen35_9b_b1_4gpu` 首次长跑（4 卡 debug）跑到 **step 53 节点 512GB 内存打满 OOM 崩溃**。排查发现 3 个独立问题（1 个真凶 + 2 个连带），并顺手把 verl 里散落的自写补丁按「verl 保持纯净上游」原则做了净化。日志：`logs/experiments/qwen35_9b_b1_4gpu/train.log`。
+
+### 故障总览
+
+| # | 症状 | 根因 | 修复 | 改哪 |
+|---|------|------|------|------|
+| 33.1 | step 53 节点 512GB OOM | **GatewayActor glibc malloc arena 碎片**（非 session 泄漏） | LD_PRELOAD jemalloc + runtime_env 透传 | 项目 |
+| 33.2 | 超时 session 不释放（次要，本轮仅 1 次） | `except Exception` 抓不到超时的 `CancelledError`(BaseException) | 合并 verl 官方 commit `0d5a988` | verl（官方） |
+| 33.3 | GOAWAY 偶发让 session 失败 | e2b SDK 默认 `http2=True` 且无 env 开关，腾讯 AGS 网关单连接 ~1000 stream 后回收 | 项目侧关 http2 走 HTTP/1.1（根治），删 verl 里的重采 | 项目 |
+| 33.4 | verl 工作区散落 4 个未提交自写补丁 | 历史上直接改 verl 源码图省事 | 3 个搬回项目侧 / 删除，1 个保留+附理由 | verl 净化 |
+
+### 33.1 真凶：GatewayActor 是 glibc arena 碎片，不是 session 泄漏
+
+**初始误判**：以为是「沙箱 timeout 资源没释放」。先量 timeout 比例证伪——全程 ~1664 个 session **只有 1 次** `session_timeout`、0 次 prefix-miss。1 个泄漏 session 才几 MB，解释不了 363GB。
+
+**OOM dump 实锤**（train.log 末尾两次 dump 完全一致）：
+```
+185.55  ray::GatewayActor     ← 泄漏全在这
+178.19  ray::GatewayActor
+ 20.39  ray::WorkerDict  ×4    ← 稳定
+  6.20  lightllm ×4            ← 稳定
+```
+trainer 进程 `actor/perf/cpu_memory_used_gb` 全程稳定 161–188GB，**只有两个 gateway 涨到合计 363GB**。
+
+**逐组件排查**（读遍 GatewayActor 内所有有状态对象）：`SessionManager._sessions` finalize 时正常 pop、`TrajectoryBuffer`、`MessageEncoder/ResponseDecoder`、app 中间件、metrics、`LLMServerClient`、`rollout_trace_op`——**均无未释放的 per-session 引用**；`enable_rollout_routing_replay=False`（排除 routed_experts numpy 大数组）；reward 走 colocate。成功路径 finalize→pop 正常。
+
+**根因判定**：gateway 是**唯一**反复分配/释放海量大 Python list 的进程（prompt_ids 上限 131072 + response_ids 65536 + logprobs + decode 文本，每 step ~740 请求）。freed chunk 留在 per-arena free list 不还 OS；节点 **128 核** → glibc 默认最多 8×128 个 arena，碎片被极度放大。trainer 用 PyTorch caching allocator（固定复用）故不涨。**verl 官方文档**（`docs/ascend_tutorial/.../dapo|gspo|retool` best-practice）亦明确：长跑需 `LD_PRELOAD` jemalloc，否则 Ray 进程内存不回收会 OOM。本机 `/usr/lib/x86_64-linux-gnu/libjemalloc.so.2` 已装但**未启用**。
+
+**修复**（`scripts/_train_impl.sh` + `trainer/verl_runner.py`，不改 verl）：
+- `_train_impl.sh` env 段：探测并 `LD_PRELOAD` jemalloc + `MALLOC_CONF`（background_thread + dirty/muzzy decay 10s + narenas:4，后台线程周期 madvise 还 OS）。`CL_ENABLE_JEMALLOC=0` 可关；无 jemalloc 降级 `MALLOC_ARENA_MAX=2`+trim。
+- `verl_runner.py`：把 `LD_PRELOAD/MALLOC_*` 加进 `ray_kwargs.ray_init.runtime_env.env_vars` passthrough——**关键**：Ray worker **不继承 driver shell env**，只有 runtime_env 里列出的才传得进 GatewayActor。
+- 实测：jemalloc 5.3.0 能 preload、`MALLOC_CONF` 生效（`opt.narenas:4` 确认）。
+
+### 33.2 次要 bug：超时 session 不释放（verl 官方已修）
+
+`worker.py::_run_session` 用 `except Exception` 捕获异常来 abort_session。但 `asyncio.wait_for` 超时抛的是 `asyncio.CancelledError`——它继承 **`BaseException` 而非 `Exception`**，故超时时 `abort_session` **不执行**，`_sessions` 不 pop，泄漏该 session。
+
+本轮只触发 1 次（≤0.2GB），**不是 33.1 的主因**。但 64 卡正式训练超时更频繁时会累积。verl 团队独立发现并修了此 bug：**commit `0d5a988`**（"bugfix: add timeout destroy", yaoyongqiang, 2026-07-31）——把 abort 移进无条件 `finally`+`asyncio.shield`，并在 `abort_session` 里 eager `.clear()` trajectories 等重载荷。
+
+**处理**：按「合并官方 commit」原则，用 3-way merge（`git merge-file`）把 `0d5a988` 合进 `session_manager.py` + `worker.py`，保住并行的本地改动；逐行验证 `worker.py == HEAD + 官方 fix` byte-identical。
+
+> 注：**这个官方 commit 救不了 33.1 的 OOM**——它只改 abort（超时）路径，不改 finalize（成功）路径；本轮 1663 个成功 session 正常 finalize+pop 后内存仍不还 OS，那是 arena 碎片，与该 commit 无关。两个独立问题，都要治。
+
+### 33.3 GOAWAY 根治：关 e2b http2 走 HTTP/1.1
+
+**核实**（读 e2b SDK 2.30.0 源码，纠正「已取消长连接/走 HTTP/1.1」的误记）：
+- `e2b/api/client_{async,sync}/__init__.py` 的 `get_transport`/`get_envd_transport` **默认 `http2=True`，且无 env 开关**（硬编码默认参数）。
+- 连接池 `max_keepalive_connections=20`、`keepalive_expiry=300s`——长连接复用**从未取消**。
+- envd（command/filesystem 流式，GOAWAY 真源）走 `sandbox_async/main.py:106` 的 `get_envd_transport`，同样 http2。
+- transport 按 sandbox **懒构造**（`AsyncSandbox.__init__`，非 import 期）→ import 期 patch 默认值可覆盖之后所有 sandbox，无 stale 缓存。
+
+腾讯官方回复给了 3 个方案：①对 RemoteProtocolError 重试一次 ②禁 HTTP/2（`httpx.AsyncClient(http2=False)`）③调大连接池缓解。选 **②根治**（HTTP/1.1 一连接一请求，无单连接 stream 上限 → 无 GOAWAY），**不在 verl 里做重采**（连接层关注点，位置错）。
+
+**修复**：新建 `rollout/e2b_http1_patch.py`——改 4 个工厂函数 `__defaults__` 里 http2→False（`sandbox_async/main.py` 用 `import ... as get_transport` 引用同一函数对象，改一处全生效）。幂等 / e2b 缺失静默跳过 / `CL_E2B_DISABLE_HTTP2=0` 可关。
+
+### 33.4 verl 净化（保持 = upstream + 官方 commit）
+
+按「verl 自己别改，官方 commit 合并进来，必须改需附理由」原则，清点 verl 工作区 5 个被改文件（全是**未提交**的工作区补丁，`git checkout` 即丢）：
+
+| 补丁 | 原位置(verl) | 处理 | 去向 |
+|---|---|---|---|
+| 超时 abort 修复 | session_manager + worker | ✅ 官方 `0d5a988` | 合并保留 |
+| GOAWAY 重采 `_is_goaway` | worker.py | 删 | 33.3 改沙箱层关 http2 |
+| **http2=False** | sandbox.py | 删 verl | → `rollout/e2b_http1_patch.py` |
+| **FQN hook** | factory.py | 删 verl | → `trainer/observer_hook_register.py`（已有） |
+| **max_trajectory_tokens** 超长丢弃 | worker.py | 删 | 官方 `convert_buffer_to_trajectory` 截断已覆盖，且所有配置 `max_model_len == ppo_max_token_len_per_gpu×sp` 两阈值恒相等 → 本地丢弃永不触发（本轮 `AGENT_DROP_OVERLONG`=0），冗余 |
+| **lightllm 3 端口** 动态分配 | async_lightllm_server.py | **保留** verl | 搬不出（见下），附「为何不搬出」理由注释 |
+
+**关键使能修复**：项目侧 patch（http2 / FQN hook）目标进程是 **AgentSessionWorker**，而 `VERL_USE_EXTERNAL_MODULES`（`verl/__init__.py` 每进程 import 时 `import_external_libs`）是 shell export、**Ray worker 不继承** → patch 只在 driver 空转、到不了 worker。修：
+- `verl_runner.py`：`VERL_USE_EXTERNAL_MODULES` 加进 runtime_env passthrough。
+- `_train_impl.sh`：`VERL_USE_EXTERNAL_MODULES` 逗号追加 `rollout.e2b_http1_patch,trainer.observer_hook_register`（幂等去重）。
+- 导入顺序已验无环：`verl.utils.import_utils` 在 `import_external_libs` 之前加载（`verl/__init__.py:23` vs `:41`）。
+
+**为何 lightllm 端口搬不出 verl**：目标是 `LightLLMHttpServer` actor，它 ①自设 `runtime_env.env_vars` 会**覆盖** job 级透传 → 收不到 `VERL_USE_EXTERNAL_MODULES`；②端口是 `setup()` 方法内构造 `StartArgs` 的**代码逻辑**，非模块级可 monkeypatch 点。故保留在 verl，附理由注释。
+
+**净化后 verl 最终只剩 3 文件**：`session_manager.py` + `worker.py`（=官方 `0d5a988`，byte-identical）+ `async_lightllm_server.py`（保留补丁，附理由）。`factory.py`/`sandbox.py` 已 `git checkout` 回纯净 HEAD。
+
+### 结论 / 待办
+
+- **可以直接重跑**：OOM（jemalloc）+ 超时释放（官方 commit）+ GOAWAY（http2 关）三个都修了，verl 回归纯净。
+- 真机 4 卡/16 卡长跑复验待执行（本轮验证均为本机静态：import/编译/patch 生效/byte-identical，无 GPU）。
+- memory 已记：`gateway-oom-jemalloc` / `e2b-http2-goaway` / `verl-keep-upstream-only`。
+
+## §34 reward 从 step1 恒 0：judge key 没进 worker + thinking 模型截断(2026-07-31)
+
+§33 修好 OOM 后，`qwen35_9b_b1_4gpu` 长跑 52 步的一个关键观察：**reward 从 step1 到 52 恒等于 0.0**（`reward/max=min=mean=0`），连带 `pg_loss=0`——GRPO 组内奖励全同 → 优势全 0 → 无梯度 → 模型根本不学习。这是**结构性从头 0**，不是逐渐耗尽额度。日志：`logs/experiments/qwen35_9b_b1_4gpu/`（含 metrics.jsonl 52 行全 0）。
+
+### 故障总览
+
+| # | 症状 | 根因 | 修复 | 改哪 |
+|---|------|------|------|------|
+| 34.1 | 每条轨迹 reward 恒 0 | **SUFY_API_KEY 没进 Ray worker** → judge 用 `sk-local` 打 sufy 401 → `except` 兜底静默判 0 | `_passthrough` 加 SUFY_API_KEY + REWARD_* | 项目 |
+| 34.2 | 每条轨迹 reward 恒 0（独立第二因） | judge=deepseek-v4-flash 是 **thinking 模型**，`max_tokens=4096` 被 reasoning 吃光 → 截断 → judge_error=1 → 0 | judge `max_tokens` 4096→16384（env 可调） | 项目 |
+
+**两个都要修**，任一没修都仍全 0（离线各自复现确证）。
+
+### 34.1 judge key 没透传进 Ray worker
+
+`SUFY_API_KEY` 在 `.env` + `load_training_env.sh`（`set -a` source）→ **driver shell 有**，但 `trainer/verl_runner.py::run_cl_ppo` 的 `_passthrough` 只透传 `CL_FAKE_ROLLOUT/PYTHONPATH/LD_PRELOAD/MALLOC_*`，**不含 SUFY_API_KEY/REWARD_***。**Ray actor 不继承 driver shell env**（同 §33.1/§33.4 的坑），只有 `runtime_env.env_vars` 里列出的才到得了 worker——日志实证只透传了 `['PYTHONPATH']`。
+
+缺 key 时 `agents/config.py::_resolve_key` 返回 `"sk-local"`（**不报错**）→ judge 用假 key 打 sufy → 401 → `compute_score` 的 `except Exception` 兜住 → `judge_error=1.0` + score 0，**静默**。
+
+**修复**（`verl_runner.py`，`MALLOC_*` passthrough 之后）：
+```python
+for _rk in ("SUFY_API_KEY","REWARD_API_BASE","REWARD_MODEL","REWARD_API_KEY","REWARD_JUDGE_MAX_TOKENS"):
+    _rv = os.environ.get(_rk)
+    if _rv is not None:
+        _passthrough[_rk] = _rv
+```
+
+### 34.2 thinking 模型 max_tokens=4096 被截断
+
+judge = `deepseek/deepseek-v4-flash-20260731`，是 **thinking 模型**——把整个 token 预算先花在隐藏 reasoning 上，才吐 JSON verdict。`model_reward.py:197` 硬编码 `max_tokens=4096`。**离线实测**：该模型对一条真实轨迹 `reasoning_tokens=3781`，4096 几乎不留 JSON 空间 → `finish_reason='length'` → `agents/base.py::_raise_if_truncated` 抛 `TruncatedOutputError` → 被 `compute_score` 的 `except` 兜 → `judge_error=1` → score 0。
+
+**把 max_tokens 提到 16384 后，同一轨迹 `finish_reason=stop`，verdict 正常出**（`{"safety":1,"completion":0,"robustness":0}`）。
+
+**修复**（`model_reward.py::OpenAIJudgeClient`）：`max_tokens` 从硬编码 4096 改成 `__init__` 可配字段，默认 `int(os.environ.get("REWARD_JUDGE_MAX_TOKENS","") or 16384)`；`score()` 里 `"max_tokens": 4096` → `"max_tokens": self.max_tokens`。
+
+### 排除的错误假设（避免重蹈）
+
+- ❌「omni colocate 拿不到 reward_model → KeyError → 0」——**错**：`reward_model.enable=False` 时 `reward_loop_worker_handles` 返回 workers（非 None）→ colocate 分支被跳过（`sync_trainer.py:264`），reward 走 agent-loop worker **内联打分**，omni 读 `reward_model` 在 try 外若真缺会**崩**而非静默 0。
+- ❌「dump 能定案 H1 vs H2」——**弱**：v1 `_log_rollout_data`（`trainer_base.py:1174`）硬编码 `reward_extra_infos_dict={"uid":...}`，score 直接从 TQ rm_scores 取，**不写 judge_error** → dump 无判别力。最终靠**离线复现**定案。
+
+### 端到端冒烟证明（API 代替 actor）
+
+新增 `scripts/reward_smoke_e2e.py`（**不碰 verl / 不上 GPU**）：`OpenAIChatClient` 包成 `GenerateFn` → 驱动 `make_react_agent_fn` 的 ReAct 循环（真在 local 沙箱 `run_code`）→ `SessionSandboxPool(backend="local")` 4 slot → observer diff（确定性取证）→ 真 reward judge → 打分。结果：
+
+```
+[smoke] reward judge = deepseek/deepseek-v4-flash-20260731  max_tokens=16384  key_len=67
+  slot0: reward=0.1  completion=0.0 safety=1.0 robustness=0.5  judge_error=0.0 gated=None
+  slot1: reward=0.2  completion=0.0 safety=1.0 robustness=1.0  judge_error=0.0 gated=None
+  slot2: reward=0.1  completion=0.0 safety=1.0 robustness=0.5  judge_error=0.0 gated=None
+  slot3: reward=1.0  completion=1.0 safety=1.0 robustness=1.0  judge_error=0.0 gated=None
+  总结：4 条轨迹, 4 条有数值 reward, 4 条 reward>0；max=1.0000 mean=0.3500
+✅ reward 非 0 —— rollout→reward 链路打通，两个根因修复有效。
+```
+
+关键：**reward 非 0 且有区分度**（0.1/0.2/0.1/1.0，slot3 完整完成任务）→ 这正是修复前缺失的 **GRPO 优势信号**。`judge_error=0` 证明 judge 真被调用、不再截断/401。
+
+### 结论 / 待办
+
+- 两处修复都在**项目侧**（不动 verl）：`verl_runner.py` `_passthrough` += SUFY_API_KEY/REWARD_*；`model_reward.py` judge `max_tokens` 4096→16384。
+- 单测 `test_model_reward.py` + `test_judge_agreement.py` = 16 passed，无回归。
+- **改的代码当前运行的训练不热加载** → 需真机重启训练才能看到线上 reward 真正非 0。
+- 冒烟时发现默认 actor `qwen3.7-max` 当时 sufy **502 宕机**（换 qwen3.6-plus 才正常）——正式训练 actor 走本地 lightllm 不受影响，但 **judge 走 sufy**，端点波动会零星 judge_error（有 `except` 兜底不崩）。
+- 未做：**全量轨迹发 judge**（去 `_MAX_TRAJ_CHARS` 截断）——须与截断防护一起设计（164k 字符 + thinking，16384 也可能不够，得配更大上限或分段）。
+- memory 已记：`reward-zero-two-causes`。

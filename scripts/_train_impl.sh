@@ -82,6 +82,42 @@ else
   export PYTHONPATH="$_FA_SHIM:$PYTHONPATH"
 fi
 export PYTHON="$PY"
+
+# ── 内存分配器：LD_PRELOAD jemalloc（防长跑 GatewayActor OOM）─────────────────
+# 现象(2026-07-31 qwen35_9b_b1_4gpu)：跑到 step 53 节点 512GB 打满,OOM dump 显示
+# 2 个 ray::GatewayActor 各涨到 ~185/178GB(合计 363GB),而 trainer/WorkerDict/lightllm
+# 全程稳定。根因不是 session 泄漏(全程仅 1 次 timeout,finalize 正常 pop),而是
+# **glibc malloc arena 碎片/保留**：gateway 反复分配/释放海量大 Python list
+# (prompt_ids≤131072 / response_ids≤65536 / logprobs / decode 文本),freed chunk 留在
+# per-arena free list 不还 OS;本机 128 核 → glibc 默认最多 8×128 arena,碎片被放大。
+# trainer 用 PyTorch caching allocator(固定复用)故不涨。verl 官方 best-practice 文档
+# (docs/ascend_tutorial/.../dapo|gspo)亦明确:长跑需 LD_PRELOAD jemalloc 否则 Ray 进程
+# 内存不回收会 OOM。本机 libjemalloc.so.2 已装但未启用。
+# CL_ENABLE_JEMALLOC=0 可关(回退到 glibc arena 收敛参数)。
+_JEMALLOC_SO="${CL_JEMALLOC_SO:-}"
+if [ -z "$_JEMALLOC_SO" ]; then
+  for _cand in \
+    /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 \
+    /lib/x86_64-linux-gnu/libjemalloc.so.2 \
+    /usr/local/lib/libjemalloc.so.2 \
+    /usr/lib64/libjemalloc.so.2; do
+    [ -e "$_cand" ] && { _JEMALLOC_SO="$_cand"; break; }
+  done
+fi
+if [ "${CL_ENABLE_JEMALLOC:-1}" = "1" ] && [ -n "$_JEMALLOC_SO" ] && [ -e "$_JEMALLOC_SO" ]; then
+  # LD_PRELOAD 前置 jemalloc(保留已有 LD_PRELOAD,如 flash-attn/nvidia 库不冲突)
+  export LD_PRELOAD="$_JEMALLOC_SO${LD_PRELOAD:+:$LD_PRELOAD}"
+  # background_thread + dirty/muzzy decay:后台线程周期性把空闲页 madvise 还给 OS
+  export MALLOC_CONF="${MALLOC_CONF:-background_thread:true,dirty_decay_ms:10000,muzzy_decay_ms:10000,narenas:4}"
+  echo "[train_cl] ✓ jemalloc 已启用(LD_PRELOAD=$_JEMALLOC_SO, MALLOC_CONF=$MALLOC_CONF)"
+else
+  # 降级:无 jemalloc 时收敛 glibc arena —— 限 arena 数 + 主动 trim,减少碎片保留
+  export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+  export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-134217728}"
+  echo "[train_cl] ⚠ 未启用 jemalloc(CL_ENABLE_JEMALLOC=${CL_ENABLE_JEMALLOC:-1}, so='${_JEMALLOC_SO:-未找到}')" \
+       "→ 降级 glibc: MALLOC_ARENA_MAX=$MALLOC_ARENA_MAX MALLOC_TRIM_THRESHOLD_=$MALLOC_TRIM_THRESHOLD_"
+fi
+
 export NNODES N_GPUS_PER_NODE="$GPUS_PER_NODE" ROLLOUT_TP_SIZE="$ROLLOUT_TP"
 export ULYSSES_SP_SIZE="$ULYSSES_SP" TRAIN_BATCH_SIZE="$TRAIN_BATCH" PPO_MINI_BATCH_SIZE="$PPO_MINI"
 export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
@@ -99,6 +135,21 @@ export VLLM_GDN_PREFILL_BACKEND="${VLLM_GDN_PREFILL_BACKEND:-triton}"
 #     monkey_patch(变长packed forward)/ omni reward / agent_loop。这是 Qwen3.5-9B 混合 GDN
 #     能用 remove_padding+flash_attn3+长序列(65536) 的前提。
 export VERL_USE_EXTERNAL_MODULES="${VERL_USE_EXTERNAL_MODULES:-recipe_custom.bootstrap}"
+# 追加项目侧外部 patch 模块（VERL_USE_EXTERNAL_MODULES 逗号分隔，verl/__init__ 在【每个】
+# verl 进程——含 AgentSessionWorker，即真正跑 AsyncSandbox.create / create_hooks 的进程——
+# import verl 时消费；经 verl_runner.py 的 runtime_env passthrough 传进 Ray worker）：
+#   · rollout.e2b_http1_patch      —— 关 e2b SDK 默认 http2 走 HTTP/1.1，从根上消除腾讯
+#       AGS 网关的 GOAWAY（单 HTTP/2 连接 ~1000 stream 后回收）。CL_E2B_DISABLE_HTTP2=0 可关。
+#   · trainer.observer_hook_register —— monkey-patch recipe_custom hook factory 认 FQN hook
+#       名（如 trainer.observer_hook.ObserverDiffHook），使自定义 hook 无需改 verl 源码即可挂载。
+# 两者都必须在 worker 进程生效（patch 目标都在 worker），故走 VERL_USE_EXTERNAL_MODULES 而非
+# driver-only import。逐个幂等去重。
+for _mod in rollout.e2b_http1_patch trainer.observer_hook_register; do
+  case ",$VERL_USE_EXTERNAL_MODULES," in
+    *,"$_mod",*) : ;;  # 已含,不重复追加
+    *) export VERL_USE_EXTERNAL_MODULES="$VERL_USE_EXTERNAL_MODULES,$_mod" ;;
+  esac
+done
 export MODELING_BACKEND="${MODELING_BACKEND:-hf}"
 # (2) agent trace / transfer_queue(照参考脚本 debug_rl_qwen35_9b.sh)
 export VERL_AGENT_TRAINABLE_TRACE_TYPES="${VERL_AGENT_TRAINABLE_TRACE_TYPES:-agent,context_compression}"
