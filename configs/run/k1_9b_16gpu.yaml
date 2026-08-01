@@ -57,7 +57,7 @@ actor_rollout_ref:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.75
+    gpu_memory_utilization: 0.65
     n: 8
     load_format: auto
     max_model_len: 131072              # = 参考 max_token_length
@@ -90,8 +90,8 @@ actor_rollout_ref:
         batch_max_tokens: 6144
         enable_multimodal: false
         enable_torch_memory_saver: true
-        graph_max_batch_size: 256
-        running_max_req_size: 256
+        graph_max_batch_size: 64
+        running_max_req_size: 64
         sampling_backend: flashinfer       # 照搬参考(triton→flashinfer)
         disable_vision: true
         disable_audio: true

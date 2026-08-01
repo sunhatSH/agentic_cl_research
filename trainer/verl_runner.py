@@ -633,6 +633,15 @@ def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
         _rv = os.environ.get(_rk)
         if _rv is not None:
             _passthrough[_rk] = _rv
+    # ★ NCCL cuMem 关闭,透传到所有 ray actor(含 lightllm 推理副本):lightllm 开
+    # enable_torch_memory_saver(CUDA VMM/cuMem 劫持 cudaMalloc),与 NCCL 默认
+    # NCCL_CUMEM_ENABLE=1(NCCL 也用 cuMem 给 P2P buffer 分配)冲突 → 部分 lightllm
+    # 副本起服卡在 server-start-up(uvicorn 起不来,到不了 594)→ verl llm_server.py:521
+    # 无超时 asyncio.gather 永久阻塞 → 16卡 rollout 从没开始就静默 hang(b1_16gpu 6 次
+    # 复发,换节点仍撞;§45 定案)。verl 已给 vllm/sglang 设 =0(sglang_rollout.py:57 引
+    # sgl #6723),lightllm 是遗漏项。关的是 CUMEM 不是 P2P,TP 内带宽保留、保持 2 机。
+    # 可 CL_NCCL_CUMEM 覆盖(极少数场景需 =1 时)。见 doc/debug §45。
+    _passthrough.setdefault("NCCL_CUMEM_ENABLE", os.environ.get("CL_NCCL_CUMEM", "0"))
     if _passthrough:
         OmegaConf.update(
             cfg,

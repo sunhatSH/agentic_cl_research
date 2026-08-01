@@ -73,7 +73,8 @@ actor_rollout_ref:
     max_model_len: 131072              # = 参考 max_token_length
                                        #   既覆盖 prompt4096+response12288,又减少 KV 池压力。
     max_num_batched_tokens: 6144
-    enable_chunked_prefill: false
+    enable_chunked_prefill: false       # ⚠️ 死键:lightllm 不读它(仅 vllm/trtllm 用),对 lightllm 无效。
+                                        #   lightllm 实际 chunked 恒开,分段由 batch_max_tokens 管。见 §44/§45。
     calculate_log_probs: true
     log_prob_micro_batch_size_per_gpu: 1
     log_prob_max_token_len_per_gpu: 65536  # = max_token_length(131072)/SP(2)

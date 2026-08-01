@@ -124,6 +124,13 @@ export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
 export ROLLOUT_GPU_MEM_UTIL="$GPU_MEM_UTIL"
 export HF_DATASETS_CACHE="/tmp/hf_datasets_cache" HF_HOME="/tmp/hf_home"
 export VLLM_GDN_PREFILL_BACKEND="${VLLM_GDN_PREFILL_BACKEND:-triton}"
+# ── NCCL cuMem 关闭（防 16卡 lightllm 起服 hang）──────────────────────────────
+# lightllm 开 enable_torch_memory_saver(cuMem VMM 劫持 cudaMalloc) × NCCL 默认
+# NCCL_CUMEM_ENABLE=1 冲突 → 部分副本 uvicorn 起不来 → verl 无超时 gather 死等 →
+# 16卡 rollout 从没开始就 hang(b1_16gpu 6 次复发;§45)。verl 已给 vllm/sglang 设 =0
+# (sgl #6723),lightllm 漏了。关 CUMEM 不关 P2P,TP 带宽保留、保持 2 机。verl_runner.py
+# 也会透传进 Ray worker(worker 不继承本 shell env),这里 export 是双保险 + 单机路径。
+export NCCL_CUMEM_ENABLE="${CL_NCCL_CUMEM:-0}"
 # ══════════════════════════════════════════════════════════════════════════════
 # recipe_custom 原生 agent_loop 路线 env（迁移自自写 rollout；见 plan swift-juggling-toast /
 # debug §30）。所有值 ${VAR:-默认} 形式,可外部覆盖。env 三处来源分工：

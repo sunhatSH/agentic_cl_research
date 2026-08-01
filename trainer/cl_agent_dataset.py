@@ -81,6 +81,11 @@ class CLAgentDataset(RLHFDataset):
         # super() 已填 raw_prompt/extra_info/index/tools_kwargs 等。这里补 agent_assets。
         record_id = _record_id_of(row_dict)
         assets = build_agent_assets(record_id)
-        if assets:
-            row_dict["agent_assets"] = assets
+        # 恒写该 key（无输入文件的 record 也写空 dict）——否则一个 gen-batch 里"有文件"
+        # 和"无文件"的行 agent_assets 字段有无不一致，verl get_tensordict
+        # (tensordict_utils.py) 会因非张量字段 batch 尺寸不一致抛
+        # "AssertionError: Batch size of tensor agent_assets ... Expected N, got M"
+        # （§37：4gpu step54 崩因）。空 dict 下游 unique_asset_specs/e2b runner
+        # 均按 falsy 跳过注入（`if not agent_assets` / `if agent_assets`），语义无副作用。
+        row_dict["agent_assets"] = assets if assets else {}
         return row_dict

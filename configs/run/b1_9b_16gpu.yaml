@@ -68,13 +68,16 @@ actor_rollout_ref:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.75        # 照搬参考(remove_padding 训练省显存,rollout 可给 KV 池更多)
+    gpu_memory_utilization: 0.65  # 0.75→0.65(§OOM):16卡 colocate 训练进程+跨节点NCCL 多占~6GB,砍 KV 池给推理 prefill 留余量。4卡单机余量足仍 0.75
     n: 8
     load_format: auto
     max_model_len: 131072              # = 参考 max_token_length
                                        #   缩到 65536 既覆盖 prompt4096+response12288,又减 KV 池压力。
     max_num_batched_tokens: 6144        # 照搬参考
-    enable_chunked_prefill: false
+    enable_chunked_prefill: false       # ⚠️ 死键:verl 只有 vllm/trtllm async_server 读它,lightllm 的
+                                        #   async_lightllm_server.py 不读→对 lightllm 不生效。lightllm 实际
+                                        #   disable_chunked_prefill=False(chunked 恒开,StartArgs 实证),
+                                        #   分段由 batch_max_tokens/chunked_prefill_size 管,不是这个 false。见 §44/§45。
     calculate_log_probs: true           # rollout 带回 logprob → old_log_prob(PPO clip/ppo_kl 生效)
     log_prob_micro_batch_size_per_gpu: 1
     log_prob_max_token_len_per_gpu: 32768  # = max_token_length(131072)/SP(4)
@@ -109,8 +112,8 @@ actor_rollout_ref:
         batch_max_tokens: 6144
         enable_multimodal: false
         enable_torch_memory_saver: true
-        graph_max_batch_size: 256       # 配合 256 并发
-        running_max_req_size: 256       # 推理端一次并发上限=256(=train_batch32×n8)
+        graph_max_batch_size: 64  # 跟随 running_max_req_size
+        running_max_req_size: 64  # 单副本并发上限。16卡=8副本,每步256轨迹÷8=32/副本,留2×余量→64(原256=错把全局总量当单副本上限)
         sampling_backend: flashinfer       # 照搬参考(triton→flashinfer)
         disable_vision: true
         disable_audio: true

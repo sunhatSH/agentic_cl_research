@@ -1596,3 +1596,255 @@ lightllm 8 replica 起+端口不撞+KV池 ✅ / 进 rollout 沙箱采样(AgentSe
 - 副发现：actor 默认模型 qwen3.7-max 当时 sufy 502 宕机 → 换 qwen3.6-plus 正常(能出 <toolcall> 格式)；本机 Python 用 miniconda3(训练用镜像内 /opt/conda，本机无)。
 
 **待办**：两处修复需真机重启训练验证 reward 真正非 0(改的是当前运行不热加载的代码)；正式 27B/64GPU 的 verl_runner 同一份，透传自动生效。
+
+---
+
+## §35 reward 修复线上验证通过(4GPU b1, step1, 2026-07-31)
+
+§34 两处修复(judge key 透传 + max_tokens 16384)**真机重启后线上验证通过**。`qwen35_9b_b1_4gpu` 带修复重跑,step 1 打分完成,`logs/metrics/qwen35_9b_b1_4gpu/metrics.jsonl`:
+
+| 指标 | 修复前(上次 52-step run) | 修复后(本次 step1) |
+|------|--------------------------|---------------------|
+| `critic/rewards/mean` | 0.0(52 步全 0) | **0.7708** |
+| `critic/rewards/max` | 0.0 | **1.0** |
+| `critic/rewards/min` | 0.0 | 0.0 |
+| `actor/pg_loss` | 0.0(无梯度) | **0.0129** |
+| `critic/advantages/max\|min` | 0(全同) | **+1.58 / −2.26** |
+| `actor/ppo_kl` / `pg_clipfrac` | — | −1.3e-4 / 0.0081 |
+
+**reward 非 0 且有区分度 → GRPO 优势信号恢复(advantages 有正有负)→ pg_loss 非 0 → 模型真在学**。judge 真被调用、无 401/截断迹象。日志透传实证 `['PYTHONPATH','VERL_USE_EXTERNAL_MODULES','MALLOC_*','SUFY_API_KEY']` + 真 key(非 sk-local)。session finish: stop=46 / tool_calls=608(多轮 ReAct 正常),response_length mean=25310/max=61375。**两个根因修复线上层面证明有效。**
+
+---
+
+## §36 两个 16GPU run 失败(GPU 未释放),4GPU 正常(2026-08-01)
+
+同时跑三实验:**4GPU b1 正常到 step 52**(reward 0.4~0.77 健康波动、pg_loss 有正负、entropy 稳),
+两个 16GPU 都失败且 **GPU 未释放**(进程 hung 不退)。
+
+### 4GPU(对照,正常)
+`qwen35_9b_b1_4gpu`:step 52,metrics 52 行齐全,reward/mean 稳在 0.5~0.77,pg_loss 正负交替,
+entropy 0.17~0.42 无坍缩。SP=2,DP=2,train_batch=4(×n8=32 轨迹/step),负载小。
+
+### ① k1_16gpu — lightllm 推理侧 CUDA OOM → 进程 hung
+- 现象:step1 rollout 中(未完成一步,metrics=0),`LightLLMHttpServer` 在 **prefill 阶段 CUDA OOM**
+  (`GPU 1 total 79.32GiB`,08-01 03:19),之后 lightllm 陷入 `abort request wait release timeout` /
+  `pause_generation abort_all still waiting` **死循环 ~5.5 小时**(03:19→08:53 日志仍在刷 abort),
+  进程不退 → **GPU 一直被占,系统不回收**。
+- 根因:16 卡 SP=4、gpu_memory_utilization=0.75,推理 KV 池 + 长序列 prefill(response 65536)峰值超显存;
+  单请求 prefill OOM 后 lightllm 不能干净 abort/释放,卡在 release 等待。
+
+### ② b1_16gpu — rollout 前 hung(过了 8<16 卡检查,但卡在 worker 初始化)
+- 现象:比昨天那次(§35 提到的 8<16 卡)走得远——lightllm server 全部 `server start up ok`
+  (02:36)、WorkerDict 权重加载 100%、FSDP 建好,**但沙箱请求=0、Training Progress 从未出现**,
+  日志 **02:36 冻住**(driver 侧再无动作),GPU 占着不退。
+- 关键线索:`[Gloo] Rank 0 is connected to 0 peer ranks. Expected ... 0`——各 rank gloo 组只连自己;
+  疑似 rollout manager / agent_loop 初始化(GatewayActor↔AgentSessionWorker↔lightllm 建连)或
+  跨节点 TransferQueue 握手卡住,一直等不到 → 无超时、无报错,纯 hang。
+
+### 与 4GPU 对比:为什么 16 卡出事、4 卡不出
+| 维度 | 4GPU(正常) | 16GPU(失败) |
+|------|-----------|-------------|
+| 节点 | 单节点 1×4 | **跨 2 节点 2×8** |
+| SP | 2 | **4**(单卡序列切 4 段) |
+| train_batch | 4(32 轨迹/step) | **32(256 轨迹/step)** — 采样/显存压力 ×8 |
+| 失败点 | — | k1=推理 prefill OOM;b1=跨节点 rollout 建连 hung |
+- 4 卡单机、负载小、无跨节点握手,故稳;16 卡跨节点 + 大 batch + 长序列同时放大**显存峰值**与
+  **分布式建连复杂度**,两个各踩一个:一个显存爆(OOM),一个跨节点协同 hung。
+- **共性教训**:两者失败后都 **hung 不退 → GPU 不释放**(k1 是 lightllm abort 死循环;b1 是 driver 死等),
+  需手动 `ray stop` / kill 回收。
+
+### 待办
+- k1:降推理显存峰值(gpu_memory_utilization 0.75→↓ 或 SP↑ 或限 rollout 并发/max_num_batched_tokens),
+  给 prefill 留余量;或对 OOM 请求走可恢复 abort。
+- b1:定位 rollout 初始化 hung 点(GatewayActor/agent_loop 跨节点建连 or TransferQueue),加超时+自愈。
+- 两者都需:失败自动退出 + `ray stop` 释放 GPU(避免占卡 hang 数小时)。
+
+---
+
+## §37 4GPU 跑到 step54 崩:agent_assets 非张量字段 batch 尺寸不一致(2026-08-01)
+
+4GPU b1 健康跑完 **53 step**(reward 稳、pg_loss 正常),**step 54 崩**——**不是** OOM/超长,是数据 schema 问题:
+
+```
+AssertionError: Batch size of tensor agent_assets is not consistent with other tensors. Expected 4, got 2
+  verl/utils/tensordict_utils.py:441 get_tensordict
+  ← recipe_custom/trainer/v1/sync_trainer.py:536 _add_batch_to_generate → _next_train_batch → _fetch_one_gen_batch
+```
+
+**根因链**(已定位):
+- `agent_assets` **不在数据集**(train.parquet 无此列、extra_info 也无,45242 行全 0)。它是 **rollout 时**由沙箱 runner 按 prompt 的 `sample_fields` **有条件产出**的 per-datum 字段(`worker.py:497`:`{key: sample_fields[key] for key in (...,"agent_assets",...) if key in sample_fields}` —— **`if key in` 条件写入**)。
+- 于是一个 gen-batch(train_batch=4)里,**部分 prompt 带 agent_assets、部分不带** → 写进 TQ 的 field 有的有该 key 有的没有。
+- verl `get_tensordict`(tensordict_utils.py:441)要求 **batch 内每个字段行数一致**;`agent_assets` 只有 2 行、其它张量 4 行 → 断言崩。
+- 前 53 步没崩是**巧合**:那些 step 的 4 条恰好同质(要么都带要么都不带);step54 第一次撞上"4 条里 2 带 2 不带"的混合批 → 崩。**非确定性,resume 到 step54 未必同点复现,但迟早会撞。**
+
+**与之前失败区分**:§36 k1=推理 prefill CUDA OOM;§36 b1_16gpu=跨节点 rollout hung;§37 4GPU=agent_assets 字段 batch 不一致。**三个不同根因**,勿混。
+
+**修复方向(待定)**:
+1. **补齐字段**:让 `agent_assets` 对 batch 内**每条都写**(缺失填空 `{}`/`[]`),保证 batch 尺寸一致——最稳,项目侧或 worker 侧统一。
+2. 或 rollout 侧把 agent_assets 从 TQ tensordict 字段里**排除**(它不是训练用张量,只是沙箱 staging 元数据,不该进 train batch)。
+3. 4GPU 已跑 53 step 验证了 reward/训练链路健康(本 bug 与 reward 无关),此 bug 是**数据字段一致性**,独立修。
+
+---
+
+## §38 16卡两节点内存差异归因 + b1_16gpu hang 真因=NCCL P2P(2026-08-01)
+
+多 agent 只读排查(4 假设并行核查 verl 源码+日志,对抗综合)。核实结论(证据强度已标注)。
+
+### 用户问题:两节点显存/内存差异大
+
+**主因是 CPU host RAM(非显存),且 head 偏高是 verl 原生结构性正常,非 bug/非 placement 不均。**
+
+- **CPU 内存 head 偏高 = head 独占 driver 进程组件**(日志实证):
+  - driver `CLTaskRunnerV1`(pid=4122)只在 head(train.log:6 `Local node IP 10.120.4.114`+:4 `ray start --head`;pid=4122 全程无 `ip=` 标签,worker actor 均带 `ip=10.120.4.107`)。
+  - **TransferQueue controller+storage 全绑 `localhost`(=head 进程内)**——`train.log:966-967` Mooncake `master_server_address/metadata_server: 'localhost:50124/50123'`,`:969` SimpleStorage 8 单元;`verl_runner.py:732 tq.init()` 在 driver 里。全 batch prompt/response/logprob tensor 压 head。**这是 head CPU 内存偏高最大来源**(~十 GB 级,每 step kv_clear 回收)。
+  - b1 里 val_files alias 到 train → head 驻留**两份** 45242 行 tokenized dataset。
+  - Ray GCS/dashboard/object-store owner head 独占。
+  - buffer 非大头:`train.log:538 lambda_replay=0`+buffer.enabled=false → 项目 9 桶 buffer 不建。
+- **GatewayActor 大内存(§33 单个~180GB glibc arena)两节点 round-robin 均分,不制造 head-vs-worker 不对称**:`agent_loop_manager.py:151-158`(gateway)/`414-436`(session worker)/`reward_loop.py:304-320`,均 `NodeAffinitySchedulingStrategy(node_ids[i%n], soft=True)`,注释明说防 PACK-to-driver。8→4/4。已透传 `MALLOC_ARENA_MAX=2`(train.log:53)缓解。
+- **显存(VRAM)两节点对称,无 head 偏置**(日志实证,假设"卡分配倾斜"**推翻**):HYBRID colocate(非 40+24 分离,`lightllm_rollout.py:49-50`)+ TP=2 → 严格 8 replica/16卡=4/4(`replica.py:138-156`);**KV 池两节点实测同为 `3015483 @ mem_fraction 0.75`**(train.log:1256 head / :1281 worker,[repeated 8x]);FSDP param+optimizer 双 offload → VRAM 训练脚印小(`After FSDP 5.31/79.18`)。**若实测 head 显存真更高→超结构可解释,需分节点 nvidia-smi 坐实;强烈怀疑用户看到的差异其实是 CPU 内存被读成显存。**
+
+### 附带重大发现:§36 b1_16gpu "hang" 真因 = NCCL P2P CUDA failure(不是单纯 hang)
+
+`train.log:1378` `transport/p2p.cc:863 NCCL WARN Cuda failure 1 'invalid argument'`,02:36:18,**两节点都报**(master-0 ×4 / worker-0 ×3),发生在 lightllm 跨卡 NCCL 建链;之后日志 02:36:53 冻死(到 2038 行止)。**这是 P2P/CUDA 初始化失败致 rollout 引擎握手死等,不是内存/显存高低导致。** 与 head 内存偏高**无因果**。
+
+### host RAM OOM 是独立第三类风险(需盯)
+head 因多驻留(两份 dataset + TQ storage 全 batch tensor + GCS + 4 个 gateway arena)host RAM 系统性高于 worker;长跑逼近整机上限时 **head 先触 host OOM 风险 > worker**。与 §33(对称 GPU OOM)/§36(P2P hang)不同源。
+
+### 修复方向(区分项目侧 vs 动 verl)
+1. **[最高优先,先修 hang]** NCCL P2P `Cuda failure 1`:runtime_env/`_train_impl.sh` 试 `NCCL_P2P_DISABLE=1`(或 `NCCL_P2P_LEVEL=NVL`)绕过验证连通,再查 IB/NVLink 拓扑 or 容器 `--ipc`/`--shm`。**内存均衡在 hang 修好前无从谈起。**
+2. [验证] run 起来后分节点 `nvidia-smi`+`free -g`+`ray status` 坐实"差异是 CPU 还是 VRAM"。
+3. [CPU 内存缓解,项目侧] val_files 别 alias 到 train(省一份数据集);评估 TQ storage 是否可分布式(解 head 单点);保留 MALLOC_ARENA_MAX=2。
+4. [慎改] driver 落 head 是 verl 原生(`main_ppo.py:82` 无节点约束),强制上 worker 需改 verl 调度,收益有限(GCS 仍在 head),**建议不改**。
+5. gpu_memory_utilization 别为"均衡"调(两节点对称);要调只为 §33 对称 GPU OOM 让显存。
+
+> 不确定性:run 在 init 期 hung,三大 worker 池未创建,全部运行态 RSS/VRAM 数字缺失;gateway 4/4 实际达成、head 绝对水位、"差异究竟 CPU 还是 VRAM"均需 run 真跑起来分节点实测。
+
+---
+
+## §39 超长轨迹根因 + 三实验失败归纳 + 并发/len 体检(2026-08-01,多agent源码实证)
+
+多 agent 深挖 verl recipe_custom 源码,回答用户 5 问。核心均源码/日志实证。
+
+### 三实验失败(三个不同根因,勿混)
+| 实验 | 失败点 | 根因 |
+|------|--------|------|
+| k1_16gpu | lightllm prefill CUDA OOM(6次)→ 进程 hung | 并发×超长 撑爆 KV 池(见下 Q3) |
+| b1_16gpu | NCCL P2P `Cuda failure 1 'invalid argument'`(7次,两节点)→ hung | GPU 已分配(KV池/cudagraph/FSDP权重就位)**但 0 step**;§38 |
+| b1_4gpu | `AssertionError: agent_assets batch 4 vs 2` | agent_assets 非张量字段 batch 内不一致(§37) |
+
+### Q2:b1_16gpu "数据进 GPU 但没运行" —— **确认**
+日志实证:KV 池已 profile(`max_total_token_num`)、cudagraph captured、FSDP 权重 100% 加载(`device memory used 5.31/79.18`)→ **显存已分配**;但 `Training Progress=0`、沙箱请求=0、step=0 → **一步没跑**。NCCL P2P init 失败致 rollout 引擎握手死等,GPU 占着空转。
+
+### Q4:推理侧超长根因 —— **65536 是死配置,轨迹级只按 max_model_len(131072) 截**
+- 走 RemoteAgentLoopManager+hermes+gateway 路线(非 in-process ToolAgentLoop)。
+- 单次生成 `max_tokens = rollout.response_length = 65536`(`gateway/request_utils.py:171`;`awm_sandbox_runner.py:212`),**只管单次 LLM 调用,不跨轮累积/递减**。
+- 8 轮 ReAct 每轮 assistant(≤65536)+工具输出(≤16384)累加进同一 response。
+- **整条轨迹唯一总闸门 = `gateway/trajectory_buffer.py:170` `response_capacity = max_model_len - len(prompt)`**,max_model_len 来自 `gateway.py:106` config 值=**131072**。
+- 实测峰值 **119586 < 131072** → 实锤撞的是 131072 不是 65536;理论最大 ≈131072-prompt≈122876。
+- 对照:同仓 `tool_agent_loop.py:296` 才按 max_response_length 跨轮递减,但**本配置不走它**——这正是 §33.4 删自写 max_trajectory_tokens 后失去的保护。
+
+### Q5:能否阻止超长进训练 —— **verl 原生零长度闸门(源码实证)**
+- `session_worker/worker.py:1034-1076` 把 response_ids **原样**写 TQ,无二次截。
+- `worker.py:359-377 _filter_trainable_trajectories` **只按 trace_type 过滤,完全不看长度**。
+- gateway 的 131072 截断 ≠ 入训丢弃(截到 131072 照样全量进 PPO)。§33.4 删掉的 max_trajectory_tokens 是唯一曾有的入训长度闸门。
+
+### Q3:并发/len 配置 —— **有明确问题,16 卡必 OOM。两个独立开关必须一起改**
+- **关键新发现**:gateway 用 config `max_model_len=131072`,但 **lightllm 引擎侧 `async_lightllm_server.py:132` 把自己的 max_model_len 覆盖成 HF `max_position_embeddings`=262144**(Qwen3.5-9B config.json 实证),`max_req_total_len=max_model_len`。两套值。
+- KV 池 `max_total_token_num`≈3015483(RunLog:1429/1704 实测 @0.75);单条满长 119586 → **~25 条即吃满池**;配置却下 **running_max_req_size=256**(`engine_kwargs.lightllm` 后置覆盖真生效)→ **超订 ~10×** → prefill OOM(k1)。
+- 4 卡 running_max_req_size=32(乘积 1/8)未撞满,扛过 53 步。
+
+### 推荐修复
+**方案甲(纯项目侧配置,零改 verl,首选,先上)**:改 `configs/run/b1_9b_16gpu.yaml`:
+1. `max_model_len: 131072 → 73728`(=prompt 8196+response 65536)→ gateway response_capacity 压到 ~65k(Q4/Q5 收口)。
+2. `running_max_req_size: 256 → 64` + `graph_max_batch_size: 256 → 64`→ 并发×长度不超 KV 池(Q3 OOM)。
+   ⚠️ 缩 max_model_len 只压 gateway;引擎侧 :132 仍覆盖 262144,故**必须同时降 running_max_req_size**,两开关缺一不可。
+**方案乙(彻底根治,动 verl 需 passthrough+理由)**:`trajectory_buffer.py:170` 加独立旋钮 `response_capacity=min(max_model_len-prompt, cfg_response_cap)`,response 上限与引擎上下文解耦(=把 §33.4 删的 max_trajectory_tokens 挪进官方 gateway)。仍须叠加方案甲的并发降配。
+
+---
+
+## §40 修复 agent_assets batch 不一致(§37 4gpu step54 崩)(2026-08-01)
+
+**根因(项目侧,已定位到行)**:`trainer/cl_agent_dataset.py:84` `if assets:` —— 只有 taskspecs_w3/<rid>/files 目录存在的 record 才写 `agent_assets` 键(`build_agent_assets` 无文件返回 {})。一个 gen-batch(train_batch=4)混合"有文件"和"无文件"的 record → 有的行带 agent_assets 键、有的不带 → verl `get_tensordict`(tensordict_utils.py:441)对非张量字段要求 batch 内每行都在,断言 `Batch size of tensor agent_assets ... Expected 4, got 2` 崩。前 53 步没崩是巧合(那些 step 的 4 条恰好同质)。
+
+**修复**:`__getitem__` **恒写该 key**——`row_dict["agent_assets"] = assets if assets else {}`。空 dict 下游容忍:`sandbox_setup.unique_asset_specs` `if not agent_assets: return []`、`e2b_agent_runners.py:204` `if agent_assets:` 跳过注入 → 语义无副作用,只是让 batch 内每行都有该字段、尺寸一致。本机 stub 验证通过(无文件 record 也输出 agent_assets={})。**纯项目侧,不动 verl。**
+
+## §41 澄清两个概念问题(2026-08-01)
+
+**Q:方案3(降并发防 OOM)和方案4(缩 max_model_len 防超长)矛盾吗?** —— **不矛盾,是同一因果链的两个不同环节,必须同时做。**
+- 4(缩 max_model_len 73728):管**单条轨迹能多长**——gateway `response_capacity=max_model_len-prompt` 决定单条 response 上限。缩它 → 单条不再冲到 120k。
+- 3(降 running_max_req_size 64):管**同时有多少条在推理**——KV 池被"并发条数 × 每条长度"吃。
+- 显存需求 ≈ 并发 × 单条长度。4 压"单条长度"因子,3 压"并发条数"因子,**两个因子相乘决定峰值,压任一个都只解一半**。且有独立第三点:引擎侧 `async_lightllm_server.py:132` 把自己的 max_model_len 覆盖成 HF 262144,配置缩 max_model_len 只压 gateway 轨迹截断、压不住引擎 KV 规划 → 引擎侧只能靠降并发兜。故 **3+4 缺一不可,不矛盾。**
+
+**Q:最长 122876 < 131072,为什么说 max_response_length(65536) 失效?** —— "失效"指的是 **65536 这个值**,不是 131072。
+- 我们**配置意图**是 response ≤ **65536**(`max_response_length`/`response_length`)。
+- 但这条路线(RemoteAgentLoopManager+gateway)里,65536 只作**单次生成**的 max_tokens;整条多轮轨迹的**唯一硬闸门是 131072(max_model_len)**。
+- 实测峰值 119586:**远超我们想要的 65536(1.8×),但确实没超 131072**。
+- 所以"失效"= **65536 这道我们以为存在的闸门根本没生效**(轨迹级从不按它截),轨迹一路涨到逼近 131072 才被挡。**不是"超过 131072",而是"越过了本该拦在 65536 的线"**。131072 是兜底、不是我们要的上限;122876 未超 131072 恰恰证明"拦它的是 131072 而非 65536"——即 65536 失效的**证据**,不是反证。
+
+---
+
+## §42 修正 k1 OOM 归因:是 KV 池饱和(并发×累积长度)而非单条 12 万轨迹(2026-08-01)
+
+**自我纠错**:§39 把 k1 OOM 归到"单条 119586 超长轨迹撑爆",**归因过粗**。回原始 OOM 日志(k1 train.log:4991)细看,更准确的机制:
+
+- OOM 原文:`Tried to allocate 24.00 MiB. GPU 1 total 79.32 GiB of which 24.75 MiB is free` —— **压垮的最后一根稻草只有 24MB,说明 GPU 早已 ~99.97% 满**。不是某一条巨型轨迹瞬间撑爆,是 **KV 池被持续占满后,一个微小分配触顶**。
+- k1 实测 KV 池 `max_total_token_num=2914404`(非 §39 引的 3015483,那是别的 run)。
+- **真正的内存吃主是"回填的 prompt",不是单次生成**:实测 `prompt_token_num` 最大 **122131**,而 `out_token_counter`(单次生成)最大仅 16589。多轮 ReAct 把**前几轮完整对话历史全部拼进下一轮 prompt** → prompt 越滚越大,单个请求 prompt 就占池 4.2%。
+- OOM 前窗口内 **16 个 prompt>40k 的大请求并发**;16×~40k+ ≈ 已逼近甚至超过池容量 2914404。
+- 这次 run 的 `response_length/max=98474`(不是 §39 说的 119586;119586 是 4gpu 的)。
+
+**修正后的准确归因**:k1 OOM = **并发(256)× 每请求累积上下文(prompt 回填可到 12 万)乘积 ≫ KV 池 2914404**,是**池整体饱和**,不是单条超长轨迹。超长仍是因子之一(每条越长,池装得越少),但"并发太高"和"多轮 prompt 回填无限增长"是同等甚至更主的因子。
+
+**对修复方案的影响**:§39 方案不变但优先级调整——
+- **降并发(running_max_req_size 256→64)是第一位**:直接减少同时占池的请求数。
+- 缩单条长度(max_model_len/response cap)是第二位:减小每条占用。
+- 两者仍缺一不可(峰值=并发×单条长度),但**主因偏"并发过订"而非"单条过长"**。§39 表述"约 25 条满长吃满池、256 是 10× 超订"方向对,但精确说是"prompt 回填 + 256 并发"共同饱和。
+
+**诚实标注**:"16 个 prompt>40k 并发"是 OOM 前 ~190 行日志窗口的粗数,非精确同刻并发;但足以证明是多请求累积饱和,非单条。
+
+---
+
+## 2026-08-01 §32 16卡 k1 lightllm prefill OOM 归因（推翻"并发过订"与"偶发峰值 D"）
+
+- 现象：16卡 k1 GDN prefill CUDA OOM（`chunk_gated_delta_rule_fwd_h` alloc 24MB 失败），4卡 b1 稳跑到 step 54 无推理 OOM。
+- 归因结论：**确定性单卡显存不足**，非偶发 prefill 峰值。
+- 硬证据（train.log）：
+  - 16卡 k1 log:4991 OOM：`GPU 1 total 79.32GiB, 24.75MiB free; Process A 11.04GiB + Process B 68.20GiB`。缺口仅 ~24MB。
+  - 权重加载后剩余显存:16卡=44.36GB(log:1319) vs 4卡=50.37GB(b1 log:1173) → 差 ~6GB。
+  - KV 池 max_total_token_num:16卡=2914404(log:1288) vs 4卡=3301275(b1 log:1175)。mem_fraction 都=0.75 → 池大小 = 0.75×profile 时剩余显存，6GB 差异全部来自 profile 时剩余显存差。
+  - cudagraph:16卡 capture batch<=256(log:2082,681MB private pool)vs 4卡 batch<=32(b1 log:1383)。
+  - colocate HYBRID:两边都 param_offload+resume_memory_occupation；11GB 那个进程=同卡 FSDP 训练 worker 残留（offload 非零 + NCCL/allgather buffer，world 越大越多）。
+  - GDN prefill h = k.new_empty(B,NT,H,K,V)(chunk_delta_h.py:287)，∝ 同时 prefill 的总 token(ΣT/64)，不是 per-req；24MB 只是压垮最后一根稻草。
+- 真旋钮:profile 时剩余显存(16卡少 6GB)→ KV 池 + cudagraph(256)吃掉余量 → prefill 临时 24MB 无处可放。4卡 response 更长(119586)但有 ~6GB headroom 故不崩。
+- fix 优先级:(1) 降 lightllm mem_fraction 0.75→0.6~0.65(直接留 headroom);(2) 16卡 graph_max_batch_size 256→32/64(省 cudagraph 池);(3) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True(治 188MB reserved-unallocated 碎片)。三者任一即可,(1)最稳。
+
+---
+
+## §43 16卡推理 OOM 修复:gpu_memory_utilization 0.75→0.65(2026-08-01)
+
+**背景**:k1_16gpu 推理侧 prefill CUDA OOM(调用栈 100% `LightLLMHttpServer` → chunked_prefill/impl.py → GDN prefill kernel,无训练侧痕迹)。真因(多agent+源码坐实):16卡单卡权重后 free 比 4卡少 ~6GB(44.47 vs 50.37GB)→ KV 池被压小(291万 vs 330万 token)+ 运行时同卡 colocate 训练进程 11GB → prefill 差 24MB 触顶。util/chunked_prefill 两边完全一样(都 0.75、chunked 都开 size3072),不是它们的问题——差异是 16卡单卡被 colocate 训练进程+跨节点 NCCL 多占 6GB。
+
+**修复**:`gpu_memory_utilization` 0.75→**0.65**,主动砍 KV 池 ~6GB,把余量还给 prefill 工作区。改 19 文件(18 份 16卡 run + cluster.yaml);**4卡 b1_9b_4gpu 保持 0.75 不动(对照,单机余量足、53步未 OOM)**。load_config 18份全过、util 均=0.65。
+
+**排除的错误修复**:
+- ❌ `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`:与 `enable_torch_memory_saver=true`(colocate 分时复用显存必需)**互斥**,§22 实测当场崩(`TorchMemorySaver is disabled ... expandable_segments not supported` → lightllm 起不来 rc=1)。**禁用此手段**。
+- ❌ 降 running_max_req_size 256→32:GDN 走共享分页(qwen3next_mem_manager.py:48 `cdiv(size,big_page)` 仅3页,MB级),不随 running_max_req_size 缩放;它只影响 req_to_token_indexs 0.22GB,解决不了 6GB 结构差。
+- NCCL P2P `Cuda failure 1` failure:4卡(5次)16卡(6次)都有,4卡带着它跑了53步 → **不致命**(lightllm 内部降级),非任何实验死因。
+
+**待验**:真机重启 16卡看推理 OOM 是否消除;b1_16gpu 的"driver↔lightllm 启动握手 hang"(rollout 从没开始)是独立问题,未解。
+
+---
+
+## §46 落地 NCCL_CUMEM_ENABLE=0 修 16卡起服 hang(2026-08-01)
+
+**背景**:b1_16gpu **6 次复发**同一 hang(换节点仍撞):3/8 lightllm 副本卡在 `server start up`(590)到不了 `server start up ok`(594)→ verl `llm_server.py:521` 无超时 `asyncio.gather` 永久阻塞 → driver 从没到 rollout(Progress=0/沙箱=0/update_weights_200=0)。P2P `Cuda failure 1` 非致命(两边都有可降级)。诱因=`enable_torch_memory_saver`(cuMem VMM 劫持 cudaMalloc)× NCCL 默认 `NCCL_CUMEM_ENABLE=1`(NCCL 也用 cuMem 给 P2P buffer)冲突。定案见 debug §45。
+
+**修复(项目侧,不改 verl 逻辑;对齐 verl 给 vllm/sglang 的既有处置,lightllm 漏了)**:
+- `trainer/verl_runner.py`:`_passthrough.setdefault("NCCL_CUMEM_ENABLE", os.environ.get("CL_NCCL_CUMEM","0"))` → 透传进所有 Ray worker(含 lightllm 副本)。
+- `scripts/_train_impl.sh`:`export NCCL_CUMEM_ENABLE="${CL_NCCL_CUMEM:-0}"`(双保险 + 单机路径)。
+- 可 `CL_NCCL_CUMEM=1` 覆盖。**关 CUMEM 不关 P2P**,TP 内带宽保留、保持 2 机训练(非 NCCL_P2P_DISABLE 绕过)。
+- 校验:bash -n OK;verl_runner ast.parse OK;模拟 passthrough 确认 NCCL_CUMEM_ENABLE=0 进列表。
+
+**验证信号(真机重启后看)**:①8 个 `server start up ok`(594)全到;②8 条 `POST /update_weights_from_ipc 200`;③出现 `Training Progress` + 沙箱请求。若仍缺副本→叠 §45 方案2(gather 加 wait_for 超时 fail-fast 定位)+ 查容器 `--ipc`/ACS。建议同时 `NCCL_DEBUG=INFO` 拿 P2P 选路证据。
+
+**注意**:此修复解的是"16卡起服 hang",与 §43 的"推理 prefill OOM(util 0.75→0.65)"是**两个不同问题两道坎**——起服 hang 在前(rollout 没开始),OOM 在后(rollout 中)。hang 修好、16卡跑到推理阶段后,才能连带验证 §43 的 OOM 修复。

@@ -55,7 +55,7 @@ actor_rollout_ref:
     name: lightllm                 # 用拷到本项目侧的 verl（含 lightllm_rollout）跑 lightllm
     mode: async                    # 定制版 verl 已移除 sync；agent-loop + lightllm 也走 async server
     tensor_model_parallel_size: ${oc.env:ROLLOUT_TP_SIZE,4}   # rollout TP; 换卡数按需覆盖
-    gpu_memory_utilization: 0.75
+    gpu_memory_utilization: 0.65
     n: 8
     max_model_len: 65536
     max_num_batched_tokens: 6144
@@ -92,8 +92,8 @@ actor_rollout_ref:
         batch_max_tokens: 6144
         enable_multimodal: false
         enable_torch_memory_saver: true
-        graph_max_batch_size: 256
-        running_max_req_size: 256
+        graph_max_batch_size: 64
+        running_max_req_size: 64
         sampling_backend: triton
 
 # verl reward_model worker 不启用（judge 走外部服务）；omni RewardManager 转发到项目 LLM judge
