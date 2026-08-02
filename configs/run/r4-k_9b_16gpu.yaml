@@ -95,6 +95,7 @@ actor_rollout_ref:
         sampling_backend: flashinfer       # 照搬参考(triton→flashinfer)
         disable_vision: true
         disable_audio: true
+        disable_symm_mem_allreduce: true   # ★关SymmMem(cuMem对称堆):与 NCCL_CUMEM_ENABLE=0 冲突致 TP rendezvous broadcast 死锁(§49)。all_reduce fallback 到标准 NCCL(communication_op.py:100),不依赖 cuMem
 
   ref:
     log_prob_micro_batch_size_per_gpu: 1
@@ -151,7 +152,9 @@ trainer:
   n_gpus_per_node: 8
   total_epochs: 1
   total_training_steps: 500
-  save_freq: 100
+  save_freq: 25                     # 100->25:更频繁存档(debug 阶段)
+  max_actor_ckpt_to_keep: 2       # 只保留最近 2 个 actor ckpt(verl 原生 rotate,超出 shutil.rmtree 最旧)
+  max_critic_ckpt_to_keep: 2      # critic 同理(本项目 GRPO 无 critic,留着无害)
   test_freq: -1
   val_before_train: false
   critic_warmup: 0

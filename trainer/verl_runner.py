@@ -642,6 +642,14 @@ def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
     # sgl #6723),lightllm 是遗漏项。关的是 CUMEM 不是 P2P,TP 内带宽保留、保持 2 机。
     # 可 CL_NCCL_CUMEM 覆盖(极少数场景需 =1 时)。见 doc/debug §45。
     _passthrough.setdefault("NCCL_CUMEM_ENABLE", os.environ.get("CL_NCCL_CUMEM", "0"))
+    # ★ 诊断 env 透传到所有 ray actor(含 lightllm 推理子进程):CL_DIAG=1 时把
+    # NCCL/日志级别调详细,worker 不继承 driver shell env,必须经 runtime_env 才到得了
+    # lightllm 副本(起服 hang 排查,§48/§49)。仅在 shell 已 export(_train_impl.sh
+    # CL_DIAG 分支)时透传,非诊断态不加、不影响正常日志量。
+    for _dk in ("NCCL_DEBUG", "NCCL_DEBUG_SUBSYS", "LIGHTLLM_LOG_LEVEL", "RAY_DEDUP_LOGS", "VERL_LOGGING_LEVEL"):
+        _dv = os.environ.get(_dk)
+        if _dv is not None:
+            _passthrough[_dk] = _dv
     if _passthrough:
         OmegaConf.update(
             cfg,

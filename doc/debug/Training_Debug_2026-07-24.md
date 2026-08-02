@@ -852,7 +852,7 @@ load_config）。按项目路线 Phase 1→2→3，应 **b1_16gpu 先跑通一�
 | **§34.2 reward 恒 0（thinking 截断）**：judge=deepseek-v4-flash，`max_tokens=4096` 被 reasoning 吃光 → 截断 → judge_error=1 | judge `max_tokens` 4096→16384（env 可调，`4baf17c`） |
 | **§37 b1_4gpu step54 崩 `AssertionError: agent_assets batch 4 vs 2`**：`cl_agent_dataset.py:84` `if assets:` 条件写 key，有输入文件的 record 才带 `agent_assets`，gen-batch 混合有/无 → `get_tensordict` batch 尺寸断言崩 | **`__getitem__` 恒写 key**：无文件时 `row_dict["agent_assets"]={}`（下游 `unique_asset_specs`/`e2b runner` 对空值容忍）→ batch 内每行都有该字段，尺寸一致 |
 | **§36/§39/§42 k1_16gpu prefill CUDA OOM → hung**：**KV 池饱和**（OOM 原文 `Tried to allocate 24 MiB, 24.75 MiB free` = GPU 已 ~99.97% 满，微小分配触顶，**非单条超长撑爆**）。真因=**256 并发 × 多轮回填 prompt**（`prompt_token_num` 实测到 122131，多轮把整条对话历史拼进下轮 prompt；单次生成 `out_token_counter` 仅 16589）≫ KV 池 2914404。OOM 前窗口 16 个 prompt>40k 并发 | **降并发第一位** `running_max_req_size` 256→64 + `graph_max_batch_size` 256→64；缩单条长度第二位（见 §39 方案甲）。两者缺一不可（峰值=并发×单条长度），但**主因偏并发过订、非单条过长** |
-| **§38→§45 b1_16gpu hang（真因已更正）**：**非** P2P 致命（P2P `Cuda failure 1` 两边都有、可降级 SHM/net）。真因=3/8 lightllm 副本卡在 `server start up`→`server start up ok` 之间，verl `llm_server.py:521` 无超时 `asyncio.gather` 永久阻塞 → driver 从没到 rollout。诱因=`enable_torch_memory_saver`(cuMem VMM) × NCCL 默认 `NCCL_CUMEM_ENABLE=1` 冲突 | **加 `NCCL_CUMEM_ENABLE=0`**（对齐 verl 给 vllm/sglang 的处置，非 P2P_DISABLE，保持 2 机）+ 起服 gather 加 `wait_for` 超时 fail-fast。~~旧：NCCL_P2P_DISABLE~~ 已废，见 §45 |
+| **§38→§45→§46/§47 b1_16gpu hang（已定位+已落地修复）**：**非** P2P 致命。**两层根因**：(1) `enable_torch_memory_saver`(cuMem) × NCCL 默认 `NCCL_CUMEM_ENABLE=1` 冲突→P2P failure；(2) lightllm `set_args` 在 uvloop 里同步从 AFS 加载 tokenizer+AutoProcessor(8副本并发争抢)→副本卡在 `server start up`→`ok`；两者都被 verl 无超时 `asyncio.gather` 放大成整 job 永久 hang | ✅ **已落地**：(1) `NCCL_CUMEM_ENABLE=0`(§46，真机验证 P2P 归0)；(2) 模型预热 node-local + 起服 gather `wait_for` 超时 fail-fast(§47)。均非 P2P_DISABLE、保持 2 机 |
 | **§38 两节点内存/显存差异大**：显存其实**对称**（KV 池两节点同 3015483，TP=2 4/4 均分）；CPU 内存 head 偏高=driver+TransferQueue(绑 localhost)+两份数据集+GCS，是 verl 原生结构性正常 | 非 bug 无需修；缓解：val_files 别 alias 到 train；盯 head host RAM OOM（独立第三类风险） |
 | **§39 Q4 超长轨迹产生(峰值 119586)**：`response_length=65536` 只作**单次生成** max_tokens；多轮 ReAct 累加后整条**只按 `max_model_len` 截**，轨迹级无 65536 闸门 | 缩 `max_model_len` 131072→73728（gateway `response_capacity=max_model_len-prompt` 自然压到 ~65k），配置侧零改码 |
 | **§39 Q5 超长轨迹进训练**：`worker.py` 原样写 TQ、`_filter_trainable_trajectories` 只按 trace_type，verl 原生**零长度闸门**；§33.4 删掉的 `max_trajectory_tokens` 是唯一曾有的入训闸门 | 方案甲（缩 max_model_len，gateway 自然截）或方案乙（改 verl `trajectory_buffer.py:170` 加独立 `min(max_model_len-prompt, cfg_cap)` 旋钮，需 passthrough+理由） |
@@ -936,3 +936,45 @@ b1_16gpu 每次 hang(5 次复发、换节点仍撞)**不是** `transport/p2p.cc:
 ### 诚实标注
 - 已坐实(日志/源码 grep):b1 仅 3/8 到 594、0 条 update_weights_200、gather 无超时、verl 给 vllm/sglang 设 CUMEM=0 而 lightllm 漏、memory_saver 硬编码 True。
 - 推断(需上机验证):"cuMem×CUMEM=1 冲突致副本卡死"是最可能机制,但本地无 NCCL INFO,未 100% 钉死是 cuMem 还是容器 ipc/ACS。上机验证命令:`nvidia-smi topo -m`、`lspci -vvv|grep -i acsctl`、复跑开 `NCCL_DEBUG=INFO`。
+
+---
+
+## §46 落地 NCCL_CUMEM_ENABLE=0(解 §45 第一层:cuMem 冲突)(2026-08-01)
+
+§45 诊断的诱因是 `enable_torch_memory_saver`(cuMem VMM)× NCCL 默认 `NCCL_CUMEM_ENABLE=1` 冲突。落地修复:
+
+- **改哪**:`trainer/verl_runner.py` `_passthrough.setdefault("NCCL_CUMEM_ENABLE", os.environ.get("CL_NCCL_CUMEM","0"))`(透传进所有 Ray worker 含 lightllm 副本)+ `scripts/_train_impl.sh` `export NCCL_CUMEM_ENABLE="${CL_NCCL_CUMEM:-0}"`(双保险 + 单机路径)。
+- **为何是它**:verl 已给 vllm/sglang 设 =0(`sglang_rollout.py:57` 引 sgl #6723),lightllm 是遗漏项。**关 CUMEM 不关 P2P**,TP 内带宽保留、保持 2 机训练(非 `NCCL_P2P_DISABLE` 绕过)。`CL_NCCL_CUMEM=1` 可覆盖。
+- **真机验证结果**:重启后 **P2P `Cuda failure` 从每次 6-8 次 → 归 0**(runtime_env 实证 `'NCCL_CUMEM_ENABLE':'0'` 透传成功)。**cuMem 冲突确认消除。** 但 job **仍 hang**——卡点前移,暴露第二层根因(§47)。
+
+## §47 16卡起服 hang 第二层根因:AFS tokenizer 并发加载 + 无超时 gather(2026-08-01)
+
+§46 消除 P2P failure 后 b1_16gpu 仍 hang,卡点从"P2P/cudagraph 期"前移到"引擎 server 起服期"。多 agent(3 假设并行 + 源码/日志)定案。
+
+### 卡点(源码+日志坐实)
+lightllm `startup_event`(`api_http.py:589-594`)里 590`server start up`→594`server start up ok` 之间**唯一实质语句是 `set_args()`**(`:592`),它在 async uvloop 里做**同步重 I/O**:
+- 每副本从 AFS 网盘(`/mnt/afs_toolcall`,quarkfs fuse)**加载两次** tokenizer——`api_http.py:113 init_tokenizer` + `HttpServerManager.__init__`(`manager.py:117/124`)各一次。
+- 且 config.json 有 `vision_config` → `get_tokenizer`(`tokenizer.py:116`)**无条件走 qwen3_5 多模态分支跑 `AutoProcessor.from_pretrained`**(全量加载)。**`disable_vision`/`enable_multimodal=false` 只作用于 HttpServerManager 的 visual zmq socket,管不到 tokenizer 分支**。
+- `startup_event` 是 async(uvloop),这段同步 I/O **冻结整个 event loop** → 副本到不了 594。
+
+### 为什么 16卡崩、4卡不崩;为什么 1/8 到 594;为什么变永久 hang
+- **规模**:8 副本 vs 4卡 2 副本,并发砸同一 fuse 挂载重 8 倍 → I/O 序列化到分钟级;4卡争抢轻扛得住。
+- **1/8 到 594**:非结构 barrier,是**抢网盘 I/O 时序竞速**(谁先拿到时隙谁先过,日志时间戳 14:10:17→19→20 逐秒错开后冻死)。`httpserver_workers=1` → `_wait_all_workers_ready` 不进入,排除多 worker 等待。
+- **永久 hang**:verl `llm_server.py:521` + recipe `async_lightllm_server.py:421` 的 `asyncio.gather` **无超时**,要等全部 8 副本 ready,慢副本永远等 → §45 的结构缺陷放大成整 job 静默 hang。
+- 排除项:zmq/端口冲突(假设 B,已驳:lazy connect + 独立端口段);create_task(handle_loop) 非阻塞(不在卡点路径)。
+
+### 修复(两个,均项目侧/自有 recipe,不动 verl 本体)
+1. **模型预热到 node-local**(`scripts/_train_impl.sh::_prewarm_model`):启动前(ray start 前,每节点各一次)`cp -a` 模型目录到本地盘(默认 `/dev/shm/cl_models`,空间不足退 `/tmp`),`actor_rollout_ref.model.path` override 指过去 → 消除 8 副本并发命中 AFS。AFS 原件保留(cp 非 move);命中缓存(大小一致)免重拷;`CL_PREWARM_MODEL=0` 可关、`CL_MODEL_LOCAL_ROOT` 覆盖本地根。单机/多机/buckets 三路径都接。**这是治本大头。**
+2. **起服 gather 加超时 fail-fast**(`recipe_custom/rollout/lightllm/async_lightllm_server.py:421`,项目自有 recipe 非上游 verl):`asyncio.wait_for(gather, timeout=CL_LAUNCH_TIMEOUT默认1200s)`,超时用 `ray.wait(timeout=0)` 查未就绪副本、打印 replica_rank+idx 再抛。**把静默 hang 变可定位报错**(治标安全网,§45)。踩坑:`_tasks` 是 Ray ObjectRef 无 `.done()`,必须用 `ray.wait` 判 pending。
+
+### 层次关系(三层叠加才能跑通)
+| 层 | 根因 | 修复 | 状态 |
+|----|------|------|------|
+| 1 | cuMem × NCCL_CUMEM=1 冲突 → P2P failure | `NCCL_CUMEM_ENABLE=0`(§46) | ✅ 真机验证 P2P 归 0 |
+| 2 | AFS tokenizer 并发加载慢 + 无超时 gather | 预热 node-local + gather 超时(§47) | ✅ 落地,待真机验证 |
+| 3 | 推理 prefill 显存不足 | `gpu_memory_utilization` 0.75→0.65(§43) | ⏳ 前两层通了才轮到验证 |
+
+### 诚实标注
+- 已坐实:590→594 唯一语句是 set_args;get_tokenizer 走多模态分支不受 disable_vision 控制(config.json 实测);tokenizer 双加载;模型在 quarkfs;两层 gather 无超时;launch_server 只在 594 才 resolve(`utils.py:52-63`)。
+- 次要嫌疑(未 100% 钉死,需上机 py-spy):`set_args` 里 `MetricClient` 的同步 `rpyc.connect` 也可能贡献阻塞。真机验证:对停在 590 的 pid `py-spy dump` 看栈落在 `AutoProcessor.from_pretrained` 还是 `rpyc.connect`。
+- 校验:bash -n OK;recipe ast.parse OK。预热为 cp(AFS 原件不动、可回退)。

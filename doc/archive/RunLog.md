@@ -1848,3 +1848,185 @@ head 因多驻留(两份 dataset + TQ storage 全 batch tensor + GCS + 4 个 gat
 **验证信号(真机重启后看)**:①8 个 `server start up ok`(594)全到;②8 条 `POST /update_weights_from_ipc 200`;③出现 `Training Progress` + 沙箱请求。若仍缺副本→叠 §45 方案2(gather 加 wait_for 超时 fail-fast 定位)+ 查容器 `--ipc`/ACS。建议同时 `NCCL_DEBUG=INFO` 拿 P2P 选路证据。
 
 **注意**:此修复解的是"16卡起服 hang",与 §43 的"推理 prefill OOM(util 0.75→0.65)"是**两个不同问题两道坎**——起服 hang 在前(rollout 没开始),OOM 在后(rollout 中)。hang 修好、16卡跑到推理阶段后,才能连带验证 §43 的 OOM 修复。
+
+---
+
+## §47 16卡起服 hang 第二层根因:AFS tokenizer 并发加载 + 无超时 gather(2026-08-01)
+
+§46 加 NCCL_CUMEM_ENABLE=0 后 P2P failure 归 0(cuMem 冲突已解),但 b1_16gpu **仍 hang**——卡点前移,浮出第二层根因。多 agent(3 假设并行 + 源码日志)定位:
+
+**卡点**:lightllm `startup_event`(`api_http.py:592`)的 `set_args()` 在 async uvloop 里做**同步重 I/O**——每副本从 AFS 网盘(`/mnt/afs_toolcall`,quarkfs fuse)**加载两次** tokenizer(`api_http.py:113 init_tokenizer` + `manager.py:117/124 HttpServerManager.__init__`),且因 config.json 有 vision_config,`get_tokenizer`(`tokenizer.py:116`)**无条件走 qwen3_5 多模态分支跑 AutoProcessor.from_pretrained**(`disable_vision`/`enable_multimodal=false` 管不到它)。8 副本并发砸同一 fuse 挂载 → I/O 序列化拖到分钟级 → 冻结 event loop → 副本到不了 594。
+
+**为何 16卡崩 4卡不崩**:8 副本 vs 2 副本,网盘争抢重 8 倍;4卡扛得住。**为何 1/8 到 594**:非 barrier,是抢网盘 I/O 的时序竞速(谁先拿到时隙谁先过,日志 14:10:17→19→20 逐秒错开后冻死)。**为何变永久 hang**:verl `llm_server.py:521` + recipe `async_lightllm_server.py:421` 的 `asyncio.gather` **无超时**,要等全部 8 副本 ready,慢副本永远等 → §45 结构缺陷。
+
+**修复(两个,均项目侧/自有 recipe,不动 verl 本体)**:
+1. **模型预热到 node-local**(`scripts/_train_impl.sh` 新增 `_prewarm_model`):启动前(ray start 前,每节点各一次)把模型目录 `cp -a` 到本地盘(默认 `/dev/shm/cl_models`,不足退 `/tmp`),`actor_rollout_ref.model.path` override 指过去。消除 8 副本并发命中 AFS 的争抢。`CL_PREWARM_MODEL=0` 可关,`CL_MODEL_LOCAL_ROOT` 覆盖本地根,命中缓存(大小一致)免重拷。AFS 原件保留(cp 非 move)。
+2. **起服 gather 加超时 fail-fast**(`recipe_custom/rollout/lightllm/async_lightllm_server.py:421`,项目自有 recipe):`asyncio.wait_for(gather, timeout=CL_LAUNCH_TIMEOUT默认1200s)`,超时用 `ray.wait` 查未就绪副本、打印 replica_rank+idx 再抛。把静默 hang 变可定位报错(治标安全网,§45)。踩坑:`_tasks` 是 Ray ObjectRef 无 `.done()`,改用 `ray.wait(..., timeout=0)` 判 pending。
+
+**校验**:bash -n OK;recipe ast.parse OK。**待真机重启验证**:预热后 8 副本应都快速到 594 + `update_weights_from_ipc 200` + Training Progress。
+
+**层次关系**:§46(NCCL_CUMEM=0)解第一层 P2P 冲突;§47(预热+超时)解第二层 AFS 加载慢。两层叠加才能让 16卡起服跑通,之后才轮到验证 §43 的推理 OOM(util 0.65)。
+
+---
+
+## §48 §47 tokenizer 判断被真机推翻:预热成功仍卡 590→594(2026-08-01)
+
+§47 加了 NCCL_CUMEM_ENABLE=0(P2P failure 归0)+ 模型预热到 /dev/shm(tmpfs,42s 完成,model.path 已用
+node-local)。真机重启后:**修复都生效**(预热日志/NCCL_CUMEM=0 透传/P2P=0 均实证),**但仍 hang 在 590→594**
+(server ok=1、update_weights=0、Progress=0、沙箱=0,同旧模式)。
+
+**结论:§47 归因的"AFS tokenizer/AutoProcessor 并发加载慢"不是真根因**——模型已在内存盘 tmpfs,tokenizer 加载
+不再慢,却照样卡。真阻塞点在 590→594 之间的【别的同步调用】,强嫌疑=`HttpServerManager.__init__` 里的同步
+`rpyc.connect`:
+- `manager.py:97 self.cache_client = rpyc.connect("localhost", args.cache_port)`(embed cache,同步阻塞)
+- `manager.py:125 MetricClient(metric_port)` → `metrics/manager.py:80 rpyc.connect`;且 `start_metric_manager`
+  `send("init ok")`(:152)早于 `t.start()`(:153)→ 竞态,connect 可能连到未 accept 的 server。
+- 卡 8 分钟>rpyc 30s timeout,说明要么连上了但握手卡、要么 timeout 后重试循环——待 workflow 判定。
+
+**已开 debug workflow(wte3teswe)** 3 路查:cache_port rpyc(A,最强)/ metric 竞态(B)/ lifespan+编排(C)。
+
+**同时暴露 §47 修复2 的问题**:起服 gather 超时(CL_LAUNCH_TIMEOUT=1200s)未触发——要么没到 1200s,要么卡在
+它之前的 driver 层 `llm_server.py:521`(那层没加超时,§47 只加了 recipe `async_lightllm_server.py:421`)。
+若是后者,超时加错了层,需补 driver 层(走 recipe override 不动 verl 本体)。
+
+**有效的**:NCCL_CUMEM=0(P2P 归0)、预热(42s,AFS 争抢消除)——两者仍保留,是对的,只是没解 590→594 这层。
+
+---
+
+## §49 CL_DIAG debug 定案:16卡 hang 真因=update_weights 的 NCCL Broadcast 集合挂死(2026-08-01)
+
+开 CL_DIAG=1(RAY_DEDUP_LOGS=0 + NCCL_DEBUG=INFO + lightllm debug,均透传进 Ray worker)重跑 b1_16gpu,**拿到 NCCL 层实证,推翻此前所有推测**(tokenizer/rpyc/cache/590-594 全是 dedup 假象)。
+
+**时间线(train.log 实证)**:
+- 15:42:20-24 **8 个 lightllm 副本全部 `Capture cudagraph success` + `server start up ok`(594)**——起服**成功**。此前"1/8 到 594、卡 590→594"是 Ray 日志去重(`[repeated Nx]`)假象,关去重后真相是 8/8 全起来。
+- 15:42:24 后进入**权重同步**:NCCL 疯刷 `Broadcast: opCount 0 ... count 1769472 datatype 9(bf16 3MB 权重分片) op 0 root 0`,**opCount 永远=0**(单个 comm 刷 16782 次),所有 rank 自旋。30s 涨 2.3 万行日志,总 79M。
+
+**根因**:不是起服、不是显存、不是 tokenizer/rpyc。是 **update_weights 阶段(rank0 训练侧 Broadcast 权重给所有推理副本)的 NCCL 集合挂死**——通信组已 `Init COMPLETE`(nranks2 nNodes1 TP组),但 Broadcast 集合在 rank 间对不齐/某 rank 没发出,集合永不完成,NCCL 无超时→无限自旋刷 INFO。与 §45 workflow 提的 "update_weights_from_ipc hang" 呼应,现有 NCCL 实证。
+
+**关键澄清**:此前 §47/§48/§45 的 "590→594 hang / tokenizer 慢 / rpyc" 均为**误判**,根源是 dedup 日志误读。CL_DIAG(关去重+NCCL INFO)是这次能定案的关键手段——**排 hang 必先关 RAY_DEDUP_LOGS**。
+
+**已排除但保留的修复(仍有效,别回退)**:NCCL_CUMEM_ENABLE=0(P2P failure 归0)、模型预热 node-local(42s)、util 0.65、running_max_req_size 64、agent_assets 恒写、起服 gather 超时——都对,只是没解到 update_weights 这层。
+
+**下一步(待定)**:
+1. update_weights 的 Broadcast 挂死——查是 verl 训练侧 broadcast 权重给 lightllm 的实现(rank 拓扑/参与集合的 rank 集不一致),还是 NCCL 跨"训练 rank0 + 推理副本"混合通信组的问题。
+2. 试 NCCL 集合超时暴露(TORCH_NCCL_ASYNC_ERROR_HANDLING=1 + watchdog timeout)让它 fail-fast 报出缺席 rank。
+3. debug 日志 79M 且在涨,此 run 确定跑不起来(NCCL 无超时永久自旋),应停掉。
+
+---
+
+## §50 16卡 hang 真根因定案:NCCL_CUMEM_ENABLE=0 × SymmMem cuMem 握手冲突(2026-08-01)
+
+**用户关键反问"同样16卡 k1 为何能训"直接指向真因**。对比铁证:
+- k1(02:31 老 run,跑到 rollout/step2,死于 CUDA OOM 非 hang):**无 NCCL_CUMEM_ENABLE=0**、`Imported shareable buffer`(cuMem IPC 握手)**0 次**。
+- b1(现 run,卡 count=1 broadcast):**有 NCCL_CUMEM_ENABLE=0**、`Imported shareable buffer` **3360 次**。
+- 两者 lightllm 并发/overlap/TP/副本配置完全一致。
+
+**根因(多agent+源码坐实)**:lightllm 推理副本 TP=2 的 all_reduce 走 **torch SymmMem(对称内存)**,其 `rendezvous`(进程间句柄交换,= 日志里 count=1 datatype2 root0 的 broadcast)依赖 **cuMem/VMM 对称堆 + 导入 peer cuMem IPC 句柄**。而 §46 为修 P2P failure 加的 **`NCCL_CUMEM_ENABLE=0` 关掉了 NCCL 的 cuMem 导入路径** → 两 rank 对 cuMem 句柄映射不一致 → SymmMem 握手 broadcast 永远完不成 → opCount 恒0 无限自旋(GPU util0,进程不退)。**§46 的修复自己制造了这个 hang**——k1 没加它反而穿过起服,是最硬对照。
+
+代码链:`communication_op.py:117 not disable_symm_mem→:118 init_symm_mem_reduce→symm_mem_all_reduce.py:59 torch_symm_mem.empty(cuMem)+:60 rendezvous`。
+
+**修复**:`disable_symm_mem_allreduce: true` 加进 18 份 16卡 config 的 `engine_kwargs.lightllm`。关 SymmMem 后 all_reduce **fallback 到标准 `dist.all_reduce`(NCCL)**(`communication_op.py:92-100` dispatch chain: FlashInfer→SymmMem→NCCL;FlashInfer 已被启动探测 auto-disable,故直接走 NCCL)。标准 NCCL all_reduce 不用 cuMem 对称堆,与 NCCL_CUMEM_ENABLE=0 不冲突。**既保留 §46 修 P2P,又绕开握手冲突,两全。** load_config 18 份全过。
+
+**之前误判纠正**:§45(rpyc/tokenizer)、§47(AFS加载)、§48、以及本轮 workflow A(双 infer_loop 线程竞态)——都是被 Ray dedup 日志误导 + 没抓到 CUMEM×SymmMem 这层。真因是 SymmMem×cuMem,由 k1/b1 的 CUMEM 差异对照坐实。
+
+**待验**:真机重启 16卡(带 disable_symm_mem_allreduce + NCCL_CUMEM=0 + 预热 + util0.65),看是否穿过起服→update_weights→Training Progress。
+
+---
+
+## §51 澄清:k1 OOM=GPU显存(非CPU内存),别与 §33 的 host 内存 OOM 混(2026-08-01)
+
+用户疑"k1 是不是 CPU 内存 OOM"。核实日志(k1 train.log:4991/5058,6 次)原文
+`torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 24.00 MiB. GPU 1 ... 79.32 GiB`——
+**是 GPU 显存(CUDA/VRAM)OOM,报在 LightLLMHttpServer prefill 阶段**;无任何 host OOM 关键字
+(Cannot allocate memory / std::bad_alloc / oom-kill / Killed process)。与 §36/§42 定案一致(KV 池饱和)。
+
+**易混点区分**(两个不同 run、不同 OOM 类型):
+| run | OOM 类型 | 根因 | § |
+|-----|---------|------|---|
+| **k1_16gpu** | **GPU 显存**(CUDA prefill) | KV 池饱和(并发×累积长度) | §36/§42 |
+| b1_4gpu(step53) | **CPU host 内存**(节点 512GB 打满) | GatewayActor glibc arena 碎片(非泄漏),jemalloc 修 | §33 |
+
+§38 另提过"head 节点 host RAM 系统性偏高、长跑有 host OOM 风险"——是**预警非实发**,k1 实际死于 GPU 显存。
+注:k1 这些 OOM/hang 均在 §50(disable_symm_mem_allreduce)修复之前,待新配置重启后重测。
+
+---
+
+## §52 纠正 §50:真因是 LightLLM 双 infer_loop 线程并发 broadcast 竞态,非 SymmMem(2026-08-01)
+
+**§50 判断有误**。加了 `disable_symm_mem_allreduce=True`(StartArgs 14 次确认生效、`SymmMemAllreduce enabled=0`)后带 CL_DIAG 重启,**仍卡死同一个 broadcast**:
+- `Broadcast: opCount 0 count 1 datatype 2(int32) op 0 root 0` 刷 27916 次;`Imported shareable buffer` 2720 次。
+- 关键否证:§50 上一个 run(16:33)`Broadcast_op0=0` 让我以为修好了,但那 run **没开 CL_DIAG**(NCCL INFO=0),0 是**没打日志的假象**,不是真没发生。CL_DIAG 开了才看到真相:**SymmMem 关了,这个 count=1 broadcast 照卡**——所以它**不是 SymmMem rendezvous**。
+
+**真根因(workflow A,现坐实)**:那个 count=1 int32 broadcast = `base_backend.py:247 node_broadcast_tensor` + `:633 broadcast(..., group=node_nccl_group)`,是 serve loop 每 tick 的"shm 有无新请求"控制标志同步。`base_backend.py:284-287` **无条件起 2 个 infer_loop 线程**(double-batch overlap),两线程在同一 `node_nccl_group` 上**并发提交**这个 broadcast → 跨 rank 提交序不确定 → NCCL 集合配不成对死锁。铁证:同一卡死 comm `0x7fd780846010` 同一 rank[1] 被**两个线程 14528/14529 各刷 1286 次**。
+
+**为什么 k1 能跑**:竞态——k1 那次两线程碰巧同序穿过;b1 输了卡死。NCCL_DEBUG=INFO 的日志开销可能加剧竞态(开 CL_DIAG 后每次必卡)。
+
+**修复方向(改 LightLLM base_backend.py,走 patch;按代价)**:
+1. 给 `_try_read_new_reqs` 的 broadcast 加进程级 `threading.Lock`(`:247` 建锁,`:625-634` body 包 `with lock:`)——两线程不并发发该集合,恢复确定序。**最小正确。**
+2. 循环启动前(`:284` 前)单线程预热 `node_nccl_group`(去掉 `:267` barrier 的 run_mode gate,或发一次 dummy broadcast)。
+3. 规避:让 serve loop 单 infer_loop 线程(`support_overlap`/`:284-287`)——但 :284-287 是无条件起两个,需确认有无关闭开关。
+
+**已生效但非本因的修复(保留)**:NCCL_CUMEM=0(P2P)、disable_symm_mem(虽非本 hang 根因,但 SymmMem×cuMem 冲突理论上仍在,留着无害)、预热、util0.65、并发64。
+
+**待办**:改 LightLLM 加 broadcast 锁(方案1)走 patch;或先试单线程规避确认。改前需确认 patch 机制(LightLLM 是 workspace 独立仓,非 verl passthrough)。
+
+---
+
+## §53 — 4卡 OOM 双侧定位 + save/resume/metrics + R 系列架构澄清(删按桶顺序训练误设计)  2026-08-02
+
+> 4 卡 debug(b1/k1/k2/k3_9b_4gpu)的一轮修复。核心结论:①4 卡 OOM 分推理侧/训练侧两类,修法不同;②colocate 下"参数保守仍 OOM"的机制;③R 系列训练流程 = baseline/K,只多离线 replay,之前的"按桶顺序训练"是错误设计,已删。
+
+### 一、4卡 OOM 分两类(同为 OOM,爆点与修法不同)
+
+按报错进程区分,不能只看"util=0"判死活:
+
+| 实验 | 报错进程 | 分配额 | 爆点 | 类别 |
+|------|---------|--------|------|------|
+| k1/k2 | `LightLLMHttpServer`(impl.py:100) | 24 MiB | rollout prefill,KV 池榨干 | **推理侧** |
+| k3/b1 | `WorkerDict.update_actor`(engine_workers.py:658) | 1.63/2.10 GiB | update_actor **backward** | **训练侧** |
+
+- **同是 K 系列,k1/k2 推理侧爆、k3 训练侧爆** = rollout 随机性:先撞上哪个爆点看运气,本质两侧显存都偏紧。
+- **推理侧 OOM → abort 死等链条**(实测):OOM(先) → 在途请求 refcount 降不下去(`can release False refcount 5`,httpserver/manager.py:918) → `pause_generation` 的 `_wait_for_abort_released` 60s 等不到 `req_id_to_out_inf` 清空(:830) → `abort request wait release timeout`(:853)反复刷 → GPU 交接死锁 → **util=0**。**报错(timeout)≠ 根因(上游 OOM);看到 abort/pause timeout 要往上游找 OOM。**
+
+### 二、修法(两侧双管,不限最长长度)
+
+四份 4gpu(b1/k1/k2/k3)统一改:
+- **推理侧**:`gpu_memory_utilization 0.75→0.65`。砍 lightllm KV 池(`profile_max_tokens.py:119 max_total_token_num=(gpu_total*mem_fraction-model)/kv_size`),lightllm 官方 OOM 提示第1条就是"调小 mem_fraction"。
+- **训练侧**:`ulysses_sequence_parallel_size 2→4`(4卡全做 SP 切一条→单卡激活÷2)+ **连带** `ppo_max_token_len_per_gpu`/`log_prob_max_token_len_per_gpu` `65536→32768`(=131072/SP4)。⚠️**关键**:SP 升 4 但 token_len 不同步减半 = 每卡预算不变 = SP 白改;减半后 `32768×SP4=131072` 仍覆盖最长序列,**不限长**。DP 2→1(吞吐降,debug 可接受)。整除校验全过(tb4%DP1、mini4%DP1、16头%SP4)。
+
+### 三、colocate 是"保守参数仍 OOM"的总纲(源码确认)
+
+4 卡 `hybrid_engine:True` colocate,推理训练挤同 4 卡,靠 `enable_torch_memory_saver` 分时切换。三重压力:
+1. 单卡要容 max(推理[权重+KV], 训练[actor+ref+优化器+梯度+激活]);交接不干净(k3 backward OOM 时 lightllm 仍残 3.68GB)。
+2. **lightllm `mem_fraction` 基于"启动时空卡"profile**(`get_available_gpu_memory()*mem_fraction`,mem_manager.py:71)——启动时训练侧还没占,lightllm 以为可用显存都是它的,KV 池开过大,等训练侧要用时叠加爆。**这就是"参数保守仍 OOM"的根因。**
+3. ref 模型(K 系列)训练侧 FSDP 常驻 7.98GB(b1)→17.26GB(K),多占 ~9.3GB。
+→ 正式方案是 Fully Async 分离 40+24(推理训练卡物理隔离,各 profile 各卡),colocate 仅 debug 后备。
+
+### 四、save_freq + 只留最近 2 个 ckpt(22 份 config,不改 verl)
+
+- `save_freq 100→25` + 新增 `max_actor_ckpt_to_keep:2`/`max_critic_ckpt_to_keep:2`,全部 22 份(`configs/run/*_9b_{4,16}gpu.yaml`)。
+- verl 原生支持:`PPOTrainer._save_checkpoint`(trainer_base.py:835 读参数)→ `fsdp_checkpoint_manager.save_checkpoint(max_ckpt_to_keep)` → `checkpoint_manager.ensure_checkpoint_capacity`(:176-178,超出 `shutil.rmtree` 最旧)。**不改 verl 源码**(铁律),纯配置。load_config 22/22 校验通过。
+
+### 五、resume/metrics 语义(改 _train_impl.sh::_run_single)
+
+按需求:默认 resume、不重复用数据、metrics 不覆盖、日志覆盖+archive(日志 archive 早已实现于 :256-266)。
+
+- **有 ckpt**:自动 `--resume-from` 最新 ckpt(verl `dataloader.load_state_dict(data.pt)` 恢复数据游标,trainer_base.py:769→不重复用已训数据);旧 `metrics.jsonl` 折叠进永久累积 `metrics.all.jsonl`(`_fold_metrics`,按 step 去重,续训 step 不与旧重叠→无损)。
+- **无 ckpt**:不 resume、全新训练;`rm` 掉 `metrics.jsonl`+`metrics.all.jsonl`,metrics 从头重开(不接旧)。
+- verl FileLogger 硬编码 `open(path,"wb")`(tracking.py:420)每次覆盖 → 绕开:脚本层 fold,`metrics.all.jsonl` 永不覆盖=完整历史单一来源(分析看 .all);`metrics.jsonl`=当前 run 实时(会被 verl 覆盖)。fold 用显式 PY(铁律),纯标准库。
+
+### 六、R 系列架构澄清 + 删除"按桶顺序训练"误设计(重要)
+
+**澄清(用户,配置坐实)**:R 系列训练流程 = baseline/K **完全一样**(`_run_single`,全量 `datasets/train.parquet`,单进程 GRPO)。R 唯一区别 = 开 replay buffer(`cl.lambda_replay>0`+`buffer.enabled:true`+`num_buckets`)。**replay 是训练循环内的离线采样增强**(buffer hook 从已训桶采回放行拼进 batch,`response_mask=0` 不参与 PPO,只走独立 L_replay),**不改主流程、不改数据顺序、不分桶顺序训练**。桶 = buffer 内部采样组织单元,非训练外层循环。
+
+**删除**:`_train_impl.sh` 的 `_run_buckets()`(58行)+ `--buckets`/`BUCKETS` 变量+arg解析+两处 dispatch 分支。理由:
+- 它把"buffer 的 9 个内部桶"误当"分 9 次按桶顺序训练(桶间权重接力)",是错误理解的死代码。
+- 全仓 grep 无任何脚本调用 `--buckets`(从未真正使用)。
+- 上一轮我给它修的"R5 缺陷(共享 ckpt+auto 误续)"是给不该存在的设计打补丁,一并删除。
+- 删后三系列(baseline/K/R)统一走 `_run_single`,R 自动继承 §五 的 resume/metrics 改进。
+
+验证:bash 语法 OK、无 buckets 残留、无上层引用、R 与 baseline 用同一全量 parquet。
+
+### 七、未解(不属本轮)
+
+16 卡 baseline 起服 hang 仍在(§52 lightllm 双 infer_loop broadcast 竞态,py-spy 需在真实训练节点做,本机无 lightllm 进程)。本轮不涉及。

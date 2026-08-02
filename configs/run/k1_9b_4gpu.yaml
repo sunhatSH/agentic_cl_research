@@ -1,7 +1,7 @@
-# 4 卡 9B 【debug 专用】配置（单机 × 4 卡）—— 与 16 卡同架构（custom_sync + verl 原生
-# agent_loop + RemoteAgentLoopManager + observer + fs-seed），只缩 size/拓扑到 1/8。
-# 用途：本机快速复现 16 卡的问题(尤其 compute_log_prob 的 512 张量不匹配 / GOAWAY)——
-# 同 verl 代码路径,debug 结论直接适用 16 卡。长度不缩(与卡数无关,要复现同样张量行为)。
+# K1 4 卡 debug 配置(单机×4)——以【已验证能跑的】b1_9b_4gpu 为模板,仅叠加 KL 防遗忘语义。
+# 差异 = use_kl_loss:true + kl_loss_coef:0.01 + kl_loss_type:low_var_kl(K1/K2/K3 只此系数不同)。
+# 用途:在 4 卡单机验证 K 系列(KL 对照组)链路,绕开 16 卡多节点起服 hang(见 doc/debug/16gpu_hang_handoff)。
+# 架构/长度/缩放全部继承 b1_9b_4gpu(custom_sync + verl 原生 agent_loop + SP=2/DP=2)。
 #
 # 缩放(16卡→4卡 debug,size 1/8)：nnodes 2×8→1×4；SP 4→2(→DP=2)；
 #   train_batch 32→4(÷8)；并发 256→32(÷8)。整除：4%SP2=0 ✓；train_batch4%DP2=0 ✓；
@@ -41,8 +41,9 @@ actor_rollout_ref:
   # ── 训练引擎（4 GPU FSDP2, SP=2 → DP=2）─────────────────────────────────────
   actor:
     strategy: fsdp2
-    use_kl_loss: false
-    kl_loss_coef: 0.0
+    use_kl_loss: true                # K1:开 reverse-KL 防遗忘(对照 baseline 无KL)
+    kl_loss_coef: 0.01
+    kl_loss_type: low_var_kl
     entropy_coeff: 0.001
     use_torch_compile: false
     clip_ratio_low: 0.2
@@ -54,8 +55,8 @@ actor_rollout_ref:
       lr_scheduler_type: constant
     ppo_mini_batch_size: 4              # =train_batch(全 batch 单更);×n8=32 轨迹 % DP2=0
     use_dynamic_bsz: true
-    ppo_max_token_len_per_gpu: 32768    # = max_token_length(131072)/SP(4)。SP升4后每卡token预算减半→backward激活减半(修 step22 update_actor OOM 2.10GB)。32768×SP4=131072仍覆盖最长序列,不限长
-    ulysses_sequence_parallel_size: 4   # SP=2→4(修训练侧 backward OOM):4卡全做序列并行切一条→单卡激活÷2。DP=4÷4=1。16头%4=0;train_batch4%DP1=0
+    ppo_max_token_len_per_gpu: 32768    # = max_token_length(131072)/SP(4)。SP升4后每卡token预算减半->backward激活减半(修 k3 update_actor OOM 1.63GB,ref占用更大)。32768xSP4=131072仍覆盖最长序列,不限长
+    ulysses_sequence_parallel_size: 4   # SP=2->4(修训练侧 backward OOM,K比b1多个ref更吃紧):4卡全做序列并行->单卡激活/2。DP=4/4=1。16头%4=0;train_batch4%DP1=0
     fsdp_config:
       param_offload: true
       optimizer_offload: true
@@ -67,7 +68,7 @@ actor_rollout_ref:
     name: lightllm
     mode: async
     tensor_model_parallel_size: 2
-    gpu_memory_utilization: 0.65        # 0.75→0.65:降推理侧 KV 池,修 lightllm prefill OOM(24MiB分配失败=KV榨干)
+    gpu_memory_utilization: 0.65        # 0.75->0.65:降推理侧 KV 池,修 lightllm prefill OOM(k1/k2 撞上 24MiB 分配失败=KV榨干)
     n: 8
     load_format: auto
     max_model_len: 131072              # = 参考 max_token_length
@@ -174,8 +175,8 @@ trainer:
   logger: [console, file]
   log_val_generations: 50
   project_name: agentic-cl
-  experiment_name: qwen35_9b_b1_4gpu
-  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_b1_4gpu}
+  experiment_name: qwen35_9b_k1_4gpu
+  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_k1_4gpu}
   use_v1: true
   v1:
     trainer_mode: custom_sync

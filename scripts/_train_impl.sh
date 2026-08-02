@@ -21,7 +21,6 @@ VENV="/opt/conda"
 VERL_DIR="/mnt/afs_toolcall/sunhao4/dependencies/verl"
 LIGHTLLM_DIR="/mnt/afs_toolcall/sunhao4/workspace/LightLLM"
 SMOKE=0
-BUCKETS=0
 DRY_RUN=0
 
 # ── 解析参数 ────────────────────────────────────────────────────────────
@@ -41,7 +40,6 @@ while [ $# -gt 0 ]; do
     --verl-dir)      VERL_DIR="$2"; shift 2;;
     --lightllm-dir)  LIGHTLLM_DIR="$2"; shift 2;;
     --smoke)         SMOKE=1; shift;;
-    --buckets)       BUCKETS=1; shift;;
     --dry-run)       DRY_RUN=1; shift;;
     *) echo "[train_cl] 未知参数: $1" >&2; exit 2;;
   esac
@@ -162,11 +160,23 @@ export MODELING_BACKEND="${MODELING_BACKEND:-hf}"
 export VERL_AGENT_TRAINABLE_TRACE_TYPES="${VERL_AGENT_TRAINABLE_TRACE_TYPES:-agent,context_compression}"
 export VERL_FORCE_TQ_NESTED_READBACK="${VERL_FORCE_TQ_NESTED_READBACK:-1}"
 # (3) 缓存 / 日志级别(降噪:lightllm/verl/TQ 的 debug 刷屏)
+#     CL_DIAG=1 → 调到最详细 + 关 Ray 去重 + NCCL INFO,用于排查起服 hang(§48/§49)。
+#     诊断完置 0 恢复降噪。默认按 CL_DIAG 决定。
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/triton_cache}"
-export LIGHTLLM_LOG_LEVEL="${LIGHTLLM_LOG_LEVEL:-info}"
-export VERL_LOGGING_LEVEL="${VERL_LOGGING_LEVEL:-WARNING}"
-export TQ_LOGGING_LEVEL="${TQ_LOGGING_LEVEL:-WARNING}"
-export RAY_DEDUP_LOGS="${RAY_DEDUP_LOGS:-1}"
+if [ "${CL_DIAG:-0}" = "1" ]; then
+  export LIGHTLLM_LOG_LEVEL="${LIGHTLLM_LOG_LEVEL:-debug}"
+  export VERL_LOGGING_LEVEL="${VERL_LOGGING_LEVEL:-DEBUG}"
+  export TQ_LOGGING_LEVEL="${TQ_LOGGING_LEVEL:-INFO}"
+  export RAY_DEDUP_LOGS="${RAY_DEDUP_LOGS:-0}"          # 关去重:每副本独立打,看清哪个 rank/副本卡
+  export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"               # NCCL 集合选路/挂起点(warmup all-reduce)
+  export NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,COLL,P2P}"
+  echo "[train_cl] ★ CL_DIAG=1 诊断模式:LIGHTLLM=debug VERL=DEBUG RAY_DEDUP=0 NCCL_DEBUG=INFO"
+else
+  export LIGHTLLM_LOG_LEVEL="${LIGHTLLM_LOG_LEVEL:-info}"
+  export VERL_LOGGING_LEVEL="${VERL_LOGGING_LEVEL:-WARNING}"
+  export TQ_LOGGING_LEVEL="${TQ_LOGGING_LEVEL:-WARNING}"
+  export RAY_DEDUP_LOGS="${RAY_DEDUP_LOGS:-1}"
+fi
 # (4) e2b 沙箱:不校验 api_key 存在性(腾讯 e2b 兼容端点,E2B_API_KEY/E2B_DOMAIN 由 load_tencent_env
 #     从 docker/sandbox/tencent.env export,agent_loop_config.yaml 的 ${oc.env:E2B_*} 取用)
 export E2B_VALIDATE_API_KEY="${E2B_VALIDATE_API_KEY:-false}"
@@ -256,80 +266,113 @@ exec > >(tee "$_LOGFILE") 2>&1
 echo "[train_cl] === $(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) rank=${RANK:-0}/${WORLD_SIZE:-${NNODES}} pid=$$ log=$_LOGFILE ==="
 echo "[train_cl] RANK=${RANK:-0} MASTER_ADDR=${MASTER_ADDR:-N/A} NNODES=$NNODES WORLD_SIZE=${WORLD_SIZE:-$NNODES}"
 
+# ── 模型预热到 node-local（防 16卡 lightllm 起服 hang）────────────────────────
+# 8 副本并发从 AFS 网盘(/mnt/afs_toolcall,quarkfs fuse)各加载 2 次 tokenizer +
+# AutoProcessor(qwen3_5 多模态分支,disable_vision 管不到)→ I/O 争抢拖到分钟级 →
+# lightllm startup_event 的同步 set_args 冻结 uvloop → 副本到不了 594 → verl 无超时
+# gather 死等 → 整 job hang(§47/§45,4卡副本少扛得住、16卡崩)。预热=启动前把模型
+# 目录拷到【本节点本地盘】,path 指过去,消除网盘并发争抢。每个 rank 各拷一份(两节点
+# 都要)。CL_PREWARM_MODEL=0 可关;CL_MODEL_LOCAL_ROOT 覆盖本地根(默认 /dev/shm 不够则 /tmp)。
+# 输出:设 CL_MODEL_LOCAL=<本地路径>,训练命令用它 override actor_rollout_ref.model.path。
+_prewarm_model() {
+  CL_MODEL_LOCAL=""
+  [ "${CL_PREWARM_MODEL:-1}" = "1" ] || { echo "[train_cl] 预热关闭(CL_PREWARM_MODEL=0),用 AFS 原路径"; return 0; }
+  local src; src=$(grep -E "^[[:space:]]*path:" "$CONFIG" 2>/dev/null | head -1 | sed -E 's/.*path:[[:space:]]*//;s/[[:space:]"'"'"']*//g')
+  [ -n "$src" ] && [ -d "$src" ] || { echo "[train_cl] WARN: 模型源路径无效($src),跳过预热"; return 0; }
+  # 本地根:优先 /dev/shm(tmpfs,最快),空间不足退 /tmp。用模型 basename 作子目录。
+  local root="${CL_MODEL_LOCAL_ROOT:-/dev/shm/cl_models}"
+  local need_kb; need_kb=$(du -sk "$src" 2>/dev/null | awk '{print $1}')
+  local shm_free_kb; shm_free_kb=$(df -k /dev/shm 2>/dev/null | awk 'NR==2{print $4}')
+  if [ "${CL_MODEL_LOCAL_ROOT:-}" = "" ] && [ -n "$need_kb" ] && [ -n "$shm_free_kb" ] && [ "$shm_free_kb" -lt "$((need_kb + need_kb/5))" ]; then
+    root="/tmp/cl_models"; echo "[train_cl] /dev/shm 空间不足($((shm_free_kb/1024/1024))G < 模型 $((need_kb/1024/1024))G),预热改用 /tmp"
+  fi
+  local dst="$root/$(basename "$src")"
+  mkdir -p "$root"
+  # 已存在且大小一致则复用(同节点多次启动免重拷)。
+  if [ -d "$dst" ] && [ "$(du -sk "$dst" 2>/dev/null|awk '{print $1}')" = "$need_kb" ]; then
+    echo "[train_cl] 预热命中缓存: $dst"; CL_MODEL_LOCAL="$dst"; return 0
+  fi
+  echo "[train_cl] 预热模型到 node-local: $src → $dst ($((need_kb/1024/1024))G) ..."
+  local _t0; _t0=$(date +%s)
+  if cp -a "$src/." "$dst/" 2>/dev/null; then
+    echo "[train_cl] ✓ 预热完成,耗时 $(( $(date +%s) - _t0 ))s → $dst"
+    CL_MODEL_LOCAL="$dst"
+  else
+    echo "[train_cl] WARN: 预热拷贝失败,回退 AFS 原路径 $src" >&2; CL_MODEL_LOCAL=""
+  fi
+}
+
+# 把上一 run 的 metrics.jsonl(verl 下次启动会 open("wb") 覆盖它)折叠进永久累积文件
+# metrics.all.jsonl。按 step 去重(同 step 后写为准);resume 续训 step 不与旧重叠,故正常即纯
+# append,去重只防同一 run 内异常重复。metrics.all.jsonl 永不被覆盖 = 完整历史单一来源。
+# 仅在 resume(有 ckpt)时调用。依赖显式 PY(项目铁律,不乱用其他 python),纯标准库无第三方依赖。
+_fold_metrics() {
+  local mdir="$1"
+  local cur="$mdir/metrics.jsonl" all="$mdir/metrics.all.jsonl"
+  [ -s "$cur" ] || return 0   # 上一 run 无 metrics(未产出)→ 无需折叠
+  "$PY" - "$cur" "$all" <<'PYEOF'
+import json, os, sys
+cur, allp = sys.argv[1], sys.argv[2]
+by_step = {}
+for p in (allp, cur):          # 先读已有累积,再用当前 run 覆盖同 step
+    if not os.path.exists(p):
+        continue
+    with open(p) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            step = row.get("step")
+            if step is not None:
+                by_step[step] = row
+tmp = allp + ".tmp"
+with open(tmp, "w") as f:
+    for step in sorted(by_step):
+        f.write(json.dumps(by_step[step], ensure_ascii=False) + "\n")
+os.replace(tmp, allp)
+print(f"[train_cl] metrics 折叠: 累积 {len(by_step)} step → {os.path.basename(allp)}")
+PYEOF
+}
+
 _run_single() {
   local ckpt="$ROOT_DIR/ckpts/$_exp"
-  mkdir -p "$ckpt" "$_LOGDIR/rollout" "$_LOGDIR/val" "$ROOT_DIR/logs/metrics/$_exp"
+  local _mdir="$ROOT_DIR/logs/metrics/$_exp"
+  mkdir -p "$ckpt" "$_LOGDIR/rollout" "$_LOGDIR/val" "$_mdir"
   export CKPT_DIR="$ckpt" ROLLOUT_DATA_DIR="$_LOGDIR/rollout" VAL_DATA_DIR="$_LOGDIR/val"
-  # verl 原生 FileLogger 落盘路径(logger:[...,file] 时生效)。每 step 实时写 JSONL,
-  # 含 reward/advantage/loss 全套聚合 metrics。取代坏掉的 _log_training_metrics。
-  export VERL_FILE_LOGGER_PATH="$ROOT_DIR/logs/metrics/$_exp/metrics.jsonl"
+  export VERL_FILE_LOGGER_PATH="$_mdir/metrics.jsonl"
 
-  # auto-resume：检测最新 checkpoint，中断后续训
+  # auto-resume:有 ckpt 才续训。默认行为=检测到最新 ckpt 就自动 --resume-from(无需显式传参),
+  #   verl resume_path 会 load_checkpoint + dataloader.load_state_dict(data.pt 存的数据游标,
+  #   trainer_base.py:769) → 从上次数据位置续采,不重复用已训过的数据。
+  #   ★ 无 ckpt = 全新训练:不 resume、metrics 从头重开(不接旧的)。
   local latest latest_step
   latest=$(ls -dt "$ckpt"/global_step_* 2>/dev/null | head -1) || true
+
+  # verl 原生 FileLogger(logger:[...,file] 时生效)每 step 实时写 JSONL(reward/advantage/loss)。
+  # ⚠️ verl FileLogger 硬编码 open(path,"wb") → 每次启动覆盖 metrics.jsonl(tracking.py:420),
+  #   不改 verl 源码(项目铁律)。故:
+  #   · resume(有 ckpt):启动前把上一 run 的 metrics.jsonl 折叠进永久累积 metrics.all.jsonl
+  #     (按 step 去重;续训 step 不与旧重叠,合并无损)。all 永不覆盖、跨 run 连续 = 完整历史。
+  #   · 全新(无 ckpt):清掉旧 metrics.jsonl + metrics.all.jsonl,metrics 从头重开,不接旧数据。
   if [ -n "$latest" ]; then
     latest_step=$(basename "$latest" | grep -oP '\d+')
-    echo "[train_cl] 检测到 checkpoint step=$latest_step → 自动续训"
+    echo "[train_cl] 检测到 checkpoint step=$latest_step → 自动续训(数据游标随 data.pt 续,不重复)"
+    _fold_metrics "$_mdir"
     set -- "--resume-from" "$latest" "$@"
+  else
+    echo "[train_cl] 无 checkpoint → 全新训练(不 resume;metrics 从头重开)"
+    rm -f "$_mdir/metrics.jsonl" "$_mdir/metrics.all.jsonl"
   fi
 
   echo "[train_cl] 启动 $_exp → $_LOGDIR"
-  "$PY" -m trainer.cl_main --config "$CONFIG" "$@"
-}
-
-_run_buckets() {
-  local base_model exp ckpt_base data_dir prev _resume latest
-  base_model=$(grep -E "^[[:space:]]*path:" "$CONFIG" 2>/dev/null | head -1 | sed -E 's/.*path:[[:space:]]*//;s/[[:space:]"'"'"']*//g') || true
-  exp=$(_exp_name)
-  ckpt_base="$ROOT_DIR/ckpts/$exp"
-  data_dir="$ROOT_DIR/datasets/baseline_9b"
-  prev="$base_model"
-  _resume=""
-
-  # ── 护栏(R3/R2/R5,2026-07-27 审查):--buckets 路径有三个已知坑,先 fail-loud ──
-  # R3: per-bucket parquet 曾在 datasets/_archive_multiturn_20260723/,datasets/baseline_9b/
-  #     可能是空目录 → create_rl_dataset 打不开首桶就崩在 verl 深处。这里先检查。
-  # R2: 桶行数 < train_batch_size 时 verl `assert len(dataloader)>=1` 崩(batch=64,
-  #     多数桶行数远小于 64)。无法在 shell 廉价读 parquet 行数,故仅提示。
-  # R5: 9 桶共享 $ckpt_base + verl resume_mode=auto 会让第 2 桶起误从上一桶 step 续训
-  #     (resume_from_path 是死配置,auto 不读它),遗忘实验语义被毁。按桶训练方案本身
-  #     待重构(见 doc/archive/RunLog.md),此处不深修,仅护栏 + 警告。
-  if [ ! -d "$data_dir" ] || [ -z "$(ls -A "$data_dir" 2>/dev/null)" ]; then
-    echo "[train_cl] FATAL: --buckets 数据目录 $data_dir 不存在或为空。" >&2
-    echo "[train_cl]   per-bucket parquet 可能在 datasets/_archive_multiturn_20260723/;" >&2
-    echo "[train_cl]   请先把 train_<bucket>.parquet 放进 $data_dir 再跑 --buckets。" >&2
-    return 1
-  fi
-  echo "[train_cl] WARN(R2): 桶行数若 < train_batch_size 会触发 verl 'dataloader empty' 断言;" >&2
-  echo "[train_cl] WARN(R5): 9 桶共享 ckpt 目录 + verl resume_mode=auto → 第2桶起可能误续训," >&2
-  echo "[train_cl]           跨桶 global_steps 继承会破坏遗忘实验语义。按桶训练方案待重构。" >&2
-
-  local buckets=(office research coding ops safety workflow finance communication qa)
-  for b in "${buckets[@]}"; do
-    local bfile="$data_dir/train_$b.parquet"
-    if [ ! -f "$bfile" ]; then
-      echo "[train_cl] FATAL: 桶 $b 的数据文件不存在: $bfile" >&2
-      return 1
-    fi
-    local blogdir="$ROOT_DIR/logs/experiments/$exp/$b"
-    mkdir -p "$ckpt_base" "$blogdir/rollout" "$blogdir/val"
-    export CKPT_DIR="$ckpt_base" ROLLOUT_DATA_DIR="$blogdir/rollout" VAL_DATA_DIR="$blogdir/val"
-    echo "[train_cl] 桶 $b  model=$prev  resume=${_resume:-无}"
-    "$PY" -m trainer.cl_main --config "$CONFIG" \
-      "actor_rollout_ref.model.path=$prev" "actor_rollout_ref.ref.path=$base_model" \
-      "data.train_files=$bfile" \
-      "trainer.default_local_dir=$ckpt_base" "trainer.resume_from_path=$_resume" \
-      2>&1 | tee "$blogdir/train.log"
-    latest=$(ls -dt "$ckpt_base"/global_step_* 2>/dev/null | head -1) || true
-    if [ -n "$latest" ]; then
-      prev="$latest/actor"
-      _resume="$latest"
-    else
-      echo "[train_cl] WARN: 桶 $b 无 ckpt，续用 $prev"
-      _resume=""
-    fi
-  done
-  echo "[train_cl] 9 桶全部完成"
+  # 预热命中则把 model.path override 到 node-local(消除 AFS 并发加载 hang,§47)。
+  local _model_ovr=()
+  [ -n "${CL_MODEL_LOCAL:-}" ] && _model_ovr=("actor_rollout_ref.model.path=$CL_MODEL_LOCAL")
+  "$PY" -m trainer.cl_main --config "$CONFIG" "${_model_ovr[@]}" "$@"
 }
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -337,12 +380,17 @@ _run_buckets() {
 # ══════════════════════════════════════════════════════════════════════════
 
 if [ "$NNODES" -le 1 ]; then
-  if [ "$BUCKETS" = "1" ]; then _run_buckets; else _run_single "$@"; fi
+  _prewarm_model   # 单机:预热到本地盘(见 _prewarm_model 注释)
+  _run_single "$@"
   exit 0
 fi
 
 # ── 多机 ────────────────────────────────────────────────────────────────
 echo "[train_cl] === 多机模式 rank=${RANK:-0}/${WORLD_SIZE:-?} ==="
+
+# 0. 每个节点各自预热模型到本地盘(两节点都要,lightllm 副本在各节点加载)。
+#    在 ray start / barrier 之前做,拷贝耗时不占用集群同步窗口。
+_prewarm_model
 
 # 1. Master 先启动 Ray head
 if [ "${RANK:-0}" = "0" ]; then
@@ -376,7 +424,7 @@ if [ "${RANK:-0}" = "0" ]; then
   # 显示完成(2026-07-27 10:05 的假成功)。ray stop 始终执行清理,但脚本 exit code
   # 必须等于训练 exit code,让平台看到真实成败。
   _train_rc=0
-  if [ "$BUCKETS" = "1" ]; then _run_buckets || _train_rc=$?; else _run_single "$@" || _train_rc=$?; fi
+  _run_single "$@" || _train_rc=$?
   if [ "$_train_rc" -eq 0 ]; then
     echo "[train_cl] master: 训练正常结束 (rc=0)，ray stop"
   else
