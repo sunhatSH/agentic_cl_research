@@ -16,7 +16,7 @@ TRAIN_BATCH=256
 PPO_MINI=32
 GPU_MEM_UTIL=0.75
 CUDA_DEVICES=""
-EXP_NAME=""
+EXP_NAME="${EXP_NAME:-}"
 VENV="/opt/conda"
 VERL_DIR="/mnt/afs_toolcall/sunhao4/dependencies/verl"
 LIGHTLLM_DIR="/mnt/afs_toolcall/sunhao4/workspace/LightLLM"
@@ -139,6 +139,9 @@ export NCCL_CUMEM_ENABLE="${CL_NCCL_CUMEM:-0}"
 # (1) 加载 recipe_custom 注册:lightllm replica / custom_language_model engine / Qwen3.5 GDN
 #     monkey_patch(变长packed forward)/ omni reward / agent_loop。这是 Qwen3.5-9B 混合 GDN
 #     能用 remove_padding+flash_attn3+长序列(65536) 的前提。
+# ★ 多模态策略:TEXT_MODEL_ONLY 控制视觉加载和更新(需经 verl_runner passthrough 透传到 LightLLM):
+#   0=全多模态(视觉开+不冻结) 1=冻结视觉(视觉开+冻结参数,默认,同事方案) 2=纯文本(视觉关+标准RoPE)
+export TEXT_MODEL_ONLY="${TEXT_MODEL_ONLY:-1}"
 export VERL_USE_EXTERNAL_MODULES="${VERL_USE_EXTERNAL_MODULES:-recipe_custom.bootstrap}"
 # 追加项目侧外部 patch 模块（VERL_USE_EXTERNAL_MODULES 逗号分隔，verl/__init__ 在【每个】
 # verl 进程——含 AgentSessionWorker，即真正跑 AsyncSandbox.create / create_hooks 的进程——
@@ -147,9 +150,13 @@ export VERL_USE_EXTERNAL_MODULES="${VERL_USE_EXTERNAL_MODULES:-recipe_custom.boo
 #       AGS 网关的 GOAWAY（单 HTTP/2 连接 ~1000 stream 后回收）。CL_E2B_DISABLE_HTTP2=0 可关。
 #   · trainer.observer_hook_register —— monkey-patch recipe_custom hook factory 认 FQN hook
 #       名（如 trainer.observer_hook.ObserverDiffHook），使自定义 hook 无需改 verl 源码即可挂载。
-# 两者都必须在 worker 进程生效（patch 目标都在 worker），故走 VERL_USE_EXTERNAL_MODULES 而非
-# driver-only import。逐个幂等去重。
-for _mod in rollout.e2b_http1_patch trainer.observer_hook_register; do
+#   · trainer.pause_generation_bounded_patch —— lightllm pause_generation 的无限 while True 改成
+#       有界等待超时放行（CL_PAUSE_MAX_WAIT 默认 180s）。lightllm refcount 泄漏(4卡16卡都有)让
+#       abort_all 僵尸请求回收不掉，16卡每 step 边界 pause 时无限重试→死锁 hang（§59，step6 卡死）。
+#       放行让 16卡泄漏像 4卡一样良性(泄漏但不死)。不改 LightLLM 源码。
+# 三者都必须在 worker 进程生效（patch 目标都在 worker/lightllm 副本），故走 VERL_USE_EXTERNAL_MODULES
+# 而非 driver-only import。逐个幂等去重。
+for _mod in rollout.e2b_http1_patch trainer.observer_hook_register trainer.pause_generation_bounded_patch; do
   case ",$VERL_USE_EXTERNAL_MODULES," in
     *,"$_mod",*) : ;;  # 已含,不重复追加
     *) export VERL_USE_EXTERNAL_MODULES="$VERL_USE_EXTERNAL_MODULES,$_mod" ;;
@@ -372,6 +379,17 @@ _run_single() {
   # 预热命中则把 model.path override 到 node-local(消除 AFS 并发加载 hang,§47)。
   local _model_ovr=()
   [ -n "${CL_MODEL_LOCAL:-}" ] && _model_ovr=("actor_rollout_ref.model.path=$CL_MODEL_LOCAL")
+  # TEXT_MODEL_ONLY 控制视觉加载/更新,覆写 engine_kwargs
+  case "${TEXT_MODEL_ONLY:-1}" in
+    0|1)
+      _model_ovr+=("actor_rollout_ref.rollout.engine_kwargs.lightllm.enable_multimodal=true")
+      _model_ovr+=("actor_rollout_ref.rollout.engine_kwargs.lightllm.disable_vision=false")
+      _model_ovr+=("actor_rollout_ref.rollout.engine_kwargs.lightllm.disable_audio=false")
+      [ "${TEXT_MODEL_ONLY}" = "1" ] && \
+        _model_ovr+=("actor_rollout_ref.model.override_config.freeze_module_pattern=model\\.visual\\.")
+      ;;
+    2) ;; # 保持 config 基线(enable_multimodal=false)
+  esac
   "$PY" -m trainer.cl_main --config "$CONFIG" "${_model_ovr[@]}" "$@"
 }
 
@@ -392,10 +410,25 @@ echo "[train_cl] === 多机模式 rank=${RANK:-0}/${WORLD_SIZE:-?} ==="
 #    在 ray start / barrier 之前做,拷贝耗时不占用集群同步窗口。
 _prewarm_model
 
+# 0.5 Ray num_cpus 名额（§55 修 16卡起服 hang）：Ray 默认按 cgroup CFS quota(cpu.max)
+#     估 num_cpus，容器里常被压到远小于真实可用逻辑核（实测 quota=16 而 nproc=128）。
+#     CFS quota 只限"平均算力"(每 period 最多用 quota 核·时)、**不阻止**起多线程/actor
+#     (它们分时跑)；但 Ray 按"名额"记账调度：训练 worker 的 placement group 每卡预留
+#     1 CPU + 每个 lightllm server actor(num_cpus=1,纯 IO 壳,真算力在共卡 GPU worker)
+#     也要 1 名额。quota 太小时,最后 1 个 server actor(replica_rank=7)抢不到名额 → Ray
+#     静默 PENDING → 8 副本缺 1 → verl init_hybrid 的 asyncio.gather 永等 → 整 job hang
+#     (§55 定案:8 副本只起 7,driver 同机那台差 1 个 free CPU 名额)。
+#     用 nproc(affinity 视角"这台机允许用的逻辑核")作 num_cpus 给足名额;server/train 都
+#     不吃满 CPU,over-provision 名额安全。CL_RAY_NUM_CPUS 可覆盖(设空串=退回 Ray 默认探测)。
+_RAY_NUM_CPUS="${CL_RAY_NUM_CPUS-$(nproc 2>/dev/null || echo '')}"
+_RAY_NUM_CPUS_ARG=""
+[ -n "$_RAY_NUM_CPUS" ] && _RAY_NUM_CPUS_ARG="--num-cpus $_RAY_NUM_CPUS"
+echo "[train_cl] rank=${RANK:-0}: Ray num_cpus 名额 = ${_RAY_NUM_CPUS:-(Ray默认探测)}"
+
 # 1. Master 先启动 Ray head
 if [ "${RANK:-0}" = "0" ]; then
-  echo "[train_cl] master: ray start --head ..."
-  ray start --head --disable-usage-stats || { echo "[train_cl] FATAL: ray start --head 失败" >&2; exit 1; }
+  echo "[train_cl] master: ray start --head ... ${_RAY_NUM_CPUS_ARG}"
+  ray start --head --disable-usage-stats ${_RAY_NUM_CPUS_ARG} || { echo "[train_cl] FATAL: ray start --head 失败" >&2; exit 1; }
   ray status
   echo "[train_cl] master: Ray head 就绪 ($(ray status 2>/dev/null | head -3 | tr '\n' ' '))"
 fi
@@ -433,6 +466,6 @@ if [ "${RANK:-0}" = "0" ]; then
   ray stop --force
   exit "$_train_rc"
 else
-  echo "[train_cl] worker: ray start --address $MASTER_ADDR:6379 --block"
-  ray start --address "$MASTER_ADDR:6379" --block
+  echo "[train_cl] worker: ray start --address $MASTER_ADDR:6379 --block ${_RAY_NUM_CPUS_ARG}"
+  ray start --address "$MASTER_ADDR:6379" ${_RAY_NUM_CPUS_ARG} --block
 fi

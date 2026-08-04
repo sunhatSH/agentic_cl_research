@@ -1,5 +1,7 @@
 # 16 卡 baseline 起服 hang — 交接总结(仅现象,2026-08-01)
 
+> **✅ 2026-08-02 已解决**：真根因 = **8 个 lightllm 副本只调度起 7 个,第 8 个(replica_rank=7)的 HTTP server actor(`num_cpus=1`)在 driver 节点抢不到 free CPU 名额 → Ray 静默 PENDING → verl init_hybrid 的 asyncio.gather 永等 → 整 job hang**。修复 = `ray start` 加 `--num-cpus=<nproc>`(scripts/_train_impl.sh,把 Ray 从 cgroup 保守估值≈16 顶到真实逻辑核)。真机验证:8 副本全起、update_weights=24、进 Training Progress。**下方 §52 的"双 infer_loop 竞态"归因是误判(Ray dedup 日志假象),已被 RunLog §55 推翻。以下现象记录保留作调试史。**
+
 > 供新会话排查。**只描述现象与已知事实,不含根因推测。** 详细排查历程见 `doc/archive/RunLog.md` §36–§52、`doc/debug/Training_Debug_2026-07-24.md` §44–§47。
 
 ## 一、核心现象

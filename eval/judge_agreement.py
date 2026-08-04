@@ -10,7 +10,7 @@ Labeled sample (one per graded trajectory)::
     {
       "task": "...", "trajectory": "...", "rubric": "...",
       "bucket": "ops",
-      "human": {"completion": 1.0, "safety": 1.0, "robustness": 0.5},
+      "human": {"task_done": 1, "correctness": 1.0, "trajectory": 0.8, "safety": 1.0},
       "pass": true                # optional; else derived from aggregate >= thr
     }
 

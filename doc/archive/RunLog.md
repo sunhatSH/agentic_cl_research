@@ -2030,3 +2030,203 @@ node-local)。真机重启后:**修复都生效**(预热日志/NCCL_CUMEM=0 透�
 ### 七、未解(不属本轮)
 
 16 卡 baseline 起服 hang 仍在(§52 lightllm 双 infer_loop broadcast 竞态,py-spy 需在真实训练节点做,本机无 lightllm 进程)。本轮不涉及。
+
+---
+
+## §55 — 16卡 hang 真根因定案(推翻 §49/§52):8 副本只起 7,第 8 个 lightllm server actor 从未调度  2026-08-02
+
+> 用最新一次 run(08-02 04:34 启动,CL_DIAG=1 全诊断,172MB train.log)重查,**逐条日志坐实**，推翻此前 §45–§52 的全部归因（tokenizer / rpyc / SymmMem / 双 infer_loop 竞态）。之前每章都是"抓一个信号就下结论"，这次把整条链路钉死。
+
+### 一、决定性事实(全部 grep 坐实,非推测)
+
+| 事实 | 证据 |
+|------|------|
+| **8 个 lightllm 副本只起了 7 个** | `replica_rank` 全集 = {0,1,2,3,4,5,6}，**replica_rank=7 零条日志**（无 rollout_mode 行、无 StartArgs、无 594）。`get_master_address` 成功 7 次（rank0–6），rank7 无。 |
+| **训练侧 16 worker 全健康** | WorkerDict pid：master(125) 8 个 + driver(165) 8 个 = 16；RANK14/15（driver GPU6,7）NCCL `Init START`、Gloo "connected to 15 peer ranks"。**训练 NCCL 16 路完整成组**。 |
+| **`LLMServerManager:` 从未打印** | `_initialize_llm_servers` 的 `asyncio.gather(init_hybrid×8)`（llm_server.py:521）**永不返回**——等第 8 个副本 ready 等不到 → driver 卡死在 replica init，**从没到 update_weights**（`update_weights_from_ipc`=0、`Training Progress`=0）。 |
+| **那个刷 57 万次的 count=1 int32 broadcast 是"存活副本空转",非死锁** | opCount 恒 0 = 7 个存活副本的 serve loop 每 tick 在**各自副本内 TP2 组**（`create_new_group_for_current_node`：nnodes=1→`node_world_size=tp//nnodes=2`，即副本内 2 rank）刷"有无新请求"控制标志。因 driver 从没派活（卡在 gather），它们空转等标志位→opCount 不推进。**§49/§52 把空转误读成死锁。** |
+| **无任何硬崩溃** | 全日志 Traceback=0、CUDA OOM=0、ActorDied=0、RayActorError=0、raylet 资源不足 warning=0。**不是崩溃退出，是根本没起。** |
+
+### 二、拓扑真相(此前一直搞错)
+
+每副本 `node_rank=0, nnodes=1, tp=2`——**8 个副本每个都是独立单节点 TP2 实例**，不是"2 节点 ×4 副本的跨机 TP"。两台机各跑 4 副本：
+- **master(125)**：replica_rank 0/1/2/3，cuda `0,1`/`2,3`/`4,5`/`6,7` → **4/4 全起来**。
+- **driver(165)**：replica_rank 4/5/6 起来（cuda `0,1`/`2,3`/`4,5`），**replica_rank=7（本该 cuda `6,7`）没起**。
+
+`init_hybrid`（replica.py:139）：`workers[world_size*rank : world_size*(rank+1)]`，replica7 = `workers[14:16]` = 训练 RANK14,15（driver GPU6,7，已确认活着）。**fused worker 在，但 server actor 没起。**
+
+### 三、根因(源码链坐实)
+
+`LightLLMHttpServer` = `@ray.remote(num_cpus=1)`（async_lightllm_server.py:40），GPU 靠 fused worker 经 `RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES` 复用、自己不占 GPU；用 `NodeAffinitySchedulingStrategy(node_id=..., soft=False)` **硬钉**到 driver 节点（:401-404），且**不进 placement group**。
+
+- 训练 PG（base.py:146）每节点 STRICT_PACK 预留 `{"CPU": max_colocate_count, "GPU":1} × 8 worker`。
+- server actor 要在 PG 之外找 1 个 free CPU。容器 **cgroup CPU 配额实测 = 16**（`cpu.max` = 1600000/100000，本机代理值；nproc 虚报 128）。
+- driver 节点：8 训练 worker 的 PG CPU 预留 + driver 进程 + 3 个已起的 server actor…第 8 个 server actor（replica7，num_cpus=1）**抢不到 free CPU → Ray 静默 PENDING**（raylet PENDING 不写进 driver 的 train.log，故日志无显式报错，但 `LLMServerManager:` 未打印 + rank7 零日志已充分反证）。
+- **为何 master 4/4、driver 3/4**：两节点 CPU 账略不同（driver 侧 driver 进程 + gather 协程占用），driver 恰好差 1 个 free CPU 名额。属**临界资源竞争**，非确定性 barrier——与"每次换节点仍复发"吻合（临界值附近抖动）。
+
+### 四、为什么之前 8 章全错
+
+`CL_DIAG` 之前的 run 开了 `RAY_DEDUP_LOGS=1`，Ray 把 per-replica 日志折叠成 `[repeated Nx]`，导致：①"1/8 到 594"是折叠假象（真实 7/8）；②看不到"少 1 副本"，误把 7 副本空转的 broadcast 当成"8 副本双线程竞态死锁"。**§52 加的 `threading.Lock` 治不了本病**（进程级锁串行不了缺席的第 8 副本；而且根本没有竞态，是缺副本）。教训：**排 hang 必先 `RAY_DEDUP_LOGS=0`，并先数"该起的 actor 起全了没"，再谈集合/竞态。**
+
+### 五、修复方向(待定,需上机验证,不盲改)
+
+三选一（按代价/正确性排序，**均未落地**，下次上机验证）：
+1. **给 Ray 显式放开 CPU**：`ray start --head/--address` 加 `--num-cpus=<物理核>`（当前裸启，吃 cgroup 16 的保守值）。让 driver 有富余 free CPU 容第 8 个 server actor。**最小、最可能对**——治"free CPU 不足"。
+2. **server actor `num_cpus` 降到 0**（改 recipe async_lightllm_server.py:40，走项目自有 recipe 非改 verl 本体）：server 本是 IO 协程壳、真算力在 fused worker，不必占整 CPU。`@ray.remote(num_cpus=0)` 绕开 free-CPU 竞争。**次选**，需确认不破坏调度语义。
+3. **起服 gather 超时已在（§47，CL_LAUNCH_TIMEOUT=1200s）但没触发**：说明卡在 `_initialize_llm_servers` 的 gather（llm_server.py:521，verl 本体，无超时），不是 recipe 的 launch_servers gather（:433，有超时）。**超时加错了层**——真正会永久等的是 verl 的 init_hybrid gather。可在 recipe 侧包一层超时暴露缺席 replica_rank（治标安全网）。
+
+### 六、诚实标注
+
+- **已坐实**（grep/源码）：7 副本起、rank7 零日志、16 训练 worker 全活、`LLMServerManager` 未打印、broadcast opCount 恒 0、node_nccl_group=副本内 TP2、server actor num_cpus=1+NodeAffinity+无 PG、cgroup CPU=16（本机代理）、无崩溃/无 raylet 资源 warning 进 train.log。
+- **推断**（需上机确认）：rank7 = "driver free CPU 差 1 个名额致 Ray PENDING"是最合理机制，但 raylet 的 PENDING/resource-demand 日志不在 train.log 里，**未 100% 钉死是 CPU 而非 NodeAffinity soft=False 的其它调度约束**。上机验证：训练卡住时 `ray status`（看 pending actors + 各节点 free CPU）、`ray list actors --filter state=PENDING`、raylet.out 搜 `Infeasible/resource demands`。
+- 若验证是 CPU：方案1（--num-cpus）应一发即中；若非 CPU（NodeAffinity/PG 冲突）：转方案2 + 查 `sort_placement_group_by_node_ip` 是否把 driver PG 排到无空 CPU 的 bundle。
+
+### 七、✅ 真机验证通过(2026-08-02 08:34 run)——CPU 假说坐实,方案① 一发命中
+
+落地方案①：`scripts/_train_impl.sh` 在 `ray start --head`/`--address` 加 `--num-cpus`（`_RAY_NUM_CPUS="${CL_RAY_NUM_CPUS-$(nproc)}"`，master/worker 两处；`CL_RAY_NUM_CPUS` 可覆盖、空串退回 Ray 默认）。定义在 `_prewarm_model` 之后、master/worker 分叉之前，两处都可见。用 `nproc`(affinity 逻辑核)非 cgroup quota——CFS quota 只限平均算力不限起 actor 数,server/train 都不吃满 CPU,over-provision 名额安全。
+
+真机结果(logs/experiments/qwen35_9b_b1_16gpu/train.log,08:34 启动)对照旧 run(04:34,hang):
+
+| 判据 | 旧 run(hang) | 新 run(--num-cpus 128) |
+|------|-------------|----------------------|
+| `Ray num_cpus 名额` 横幅 | 无(裸启,吃 cgroup≈16) | **128**(ray start --head ... --num-cpus 128) |
+| `server start up ok` | 7 | **8** ✅ |
+| `replica_rank` 全集 | {0..6}(缺7) | **{0..7}** ✅ |
+| `LLMServerManager:` 打印 | 0(gather 永等) | **1**(gather 返回) ✅ |
+| `update_weights_from_ipc` | 0 | **24** ✅ |
+| `Training Progress` | 0 | **≥1**(进训练循环) ✅ |
+| 崩溃/OOM/abort | — | 0(干净,未撞 §43 推理OOM) |
+
+从启动到进训练约 4 分钟,与 4 卡健康时间线一致。**§55 诊断(8 副本缺 1、driver free CPU 差 1 名额致第 8 server actor 静默 PENDING)完全坐实**;§49/§52 的 SymmMem/双 infer_loop 竞态归因确认为误判(Ray dedup 日志假象所致)。
+
+**保留但非本因的既有修复**(不回退):NCCL_CUMEM=0、模型预热 node-local、util0.65、disable_symm_mem_allreduce、running_max_req_size 64——都对,只是没解到"缺副本"这层。
+
+**后续可选加固**(未做):§五方案3——verl `llm_server.py:521` 的 init_hybrid gather 无超时,§47 的超时加在 recipe launch_servers(另一层)拦不到;若哪天又缺副本会再次静默 hang。可在 recipe 侧包一层超时暴露缺席 replica_rank(治标安全网)。当前既然根因已解,优先级低。
+
+---
+
+## §56 — 16卡 baseline 训练健康推进 + metrics 落盘修复(VERL_FILE_LOGGER_PATH 未透传)  2026-08-02
+
+### 一、16卡 baseline 训练健康(§55 修复后首个成功 run,08:34 起)
+
+`--num-cpus` 修复后 b1_16gpu 跑通并稳定推进。verl 进度条 `Training Progress: 8/500 [3:05:45<..., ~1320s/it]`,每步约 22 分钟(256 轨迹/step × 沙箱多轮 ReAct,gen 阶段占大头;500 步全量按此速需 ~185h)。metrics 前 10 step:
+
+| 指标 | 值 | 判读 |
+|------|-----|------|
+| reward_mean | 0.43~0.68(稳定 ~0.6) | 健康、非 0、有波动(非坍缩非恒定) |
+| reward_max | 1.0 全程 | 每 step 都有满分轨迹 |
+| aborted_ratio | 0.0 全程 | 无轨迹被 abort(未撞长度/超时墙) |
+| resp_len_mean | ~2 万 token | 正常 |
+| grad_norm | 0.15~0.83 | 正常范围 |
+
+与 4 卡 k1(reward 0.53~0.70)量级一致。**§55 的 hang 修复真机确认稳定有效,训练是"在健康地学"而非仅"在跑"。**
+
+### 二、metrics 落盘修复:VERL_FILE_LOGGER_PATH 未透传进 Ray worker
+
+**现象**:16卡 run 的 `logs/metrics/qwen35_9b_b1_16gpu/` **空目录**,看不到 reward 曲线;而 4卡 b1/k1/k2/k3 的 metrics 正常写。
+
+**根因**:`_train_impl.sh:346` `export VERL_FILE_LOGGER_PATH` 只进 driver shell env;verl 原生 FileLogger 在 **CLTaskRunnerV1 actor(Ray worker)** 里实例化(`tracking.py:413 os.getenv("VERL_FILE_LOGGER_PATH", None)`),worker **不继承 driver shell env**,只认 `runtime_env.env_vars` 透传的。而 `verl_runner.py` 的 `_passthrough` 列表**漏了这个 key**(有 PYTHONPATH/NCCL_CUMEM/SUFY_API_KEY 等 11 个,独缺它)。
+- **为何 4卡没暴露**:4卡 `nnodes=1` 单机,CLTaskRunnerV1 与 driver 同机/Ray local,env 恰好被继承到 → 侥幸写对路径。16卡 `nnodes=2`,CLTaskRunnerV1 跑在 ip=219 节点,env 传不过去 → FileLogger fallback 到 `tracking.py:418` 的默认 `{cwd}/agentic-cl/{experiment_name}.jsonl`。
+- **当前 run metrics 实际落点** = `agentic-cl/qwen35_9b_b1_16gpu.jsonl`(AFS 共享路径,本机可读——上面表格数据即从此捞)。**`agentic-cl/` 目录不是垃圾**(此前 commit 误当运行产物排除),是 FileLogger fallback 落点;但它是 fallback、非约定路径,`_fold_metrics` 的 resume 累积逻辑够不到它。
+
+**修复**(`trainer/verl_runner.py`,诊断 env 段之后):把 `VERL_FILE_LOGGER_PATH` 加进 `_passthrough`(`_flp = os.environ.get(...); if _flp: _passthrough[...]=_flp`)。ast.parse 通过、模拟确认进透传列表。**只对下次重启的 run 生效**(env 在 ray.init 时定;当前正在跑的 run 仍落 fallback 路径,不影响其训练)。修复后 16卡 metrics 将正确落 `logs/metrics/<exp>/metrics.jsonl`,resume/fold 生效。
+
+### 三、附:4卡 k 系列非致命噪声(与 16卡无关,独立问题)
+
+k1/k2/k3 各有若干 `RayTaskError(ValueError): input prompt token len 3x万 + max_new_tokens 65536 > 262144`(`manager.py:626 _check_and_repair_length`)。**非缺输入文件、非训练崩溃**——多轮 ReAct 累积 prompt 撑爆 lightllm `max_req_total_len=262144`,单请求被拒、gateway 捕获、该轨迹作废,训练照常推进(k1/k2/k3 step 正常涨、reward 0.53~0.70 健康)。是 §39 记过的超长轨迹老问题(多轮累积无轨迹级长度闸门)。**会污染被拒轨迹的 reward,但当前不阻断**;若在意 k 系列质量,后续可缩 max_assistant_turns 或加轨迹级闸门。本轮不处理。
+
+---
+
+## §57 — 16卡 step17 崩溃:纯文本训练混进含图请求打崩多模态 M-RoPE + 修复(2026-08-02)
+
+§55 的 `--num-cpus` 修好 hang 后,16卡 b1 训练到 **step 17(6.5h)崩**。**全新崩溃、与 hang 无关**:agent 沙箱工具产出 PNG → Hermes 拼进 chat 请求 → Gateway 传 image_data 给 lightllm → 打 Qwen3.5 多模态 M-RoPE(`qwen2_vl/infer_struct.py:66` `torch.tensor(start_idx=None)`)→ `RuntimeError: Could not infer dtype of NoneType` → 副本 2 个 infer_loop 线程全崩 → TP2 组残缺 → broadcast 洪水 + abort 死锁 → 卡死 step17。关键:M-RoPE 是 Qwen3.5 架构固有(`Qwen35InferStateInfo` 无条件继承 qwen2_vl),`disable_vision` 管不到。
+
+**为何禁多模态**(用户问,已定位):`CLAUDE.md:315`「不纳入 multimodal:模态不同、数据太少、目标不一致」;9 桶去多模态、train.parquet 无图片字段。图片纯属 agent 运行时副产物。
+
+**修复**(用户决策=废含图 session 轨迹;不改 verl 纯净上游,走 VERL_USE_EXTERNAL_MODULES):
+- 新建 `trainer/gateway_image_drop_patch.py`:patch `GatewayActor._handle_chat_completions`(`_generate` 前检测含图→投毒+400,图片不进 lightllm)+ `SessionManager.finalize_session`(投毒 session 产空轨迹→worker 踢出训练)。仿 observer_hook_register,import 即 patch、幂等、off-cluster 静默跳过。
+- `scripts/_train_impl.sh:152` 登记新模块;22 份 config `remote_agent` 加 `all_failed_policy: skip`(整 step 全废不崩);`min_group_success_ratio=0.5` 兜底。同 uid 其余轨迹不受影响。
+- 验证:检测函数 8 用例单测过、off-cluster import 不炸、22 config load 过。待上机重启验证越过 step17。
+
+> 详细崩溃链 + 因果 + 为何能解见 `doc/debug/Training_Debug_2026-07-24.md` §50。不解 k 系列超长 prompt ValueError(§39 老问题,独立)。
+
+---
+
+## §58 — §57 图片拦截失败复盘 + 根治(拦截点 _handle_chat_completions → _generate)(2026-08-03)
+
+§57 patch 上机后训练**越过 step17 到 step18**(patch 生效),但 06:31 **又崩同一个 M-RoPE
+`Could not infer dtype of NoneType`**。漏网根因:多轮增量编码 `encode_incremental_messages`
+从 trajectory buffer **无条件带出历史缓存图片**(message_encoder.py:162),§57 只检测当前请求
+content part,看不到 buffer 累积的历史图 → 仍进 lightllm。
+
+**根治**:拦截点从 `_handle_chat_completions`(检测 content part)移到 **`GatewayActor._generate`**
+——图片进 lightllm 唯一必经关卡,`image_data` 是全量+增量所有来源汇总的最终值。判非空→投毒
+session + 抛 `MalformedRequestError`(不调 llm_client,图片不进 lightllm);中间件兜底 except
+捕获→FastAPI 错误响应→actor 存活训练不崩;finalize 投毒→空轨迹 不变。改 `gateway_image_drop_patch.py`
+一处(项目侧)。用户方向仍是"废 session 轨迹"(修 §57 漏洞,非改方向)。
+
+> 详见 `doc/debug/Training_Debug_2026-07-24.md` §51。待上机验证越过 step18。
+
+---
+
+## §59 — Reward 重构:三维 completion/safety/robustness → 四维 task_done/correctness/trajectory/safety(2026-08-03)
+
+**用户决策**(设计层,非 bug 修复):把 reward 从旧的 `completion*(0.8*safety+0.2*robustness)`
+改成四维 LLM judge 一次打分 + 固定聚合公式。
+
+**四维**(全部由 LLM 一次调用打分,开启思考,返回一个 JSON):
+- `task_done` 0/1 — 任务是否真完成(不是"结束了"),以 observer 环境 diff + final answer 为准
+- `correctness` 0~1 — 是否正确;有 answer_key/GT 则把 GT 发给 LLM 对照,无 GT(主观/QA)语义判断
+- `trajectory` 0~1 — 轨迹质量三子维:工具调用质量(名/参错→无分)、无意义/重复步骤、推理连贯
+- `safety` 0~1 — 安全分(1 安全 0 危险)
+
+**聚合公式**(`trainer/model_reward.py::aggregate`):
+```
+if task_done: reward = 0.4*correctness + 0.4*trajectory + 0.2
+else:         reward = 0.4*trajectory          # 没做完→不给 correctness 分
+reward = reward * safety                        # safety 乘法因子,危险归零
+```
+用户几轮迭代定稿:done 分支 +0.2 基础分;未完成分支去掉 correctness(没做完无所谓对错)、
+系数 0.4*trajectory;safety 从 `-=0.2*safety` 改为 `*safety`(=安全分语义,1 保留 0 归零)。
+
+**丢弃策略**(用户要求):judge JSON 解析失败→客户端内**重试一次**;再失败→抛错→
+`compute_score` 标 `discard=1.0`(reward=None **掩码不删行**,不当合法 0 分,否则污染 GRPO 组内
+advantage 基线)。同一 GRPO 组丢**超过一半**→整组 reward=None(`resolve_group_rewards` 纯函数,
+6 用例单测)。定长 512 batch 不能真删行,故用掩码。
+
+**max_assistant_turns 8→6**(用户要求,减少长轨迹超时):22 份活跃 run config 全改
+(b1/k*/r* 的 4gpu+16gpu);旧 8b/8gpu 的 20 值未动。
+
+**改动文件**:`trainer/model_reward.py`(四维+公式+parse task_done 0/1+重试+discard+
+resolve_group_rewards)、`agents/prompts.py`(REWARD_RUBRIC 重写四维细则 + `_load_ground_truth`
+锚到 correctness)、`agents/reward.py`(score_followup 对齐)、`rollout/simulated_session.py`
+(`_score_all_slots` 走 resolve_group_rewards)、`trainer/model_reward_omni.py`(组级丢弃
+CLUSTER-TODO,omni 逐 row 看不到整组)、22 config、4 测试文件。
+
+**验证**:`tests/test_model_reward.py` 19 用例全过(公式/parse/discard/组丢弃);受影响的
+test_agents/test_simulated_session/test_judge_agreement 改四维 mock 后过;全套 364 passed +
+31 skipped(排除 3 个 pre-existing collection error);唯一 FAILED=test_sandbox_dockerfile
+(pre-existing,与本改动无关)。py_compile 全过。ruff 本机未装。
+
+**待集群**:omni RewardManager 侧按 uid 分组调 `resolve_group_rewards` 做组级丢弃的接线
+(逐 row 的 discard 标志已随 result 带回,组级归并须在 omni 汇总所有 row 后做,off-cluster
+无法测);task_done 的 LLM 判定质量需真实 judge 观测(纯文本任务无 diff 时最依赖它)。
+
+---
+
+## §60 — 16卡 step6 卡死:lightllm refcount 泄漏 + pause_generation 无限重试死锁 + 有界化修复(2026-08-03)
+
+§48/§50/§51 修好后 16卡 b1 又卡死 step6(图片0触发)。真根因(源码+4卡对照坐实):
+- lightllm 请求跨进程 shm 的 `ref_count` 卡在 5 不降(泄漏 bug,`can release False refcount 5` ×5658),recycle 回收不了 → 僵尸占满 KV 池(真实活跃仅 8.9%,含僵尸 99.99%——**非显存不足,加 util 无用**)。
+- 致命化:每 step 边界 pause_generation(manager.py:1013) 是无限 `while True`,僵尸让 abort_all 永 False → 死循环 hang。
+- **4卡对照**:refcount5 泄漏次数几乎一样(5354 vs 16卡5354)但 abort超时=0、跑到 step158-170。泄漏良性共性,abort 无限重试把它在16卡(util0.65池小+每step必pause)放大成致命。
+
+修复(用户定方案2,非加util):`trainer/pause_generation_bounded_patch.py` monkey-patch `HttpServerManager.pause_generation` 无限while→有界(CL_PAUSE_MAX_WAIT默认180s)超时放行(pause已置权重同步安全,僵尸留recycle后台清),让16卡泄漏像4卡良性。不改LightLLM源码,经VERL_USE_EXTERNAL_MODULES注入;_train_impl.sh登记。治致命化不治泄漏本身(泄漏根治需lightllm升级)。
+
+> 详见 `doc/debug/Training_Debug_2026-07-24.md` §52。待上机验证越过 step6。
+
+---
+## §61 — LightLLM 切换纯文本模型类(Qwen3_5TextTpPartModel)根治 M-RoPE 图片崩溃(2026-08-04)
+
+§50/51 的 M-RoPE 图片崩溃根因=Qwen3.5 无条件继承 qwen2_vl 多模态位置编码。根治(用户定):LightLLM `qwen3_5/model.py` 新增 `Qwen3_5TextTpPartModel`(替换 `Qwen35InferStateInfo→Qwen3NextInferStateInfo`,标准 RoPE,无 M-RoPE),条件注册 `llm_model_type_is("qwen3_5_text")`。无图时 M-RoPE 退化为标准 RoPE(数学等价,能力不变),图片来了也不崩(M-RoPE 分支不存在)。不改任何 config(HF config.json 已有 text_config,LightLLM 自动匹配)。验证:ModelRegistry 匹配通过。网关图片拦截 patch 降为可选防御。
+> 详见 `doc/debug/Training_Debug_2026-07-24.md` §51 末尾"根治"段。

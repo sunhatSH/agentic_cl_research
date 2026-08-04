@@ -650,6 +650,20 @@ def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
         _dv = os.environ.get(_dk)
         if _dv is not None:
             _passthrough[_dk] = _dv
+    # ★ FileLogger 落盘路径透传到所有 ray actor:verl 原生 FileLogger 在 CLTaskRunnerV1
+    # actor(Ray worker)里实例化,读 VERL_FILE_LOGGER_PATH 决定 metrics.jsonl 写哪。
+    # _train_impl.sh 只 export 到 driver shell,worker 不继承 → 多机(nnodes>1)下
+    # CLTaskRunnerV1 跑在别的节点,env 为空 → metrics 落到默认路径(非 logs/metrics/<exp>),
+    # 表现为 logs/metrics/<exp>/ 空目录、看不到 reward 曲线(单机 nnodes=1 因 actor 与
+    # driver 同机/local 恰好继承到才没暴露,2026-08-02 16卡 b1 定位)。必须经 runtime_env
+    # 透传。resume/fold 逻辑(_train_impl.sh _fold_metrics)依赖它落到约定路径才生效。
+    _flp = os.environ.get("VERL_FILE_LOGGER_PATH")
+    if _flp:
+        _passthrough["VERL_FILE_LOGGER_PATH"] = _flp
+    # TEXT_MODEL_ONLY 控制 LightLLM Qwen3.5 的 infer_struct(0/1=原生 M-RoPE,2=标准 RoPE)。
+    _tmo = os.environ.get("TEXT_MODEL_ONLY")
+    if _tmo is not None:
+        _passthrough["TEXT_MODEL_ONLY"] = _tmo
     if _passthrough:
         OmegaConf.update(
             cfg,

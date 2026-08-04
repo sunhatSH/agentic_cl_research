@@ -1,0 +1,415 @@
+################ 依赖版本快照 ################
+host: pt-3551017ddd02473b916dccc9b8c98b66-worker-0
+time: 20260804T135402Z
+python: /opt/conda/bin/python
+python version: 3.11.14
+
+======== 1. 关键包版本(pip show)========
+  nvidia-cutlass-dsl               = 4.3.4
+  sgl-kernel                       = 0.3.21
+  sgl_kernel                       = 0.3.21
+  flash-attn                       = 2.7.4.post1
+  flash_attn                       = 2.7.4.post1
+  flashinfer-python                = 0.5.3
+  torch                            = 2.9.0+cu129
+  triton                           = 3.5.0
+  transformers                     = 5.8.0
+  lightllm                         = 1.1.0
+  vllm                             = 0.13.0
+  nvidia-cuda-runtime-cu12         = 12.9.79
+  nvidia-cudnn-cu12                = 9.10.2.21
+
+======== 2. cutlass RoundingModeKind 是否存在(决定性判据)========
+  cutlass._mlir.dialects.nvvm.RoundingModeKind: ✅ 存在(视觉可跑)
+  nvvm 里 Rounding 相关属性: ['FPRoundingMode', 'RoundingModeKind']
+  cutlass.__version__ = ?
+  cutlass path = /opt/conda/lib/python3.11/site-packages/nvidia_cutlass_dsl/python_packages/cutlass/__init__.py
+
+======== 3. ViT flash-attn import 能否成功(直接试崩溃点)========
+  from sgl_kernel.flash_attn import flash_attn_varlen_func: ✅ 成功
+
+======== 4. sgl_kernel 里 causal_conv1d(GDN 用,纯文本也依赖)========
+  from sgl_kernel import causal_conv1d_fwd: ✅ 成功
+
+======== 5. 全量 pip freeze(存档,便于 diff)========
+absl-py==2.3.1
+accelerate==1.13.0
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.2
+aiohttp-cors==0.8.1
+aiosignal==1.4.0
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anthropic==0.71.0
+antlr4-python3-runtime==4.9.3
+anyio==4.12.0
+aoss-python-sdk @ file:///root/aoss-python-sdk-2.2.6.tar.gz#sha256=4e45dda0cadef74106be74ca3fc24c6e980f23e8f01059b60569407984dfd17c
+apache-tvm-ffi==0.1.6
+apex @ git+https://github.com/NVIDIA/apex.git@3c98f93d1a960d3595bde036528271b8bdcdd347
+archspec @ file:///home/task_175812491784513/conda-bld/archspec_1758124989039/work
+astor==0.8.1
+asttokens==3.0.1
+atomics==1.0.3
+attrs==25.4.0
+audioread==3.1.0
+Authlib==1.6.6
+av==16.0.1
+babel==2.18.0
+backports.tarfile==1.2.0
+beartype==0.22.9
+beautifulsoup4==4.14.3
+blake3==1.0.8
+blobfile==3.2.0
+blosc==1.11.3
+boltons @ file:///croot/boltons_1751383775419/work
+boto3==1.42.15
+botocore==1.42.16
+bracex==3.0
+brotlicffi @ file:///home/task_176496126216915/conda-bld/brotlicffi_1764961310969/work
+bs4==0.0.2
+cachetools==6.2.4
+cbor2==5.7.1
+certifi @ file:///home/conda/feedstock_root/build_artifacts/certifi_1767500808759/work/certifi
+cffi @ file:///home/task_176183215235376/conda-bld/cffi_1761832773734/work
+charset-normalizer @ file:///home/task_176174480956840/conda-bld/charset-normalizer_1761744822896/work
+click==8.4.2
+cloudpickle==3.1.2
+codetiming==1.4.0
+coloredlogs==15.0.1
+colorful==0.5.8
+compressed-tensors==0.12.2
+conda @ file:///home/task_176556791182090/conda-bld/conda_1765567977349/work/conda-src
+conda-content-trust @ file:///work/ci_py311/conda-content-trust_1676851327497/work
+conda-libmamba-solver @ file:///C:/miniconda3/conda-bld/conda-libmamba-solver_1764245615235/work/src
+conda-package-handling @ file:///home/task_176236637588516/conda-bld/conda-package-handling_1762366406048/work
+conda_package_streaming @ file:///home/task_176236147649632/conda-bld/conda-package-streaming_1762361631517/work
+contourpy==1.3.3
+courlan==1.3.2
+cryptography @ file:///croot/cryptography_1686613057838/work
+cuda-bindings==13.1.1
+cuda-pathfinder==1.3.3
+cuda-python==13.1.1
+cupy-cuda12x==13.6.0
+cycler==0.12.1
+cyclopts==4.4.1
+datasets==2.21.0
+dateparser==1.3.0
+debugpy==1.8.0
+decorator==5.2.1
+decord==0.6.0
+-e git+https://github.com/deepseek-ai/DeepEP.git@a84a24808fb0ea732f49b874cc456a69dde69076#egg=deep_ep
+deep-gemm @ file:///tmp/tmp.BMW0bMb4Lr/deepgemm/dist/deep_gemm-2.0.0%2Bea9c5d9-cp311-cp311-linux_x86_64.whl#sha256=1160b006d41bb3c0b68f9d85b82f20480b0fb8c679a978e6035360c422ed31ac
+depyf==0.20.0
+diffusers==0.31.0
+dill==0.3.8
+diskcache==5.6.3
+distlib==0.4.0
+distro @ file:///croot/distro_1714488253808/work
+dnspython==2.8.0
+docker-pycreds==0.4.0
+dockerfile-parse==2.0.1
+docstring_parser==0.17.0
+docutils==0.22.4
+e2b==2.24.0
+easydict==1.13
+einops==0.8.1
+email-validator==2.3.0
+environs==14.5.0
+exceptiongroup==1.3.1
+executing==2.2.1
+fake-useragent==2.2.0
+fakeredis==2.33.0
+fastapi==0.127.0
+fastapi-cli==0.0.20
+fastapi-cloud-cli==0.8.0
+fastar==0.8.0
+fastmcp==2.14.1
+fastrlock==0.8.3
+filelock==3.20.0
+fla-core==0.4.2
+flash-attn==2.7.4.post1
+flash-attn-3==3.0.0b1
+flash-linear-attention==0.4.2
+flashinfer-python==0.5.3
+fonttools==4.61.1
+frozendict @ file:///home/task_176175051791416/conda-bld/frozendict_1761750665697/work
+frozenlist==1.8.0
+fsspec==2024.6.1
+func-timeout==4.3.5
+gguf==0.17.1
+gitdb==4.0.12
+GitPython==3.1.45
+google-api-core==2.28.1
+google-auth==2.45.0
+googleapis-common-protos==1.72.0
+greenlet==3.3.1
+grpcio==1.76.0
+h11==0.16.0
+h2==4.3.0
+hf-xet==1.5.1
+hpack==4.2.0
+htmldate==1.9.4
+httpcore==1.0.9
+httptools==0.7.1
+httpx==0.28.1
+httpx-sse==0.4.3
+huggingface_hub==1.22.0
+humanfriendly==10.0
+humanize==4.15.0
+hydra-core==1.3.2
+hyperframe==6.1.0
+idna @ file:///home/task_176191178300919/conda-bld/idna_1761911982343/work
+ijson==3.4.0.post0
+immutabledict==4.3.0
+importlib_metadata==8.7.1
+interegular==0.3.3
+ipython==9.8.0
+ipython_pygments_lexers==1.1.1
+jaraco.classes==3.4.0
+jaraco.context==6.0.2
+jaraco.functools==4.4.0
+jedi==0.19.2
+jeepney==0.9.0
+Jinja2==3.1.6
+jiter==0.12.0
+jmespath==1.0.1
+joblib==1.5.3
+json5==0.13.0
+jsonpatch @ file:///croot/jsonpatch_1714483231291/work
+jsonpointer @ file:///croot/jsonpointer_1753788433671/work
+jsonschema==4.25.1
+jsonschema-path==0.3.4
+jsonschema-specifications==2025.9.1
+jusText==3.0.2
+keyring==25.7.0
+kiwisolver==1.4.9
+langchain-core==1.4.9
+langchain-openai==1.3.3
+langchain-protocol==0.0.18
+langdetect==1.0.9
+langsmith==0.10.0
+lark==1.2.2
+lazy_loader==0.4
+libmambapy @ file:///home/task_176311149273150/conda-bld/mamba-split_1763111542505/work/libmambapy
+librosa==0.11.0
+liger_kernel==0.6.4
+lightllm @ git+https://github.com/ModelTC/LightLLM.git@14cfc9511715e6f72b56d17279f8a41e5fb67ec6
+llguidance==1.3.0
+llvmlite==0.44.0
+lm-format-enforcer==0.11.3
+loguru==0.7.3
+lupa==2.6
+lxml==6.0.2
+Markdown==3.10
+markdown-it-py==4.0.0
+MarkupSafe==2.1.5
+marshmallow==4.1.2
+mathruler==0.1.0
+matplotlib==3.10.8
+matplotlib-inline==0.2.1
+mbridge @ git+https://github.com/ISEEKYAN/mbridge.git@20e4dd0620a15a8a7bdfdd0b56a47ea38277de34
+mcp==1.25.0
+mdurl==0.1.2
+megatron-core @ git+https://github.com/NVIDIA/Megatron-LM.git@23e00ed0963c35382dfe8a5a94fb3cda4d21e133
+menuinst @ file:///home/task_176538188749828/conda-bld/menuinst_1765382369288/work
+mistral_common==1.11.2
+model-hosting-container-standards==0.1.12
+more-itertools==10.8.0
+mpmath==1.3.0
+msgpack @ file:///croot/msgpack-python_1750958623279/work
+msgspec==0.20.0
+multidict==6.7.0
+multiprocess==0.70.16
+multiprocessing-logging==0.3.4
+networkx==3.6.1
+ninja==1.13.0
+numba==0.61.2
+numpy==1.26.4
+nvdlfw-inspect @ git+https://github.com/NVIDIA/nvidia-dlfw-inspect.git@6b60eb0e675606fb2fbbfcb12667ecbec75eaf87
+nvidia-cublas-cu12==12.9.1.4
+nvidia-cuda-cupti-cu12==12.9.79
+nvidia-cuda-nvrtc-cu12==12.9.86
+nvidia-cuda-runtime-cu12==12.9.79
+nvidia-cudnn-cu12==9.10.2.21
+nvidia-cudnn-frontend==1.17.0
+nvidia-cufft-cu12==11.4.1.4
+nvidia-cufile-cu12==1.14.1.1
+nvidia-curand-cu12==10.3.10.19
+nvidia-cusolver-cu12==11.7.5.82
+nvidia-cusparse-cu12==12.5.10.65
+nvidia-cusparselt-cu12==0.7.1
+nvidia-cutlass-dsl==4.3.4
+nvidia-mathdx==25.6.0
+nvidia-ml-py==13.590.44
+nvidia-nccl-cu12==2.27.5
+nvidia-nvjitlink-cu12==12.9.86
+nvidia-nvshmem-cu12==3.3.20
+nvidia-nvtx-cu12==12.9.79
+nvtx==0.2.14
+omegaconf==2.3.0
+openai==2.44.0
+openai-harmony==0.0.8
+openapi-pydantic==0.5.1
+opencensus==0.11.4
+opencensus-context==0.1.3
+opencv-python-headless==4.12.0.88
+opentelemetry-api==1.39.1
+opentelemetry-exporter-prometheus==0.60b1
+opentelemetry-instrumentation==0.60b1
+opentelemetry-proto==1.39.1
+opentelemetry-sdk==1.39.1
+opentelemetry-semantic-conventions==0.60b1
+orjson==3.11.5
+outlines_core==0.2.11
+packaging @ file:///home/task_176104885106445/conda-bld/packaging_1761049078006/work
+pandas==2.3.3
+parso==0.8.5
+partial-json-parser==0.2.1.1.post7
+pathable==0.4.4
+pathvalidate==3.3.1
+peft==0.18.0
+pexpect==4.9.0
+pillow==12.0.0
+platformdirs @ file:///home/task_176235638439362/conda-bld/platformdirs_1762356487841/work
+pluggy @ file:///croot/pluggy_1733169602837/work
+plumbum==1.10.0
+pooch==1.8.2
+portpicker==1.6.0
+prettytable==3.17.0
+prometheus-fastapi-instrumentator==7.1.0
+prometheus_client==0.23.1
+prompt_toolkit==3.0.52
+propcache==0.4.1
+proto-plus==1.27.0
+protobuf==5.29.5
+psutil==7.2.0
+ptyprocess==0.7.0
+pure_eval==0.2.3
+py-cpuinfo==9.0.0
+py-key-value-aio==0.3.0
+py-key-value-shared==0.3.0
+py-spy==0.4.1
+pyarrow==22.0.0
+pyasn1==0.6.1
+pyasn1_modules==0.4.2
+pybase64==1.4.3
+pybind11==3.0.1
+pycosat @ file:///croot/pycosat_1736868416091/work
+pycountry==24.6.1
+pycparser @ file:///home/task_175749606196006/conda-bld/pycparser_1757496076770/work
+pycryptodomex==3.23.0
+pydantic==2.12.5
+pydantic-extra-types==2.10.6
+pydantic-settings==2.12.0
+pydantic_core==2.41.5
+pydocket==0.16.3
+pyecharts==2.0.9
+Pygments==2.19.2
+PyJWT==2.10.1
+pylatexenc==2.10
+pyparsing==3.3.1
+pyperclip==1.11.0
+PySocks @ file:///home/task_176175228059944/conda-bld/pysocks_1761753009523/work
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.1
+python-json-logger==4.0.0
+python-multipart==0.0.21
+pytz==2025.2
+pyvers==0.2.2
+PyYAML==6.0.3
+pyzmq==27.1.0
+qwen-vl-utils==0.0.14
+ray==2.49.1
+redis==7.1.0
+referencing==0.36.2
+regex==2025.11.3
+requests @ file:///home/task_176235919505742/conda-bld/requests_1762359593170/work
+requests-toolbelt==1.0.0
+rich==15.0.0
+rich-rst==1.3.2
+rich-toolkit==0.17.1
+rignore==0.7.6
+rpds-py==0.30.0
+rpyc==6.0.2
+rsa==4.9.1
+ruamel.yaml @ file:///home/task_176253595816597/conda-bld/ruamel.yaml_1762535970580/work
+ruamel.yaml.clib @ file:///home/task_176253017872328/conda-bld/ruamel.yaml.clib_1762530230360/work
+s3transfer==0.16.0
+safetensors==0.7.0
+sandbox-fusion==0.3.7
+scikit-learn==1.8.0
+scipy==1.16.3
+SecretStorage==3.5.0
+sentence-transformers==5.2.0
+sentencepiece==0.2.1
+sentry-sdk==2.48.0
+setproctitle==1.3.7
+setuptools-scm==9.2.2
+sgl-kernel==0.3.21
+shellingham==1.5.4
+simplejson==3.20.2
+six @ file:///croot/six_1744271502820/work
+smart_open==7.5.0
+smmap==5.0.2
+sniffio==1.3.1
+sortedcontainers==2.4.0
+soundfile==0.13.1
+soupsieve==2.8.1
+soxr==1.0.0
+SQLAlchemy==2.0.46
+sse-starlette==3.0.4
+stack-data==0.6.3
+starlette==0.50.0
+supervisor==4.3.0
+swanlab==0.7.5
+sympy==1.14.0
+tabulate==0.9.0
+tenacity==9.1.2
+tensorboard==2.20.0
+tensorboard-data-server==0.7.2
+tensordict==0.12.2
+threadpoolctl==3.6.0
+tiktoken==0.12.0
+timm==1.0.22
+tld==0.13.1
+tokenizers==0.22.1
+torch==2.9.0+cu129
+torch_memory_saver==0.0.9
+torchaudio==2.9.0+cu129
+torchdata==0.11.0
+torchvision==0.24.0+cu129
+tqdm @ file:///home/task_176286286867676/conda-bld/tqdm_1762863348022/work
+trafilatura==2.0.0
+traitlets==5.14.3
+TransferQueue==0.1.6
+transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@f05f12c974b37c5bd8dfca3d2d294be53b66abfa
+transformers==5.8.0
+triton==3.5.0
+trl==0.26.2
+truststore @ file:///home/task_176252090921746/conda-bld/truststore_1762520922801/work
+typer==0.20.1
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzdata==2025.3
+tzlocal==5.3.1
+ujson==5.11.0
+urllib3 @ file:///home/task_176539911460589/conda-bld/urllib3_1765399251638/work
+uuid_utils==0.16.2
+uv==0.9.18
+uvicorn==0.40.0
+uvloop==0.22.1
+veomni @ git+https://github.com/ByteDance-Seed/VeOmni.git@82e754a0508ee0266e490a34fa9ff096f939be03
+virtualenv==20.35.4
+vllm==0.13.0
+wandb==0.19.1
+watchfiles==1.1.1
+wcmatch==10.2.1
+wcwidth==0.2.14
+websockets==15.0.1
+Werkzeug==3.1.4
+wrapt==1.17.3
+xgrammar==0.1.27
+xxhash==3.6.0
+yarl==1.22.0
+zipp==3.23.0
+zstandard @ file:///home/task_175818878877641/conda-bld/zstandard_1758189073277/work

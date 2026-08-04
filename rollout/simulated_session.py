@@ -82,9 +82,18 @@ def _score_all_slots(
     Sets ``t.reward`` in place so ``pick_winner`` selects on real graded reward
     instead of falling back to random. The observer report is the ground-truth
     state diff; the actor trajectory is carried pass-through on the report for
-    safety/robustness. A slot whose observer report is empty/None (no state
+    trajectory/safety. A slot whose observer report is empty/None (no state
     change) gets reward 0 without a judge call (gated, per agents.reward).
+
+    Discard policy (2026-08-03): a judge failure that survived the retry sets the
+    slot's ``discard`` flag; ``resolve_group_rewards`` then maps such rows to
+    reward=None (masked, not a fake 0) and drops the WHOLE 8-slot group to None
+    when more than half its slots were discarded. reward=None routes through
+    pick_winner's scorer-error fallback (keep previous state, no sync).
     """
+    from trainer.model_reward import resolve_group_rewards
+
+    verdicts: list[dict] = []
     for t, rep in zip(trajs, reports, strict=True):
         # Stash the observer's diff evidence on the trajectory so it survives
         # back to the rollout manager, which forwards it (non_tensor
@@ -92,21 +101,20 @@ def _score_all_slots(
         # scores, it only supplies ground-truth state evidence the judge reads.
         t.meta["observer_report"] = "" if rep is None else (rep.state_diff or "")
         if rep is None or rep.is_empty():
-            t.reward = 0.0
-            t.meta["reward_verdict"] = {"score": 0.0, "gated": 1.0}
-            continue
-        verdict = score_followup(query=query, report=rep, judge=reward_judge)
-        t.meta["reward_verdict"] = verdict
-        # A judge I/O failure returns score 0.0 with judge_error=1.0. Do NOT let
-        # that masquerade as a legitimate "this trajectory scored 0" -- an outage
-        # would then make an entire GRPO group look uniformly failed (zero
-        # advantage) or hand winner selection a fake-0 argmax. Set reward=None so
-        # pick_winner's fallback treats it as a scorer error (keep previous state,
-        # no sync) and the failure stays visible in reward_verdict.judge_error.
-        if float(verdict.get("judge_error", 0.0)) >= 1.0:
-            t.reward = None
+            # Gated no-effect turn: a real (score 0) outcome, NOT a discard.
+            verdict = {"score": 0.0, "gated": 1.0, "discard": 0.0}
         else:
-            t.reward = float(verdict.get("score", 0.0))
+            verdict = score_followup(query=query, report=rep, judge=reward_judge)
+        t.meta["reward_verdict"] = verdict
+        verdicts.append(verdict)
+
+    # Apply discard + >half-group-drop policy across the whole group at once.
+    rewards = resolve_group_rewards(verdicts)
+    for t, r in zip(trajs, rewards, strict=True):
+        # None (discard / group-dropped) -> pick_winner treats it as a scorer
+        # error: keep previous state, no sync, failure stays visible in the
+        # verdict's discard/judge_error fields.
+        t.reward = None if r is None else float(r)
 
 
 def _save_winner_trajectory(traj: Trajectory, query: str) -> None:

@@ -44,7 +44,7 @@ actor_rollout_ref:
     clip_ratio_high: 0.28
     clip_ratio_c: 10.0
     optim:
-      lr: 2.0e-6                        # 9B 峰值 lr(warmup 前3% step 0→2e-6,后 constant)
+      lr: 5.0e-6                        # 9B 峰值 lr(warmup 前3% step 0→2e-6,后 constant)
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
     ppo_mini_batch_size: 32             # =train_batch(全 batch 单次更新);内部 ×n8=256 轨迹 % DP4=0
@@ -100,10 +100,11 @@ actor_rollout_ref:
         session_timeout: 1000            # ★ 对齐参考脚本(2000→1000):2000 偏大,沙箱占用久
         harness_log_dir: ${oc.env:HARNESS_LOG_DIR,logs/harness}
         harness_log_save_mode: all
+        all_failed_policy: skip   # 整 step 全部 rollout 失败(如都因含图被废,见 gateway_image_drop_patch/§57)时 skip 该 step 而非 raise 崩训练。默认 raise。
     multi_turn:
       format: qwen3_coder
       reasoning_format: qwen3
-      max_assistant_turns: 8            # ReAct 多轮上限
+      max_assistant_turns: 6            # ReAct 多轮上限(8→6:减少长轨迹超时,§reward四维改版)
       max_tool_response_length: 16384   # ★ 单次工具输出截断(治 §28 那个31万token:verl原生处理)
     checkpoint_engine:
       update_weights_bucket_megabytes: 3072  # 照搬参考(6144→3072)

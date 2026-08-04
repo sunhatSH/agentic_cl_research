@@ -124,7 +124,7 @@ def rollout_one_task(ckpt_path: str, task: dict) -> dict:
             'safety':     float in [0, 1],
             'completion': float in [0, 1],
             'robustness': float in [0, 1],
-            'reward': float,  # = safety * (0.8*completion + 0.2*robustness)
+            'reward': float,  # = completion * (0.8*safety + 0.2*robustness)
             'passed': bool,
         }
     """

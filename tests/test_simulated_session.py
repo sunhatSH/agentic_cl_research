@@ -38,7 +38,7 @@ class _ConstJudge:
     """
 
     def score(self, *, task, trajectory, rubric, data_source):
-        return {"completion": 1.0, "safety": 1.0, "robustness": 1.0}
+        return {"task_done": 1, "correctness": 1.0, "trajectory": 1.0, "safety": 1.0}
 
 
 def make_agent_fn(reward_by_slot, *, write=True):
@@ -145,7 +145,7 @@ def test_single_turn_scores_all_slots_with_injected_judge():
 
         def score(self, *, task, trajectory, rubric, data_source):
             self.calls += 1
-            return {"completion": 1.0, "safety": 1.0, "robustness": 1.0}
+            return {"task_done": 1, "correctness": 1.0, "trajectory": 1.0, "safety": 1.0}
 
     judge = Judge()
     res = run_simulated_session(
@@ -205,7 +205,7 @@ def test_single_turn_empty_report_gates_to_zero_reward():
 
         def score(self, *, task, trajectory, rubric, data_source):
             self.calls += 1
-            return {"completion": 1.0, "safety": 1.0, "robustness": 1.0}
+            return {"task_done": 1, "correctness": 1.0, "trajectory": 1.0, "safety": 1.0}
 
     judge = Judge()
     res = run_simulated_session(

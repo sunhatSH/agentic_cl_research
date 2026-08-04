@@ -18,12 +18,23 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #                                       需要 5.12+（5.8.0 缺该类，verl import 崩）
 #   - TransferQueue==0.1.6 / tensordict<=0.10.0 / accelerate==1.13.0 : verl 训练链路依赖
 #   - e2b==2.34.0 + e2b-code-interpreter==2.8.1 : sandbox 采集（code-interpreter 需 e2b>=2.26）
-#   - nvidia-cutlass-dsl==4.6.1 / mistral-common / rapidfuzz / langchain-openai
-# 分三层 RUN，对应他脚本的三组命令，便于逐组定位失败。
+#   - nvidia-cutlass-dsl==4.3.4 / mistral-common / rapidfuzz / langchain-openai
+#     ★ 4.3.4 而非 4.6.1:4.6.1 的 nvvm 把 RoundingModeKind 拆成 FPRoundingMode/IntegerRoundingMode,
+#       而 sgl_kernel 的 flash_attn_origin.cute 仍引用旧名 RoundingModeKind → 开视觉起 ViT
+#       flash-attn 时 AttributeError 崩(§51)。4.3.4 保留 RoundingModeKind,视觉能跑。纯文本不碰
+#       ViT 故 4.6.1 也不崩,但对齐能跑视觉的镜像(实测 4.3.4=✅ / 4.6.1=❌)统一钉 4.3.4。
+# 分三层 RUN,对应他脚本的三组命令,便于逐组定位失败。
 RUN python -m pip install -U "tensordict>=0.8.0,<=0.10.0"
+# 先彻底卸载 base 镜像可能自带的 4.6.1(拆成 4 个子包:主包 + libs-base/core/cu12),
+# 否则 pip install 主包=4.3.4 时残留的 4.6.1 子包会让 import 仍走 4.6.1 的 nvvm(缺 RoundingModeKind)。
+RUN python -m pip uninstall -y \
+        nvidia-cutlass-dsl \
+        nvidia-cutlass-dsl-libs-base \
+        nvidia-cutlass-dsl-libs-core \
+        nvidia-cutlass-dsl-libs-cu12 2>/dev/null || true
 RUN python -m pip install -U \
         "accelerate==1.13.0" \
-        "nvidia-cutlass-dsl==4.6.1" \
+        "nvidia-cutlass-dsl==4.3.4" \
         "transformers==5.12.0"
 RUN python -m pip install \
         "e2b==2.34.0" \
@@ -97,7 +108,7 @@ need = {
     "accelerate": "1.13.0",
     "e2b": "2.34.0",
     "e2b-code-interpreter": "2.8.1",
-    "nvidia-cutlass-dsl": "4.6.1",
+    "nvidia-cutlass-dsl": "4.3.4",
     "mistral-common": "1.11.2",
     "omegaconf": "2.3.0",       # oc.decode/resolve；旧版 logger list 解析会挂
     "hydra-core": "1.3.2",
@@ -112,6 +123,14 @@ from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES as 
 assert "qwen3_5" in M, "transformers 不认 qwen3_5 架构 — 无法加载 Qwen3.6"
 from transformers import MistralForSequenceClassification  # noqa: F401
 print("[selfcheck] transformers qwen3_5 + Mistral OK")
+
+# --- 2a. cutlass 4.3.4 必须有 RoundingModeKind(开视觉 ViT flash-attn 靠它,§51)---
+# 4.6.1 拆成 FPRoundingMode/IntegerRoundingMode → 缺 RoundingModeKind → 开视觉崩。
+from cutlass._mlir.dialects import nvvm as _nvvm
+assert hasattr(_nvvm, "RoundingModeKind"), (
+    "cutlass nvvm 缺 RoundingModeKind — cutlass-dsl 版本不对(需 4.3.4,4.6.1 会崩),开视觉会挂"
+)
+print("[selfcheck] cutlass RoundingModeKind OK(视觉可用)")
 
 # --- 3. fla 可 import（Qwen3.6 GDN kernel）---
 import fla  # noqa: F401

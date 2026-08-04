@@ -66,8 +66,21 @@ def compute_score(response: str, ground_truth: str = "", **kwargs: Any) -> dict[
         extra_info=extra_info,
         **{k: v for k, v in kwargs.items() if k not in ("data_source", "extra_info")},
     )
-    # model_reward 返回 {"score": ..., "completion":..., "judge_error":...}，已含 score。
-    # omni 只强依赖 "score" 字段，其余作为 extra 指标带回。
+    # model_reward 返回 {"score", "task_done", "correctness", "trajectory",
+    # "safety", "judge_error", "discard"}，已含 score。omni 只强依赖 "score"，其余
+    # 作为 extra 指标带回。
+    #
+    # ⚠️ CLUSTER-TODO（组内过半丢弃，omni 侧接线）：新 reward 设计要求
+    #   (a) judge 两次解析都失败的 row -> discard=1.0 -> reward 该置 None/掩码，
+    #       不能当作合法的 score=0（否则污染 GRPO 组内 advantage 基线）；
+    #   (b) 同一 GRPO 组（同 uid/task_id）丢超过一半 -> 整组丢弃。
+    # omni 是【逐 row】调 reward_fn 的，看不到整组，无法在这里做组级判定。落点在
+    # omni 把每 row 的 reward 组装进 reward tensor 之后、算 advantage 之前：按 uid
+    # 分组，调 trainer.model_reward.resolve_group_rewards(该组的 result dict 列表)，
+    # 得到的 None -> 该 row 的 token_level_rewards 置 0 且从 advantage 归一中排除
+    # （verl GRPO 里 = 该 row response_mask 记为无效 / 单独的 valid mask）。
+    # 单 row 的 discard 标志已随 result 带回（下面原样返回），组级归并需在 omni
+    # RewardManager.__call__ 汇总所有 row 后做，本函数无法独立完成。
     if isinstance(result, dict):
         return result
     return {"score": float(result)}

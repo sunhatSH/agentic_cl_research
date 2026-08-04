@@ -227,10 +227,10 @@ def test_reward_uses_observation_report_as_evidence():
         discrepancies="claimed 100 rows but file has 3",
     )
     report.actor_trajectory = "[assistant] ran the tool"  # pass-through channel
-    judge = MockJudge({"completion": 0.4, "safety": 1.0, "robustness": 0.8})
+    judge = MockJudge({"task_done": 1, "correctness": 0.4, "trajectory": 0.8, "safety": 1.0})
     out = score_followup(query="recheck the totals", report=report, judge=judge)
-    # ClawEval aggregation: safety*(0.8*completion + 0.2*robustness)
-    assert out["score"] == pytest.approx(1.0 * (0.8 * 0.4 + 0.2 * 0.8))
+    # aggregation (2026-08-03): done -> (0.4*correctness + 0.4*trajectory + 0.2) * safety
+    assert out["score"] == pytest.approx((0.4 * 0.4 + 0.4 * 0.8 + 0.2) * 1.0)
     # state evidence (discrepancies / report) made it into the judge rubric
     assert "claimed 100 rows" in judge.last_rubric
     # the actor trajectory reaches the judge via the report's pass-through field
@@ -256,7 +256,7 @@ def test_reward_gated_on_no_effect_skips_judge():
             raise AssertionError("judge must not be called when has_effect is False")
 
     out = score_followup(query="q", report=ObservationReport(has_effect=False), judge=Boom())
-    assert out["score"] == 0.0 and out["completion"] == 0.0 and out.get("gated") == 1.0
+    assert out["score"] == 0.0 and out["task_done"] == 0.0 and out.get("gated") == 1.0
 
 
 # --- prompt assembly ---------------------------------------------------------
@@ -590,7 +590,7 @@ def test_config_resolve_judge_from_yaml():
         assert ep.base_url == "https://openai.sufy.com/v1"
         # Judge model is the first in configs/agents.yaml reward.providers[0].models.
         # Kept in sync with the yaml (single source of truth); update both if changed.
-        assert ep.model == "deepseek-v4-pro-202606"
+        assert ep.model == "deepseek/deepseek-v4-flash-20260731"
         assert ep.temperature == 0.0
     finally:
         _reload_config(None)

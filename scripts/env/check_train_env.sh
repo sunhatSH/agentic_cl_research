@@ -31,7 +31,7 @@ PINNED=(
   "accelerate==1.13.0"
   "e2b==2.34.0"
   "e2b-code-interpreter==2.8.1"
-  "nvidia-cutlass-dsl==4.6.1"
+  "nvidia-cutlass-dsl==4.3.4"
   "mistral-common==1.11.2"
   # omegaconf 2.3.0 才有 oc.decode resolver（configs/base.yaml:195 logger 靠它把
   # env 里的 "[console,swanlab]" 解析成 list）；旧版 import 得过但解析会挂 → 训练时
