@@ -22,6 +22,7 @@ VERL_DIR="/mnt/afs_toolcall/sunhao4/dependencies/verl"
 LIGHTLLM_DIR="/mnt/afs_toolcall/sunhao4/workspace/LightLLM"
 SMOKE=0
 DRY_RUN=0
+OVERRIDES=()   # 透传给 cl_main 的 hydra override(如 trainer.total_training_steps=1)
 
 # ── 解析参数 ────────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
@@ -41,7 +42,7 @@ while [ $# -gt 0 ]; do
     --lightllm-dir)  LIGHTLLM_DIR="$2"; shift 2;;
     --smoke)         SMOKE=1; shift;;
     --dry-run)       DRY_RUN=1; shift;;
-    *) echo "[train_cl] 未知参数: $1" >&2; exit 2;;
+    *) OVERRIDES+=("$1"); shift;;   # 未知裸参数(如 trainer.total_training_steps=1)当 hydra override,透传给 cl_main
   esac
 done
 
@@ -384,7 +385,10 @@ _run_single() {
     0|1)
       _model_ovr+=("actor_rollout_ref.rollout.engine_kwargs.lightllm.enable_multimodal=true")
       _model_ovr+=("actor_rollout_ref.rollout.engine_kwargs.lightllm.disable_vision=false")
-      _model_ovr+=("actor_rollout_ref.rollout.engine_kwargs.lightllm.disable_audio=false")
+      # ★ 音频必须关:Qwen3.5-9B config 无 audio_config,开音频 server 起 audioserver
+      #   init_model 时 `model_cfg["audio_config"]` KeyError 崩(实测 2026-08-04 vision_smoke)。
+      #   我们只需视觉(工具产图),不需音频。enable_multimodal=true + disable_audio=true 即可。
+      _model_ovr+=("actor_rollout_ref.rollout.engine_kwargs.lightllm.disable_audio=true")
       [ "${TEXT_MODEL_ONLY}" = "1" ] && \
         _model_ovr+=("actor_rollout_ref.model.override_config.freeze_module_pattern=model\\.visual\\.")
       ;;
@@ -399,7 +403,7 @@ _run_single() {
 
 if [ "$NNODES" -le 1 ]; then
   _prewarm_model   # 单机:预热到本地盘(见 _prewarm_model 注释)
-  _run_single "$@"
+  _run_single ${OVERRIDES[@]+"${OVERRIDES[@]}"}
   exit 0
 fi
 
@@ -457,7 +461,7 @@ if [ "${RANK:-0}" = "0" ]; then
   # 显示完成(2026-07-27 10:05 的假成功)。ray stop 始终执行清理,但脚本 exit code
   # 必须等于训练 exit code,让平台看到真实成败。
   _train_rc=0
-  _run_single "$@" || _train_rc=$?
+  _run_single ${OVERRIDES[@]+"${OVERRIDES[@]}"} || _train_rc=$?
   if [ "$_train_rc" -eq 0 ]; then
     echo "[train_cl] master: 训练正常结束 (rc=0)，ray stop"
   else

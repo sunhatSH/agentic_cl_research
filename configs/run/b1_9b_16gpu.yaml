@@ -44,7 +44,7 @@ actor_rollout_ref:
     clip_ratio_high: 0.28
     clip_ratio_c: 10.0
     optim:
-      lr: 5.0e-6                        # 9B 峰值 lr(warmup 前3% step 0→2e-6,后 constant)
+      lr: 5.0e-6                        # 9B 峰值 lr(warmup 前3% step 0→5e-6 线性,后 constant 恒 5e-6)
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
     ppo_mini_batch_size: 32             # =train_batch(全 batch 单次更新);内部 ×n8=256 轨迹 % DP4=0
