@@ -39,6 +39,7 @@ reward = reward * safety       # safety(0~1)作为整体门控,危险操作直�
 |------|------|------|------|------|------|
 | `google/gemini-3.5-flash-lite` | **0.004** | **2.2s** | **5.9s** | 0% | ✅ 主 judge(已采用) |
 | `openai/gpt-5.6-luna`(开思考) | 0.036 | 8.9s | 48s | 0% | 稳定度差 gemini 9 倍 |
+| `stepfun/step-3.7-flash`(开思考) | 0.038 | 15.0s | 48s | 0% | 稳定度同 gpt 量级,延迟更慢 |
 | `deepseek/deepseek-v4-flash`(开思考) | 0.048 | 19.2s | 104s | 0% | 备用 judge |
 | `gpt-5.6-luna`(关思考) | 0.045 | 7.1s | 36s | 0% | 关思考后变差 |
 | `deepseek-v4-flash`(关思考) | 0.088 | 2.4s | 5.7s | **15%** | 关思考后稳定度翻倍 + 出 judge_error |
