@@ -64,6 +64,8 @@ datasets/
 # Runtime collected data (mock rollouts + warm-start buffers; regenerated, not source)
 data/
 rollouts/
+# 例外:doc/expr/data/ 是实验档案(每step桶信息/metrics快照),属源码要入库,非运行时产物
+!doc/expr/data/
 
 # Tencent / CCR local credentials (never commit)
 docker/sandbox/tencent.env
@@ -103,3 +105,8 @@ paper/latex/main.log
 paper/latex/main.pdf
 /runs
 exps/
+
+# Reward-model selection sweep outputs (runtime logs/json; script is tracked)
+rewardmodel_choose/results/
+# stray metrics dump dir (wrong output path); real metrics in logs/metrics/
+agentic-cl/
