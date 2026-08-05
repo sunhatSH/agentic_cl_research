@@ -13,7 +13,7 @@
 
 \section{大模型的强化微调与持续学习}
 
-强化学习已成为大模型对齐与能力提升的主流手段。GRPO（Group Relative Policy Optimization）通过对同一查询的一组 rollout 做组内奖励归一化来估计优势，省去价值网络，是当前智能体强化学习的主力算法。近期工作从理论上揭示了 GRPO 与 DPO 的联系\upcite{B7}。在持续学习角度，已有研究发现强化微调天然比监督微调更不易遗忘\upcite{B2}，并探索了双重内在反馈\upcite{B1}、专家到策略的同化\upcite{B5}、以及从分布式教师的持续策略蒸馏\upcite{B6}。多轮智能体强化学习则暴露出策略多样性坍缩的 Echo Trap 现象\upcite{B4}，本文以固定开启的熵正则应对。关于大模型强化学习中 rollout 生成、过滤与回放策略的系统综述见\upcite{B3}。
+强化学习已成为大模型对齐与能力提升的主流手段。GRPO（Group Relative Policy Optimization）通过对同一查询的一组 rollout 做组内奖励归一化来估计优势，省去价值网络，是当前智能体强化学习的主力算法。近期工作从理论上揭示了 GRPO 与 DPO 的联系\upcite{B7}。在持续学习角度，已有研究发现强化微调天然比监督微调更不易遗忘\upcite{B2}，并探索了双重内在反馈\upcite{B1}、专家到策略的同化\upcite{B5}、以及从分布式教师的持续策略蒸馏\upcite{B6}。多轮智能体强化学习则暴露出策略多样性坍缩的 Echo Trap 现象\upcite{B4}，本文以固定开启的熵正则作为预防。关于大模型强化学习中 rollout 生成、过滤与回放策略的系统综述见\upcite{B3}。
 
 \section{智能体的持续学习}
 

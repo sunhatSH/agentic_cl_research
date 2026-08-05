@@ -19,7 +19,7 @@
   \item $L_{rl}$：策略梯度项，采用 GRPO（组内奖励归一化估计优势）。
   \item $L_{kl}$：对参考策略 $\pi_{ref}$ 的\textbf{逆向} KL 锚定 $D_{KL}(\pi_{new}\,\|\,\pi_{ref})$，约束新策略不偏离过远。$\pi_{ref}$ 可取 $\pi_0$ 或上一阶段 checkpoint $\pi_{t-1}$。
   \item $L_{replay}$：经验回放损失，对从缓冲区采样的历史轨迹计算（详见\ref{sec:buffer}、\ref{sec:replay-weight}）。回放行的 \texttt{response\_mask}$=0$，不参与 PPO 主损失，仅通过独立的 \texttt{replay\_response\_mask} 让模型温习旧桶。
-  \item $L_{ent}$：熵正则，$\lambda_4=0.001$ \textbf{所有阶段固定开启}，防止多轮智能体强化学习中的策略多样性坍缩（Echo Trap\upcite{B4}），不参与消融。
+  \item $L_{ent}$：熵正则，$\lambda_4=0.001$ \textbf{所有阶段固定开启}，防止策略多样性坍缩（Echo Trap\upcite{B4}），不参与消融。
 \end{itemize}
 
 早期方案中的参数 L2 正则项 $L_{reg}$ 已弃用（权重置零），槽位让给熵正则。$\lambda_1$ 恒为 1；$\lambda_2,\lambda_3$ 按实验配置，基线实验令 $\lambda_3=0$（无回放）。

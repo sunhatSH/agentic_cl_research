@@ -9,7 +9,7 @@ We augment the standard GRPO policy gradient with three continual-learning regul
   L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_4 L_{ent}.
   \label{eq:cl-loss}
 \end{equation}
-$L_{rl}$ is the GRPO term (group-relative advantage estimation). $L_{kl}=D_{KL}(\pi_{new}\,\|\,\pi_{ref})$ is a reverse-KL anchor to a reference policy $\pi_{ref}$ (either $\pi_0$ or the previous checkpoint $\pi_{t-1}$). $L_{replay}$ is the experience replay loss applied to historical trajectories sampled from the buffer (Section~\ref{sec:buffer}); replay rows carry a separate \texttt{replay\_response\_mask} and do not enter the PPO loss. $L_{ent}$ is an entropy regularizer with $\lambda_4=0.001$ fixed across all experiments, guarding against Echo Trap~\cite{B4}. The earlier L2 regularization term ($L_{reg}$) is deprecated and replaced by entropy.
+$L_{rl}$ is the GRPO term (group-relative advantage estimation). $L_{kl}=D_{KL}(\pi_{new}\,\|\,\pi_{ref})$ is a reverse-KL anchor to a reference policy $\pi_{ref}$ (either $\pi_0$ or the previous checkpoint $\pi_{t-1}$). $L_{replay}$ is the experience replay loss applied to historical trajectories sampled from the buffer (Section~\ref{sec:buffer}); replay rows carry a separate \texttt{replay\_response\_mask} and do not enter the PPO loss. $L_{ent}$ is an entropy regularizer with $\lambda_4=0.001$ fixed across all experiments, guarding against policy-diversity collapse~\cite{B4}. The earlier L2 regularization term ($L_{reg}$) is deprecated and replaced by entropy.
 
 The objective is injected into GRPO with \textbf{no framework fork}---we use the framework's loss-injection API and hook system, adding no custom code to the upstream RL engine.
 
