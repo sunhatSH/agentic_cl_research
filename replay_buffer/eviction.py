@@ -28,10 +28,10 @@ class Eviction:
                      when bucket_size > soft_target[bucket].
         floors: per-bucket hard floor. Eviction never reduces a bucket below
                 its floor. Required (no scalar fallback).
-        eviction_type: 'priority' (default) evicts the lowest-priority
-                       trajectory in the bucket. 'reservoir' evicts a
-                       uniformly random trajectory -- used by the R0 CLEAR
-                       baseline (random discard).
+        eviction_type: 'fifo' (default) evicts the earliest-inserted trajectory
+                       in the bucket. 'priority' evicts the lowest-priority one.
+                       'reservoir' evicts a uniformly random trajectory -- used
+                       by the R0 CLEAR baseline (random discard).
         pioneer_boost: priority added to the first few trajectories entering
                        a near-empty bucket, so they survive until comparable
                        peers arrive. Default 0.5.
@@ -48,7 +48,7 @@ class Eviction:
         pioneer_threshold: int = 10,
         rng: random.Random | None = None,
     ):
-        if eviction_type not in ("priority", "reservoir"):
+        if eviction_type not in ("priority", "reservoir", "fifo"):
             raise ValueError(f"unknown eviction_type {eviction_type!r}")
         self.floors = dict(floors or {})
         self.soft_target = dict(soft_target)
@@ -72,6 +72,7 @@ class Eviction:
     def select_victim(self, store: TrajectoryStore, bucket: str) -> str | None:
         """Return the trajectory_id to evict.
 
+        - 'fifo' mode (default): the EARLIEST-inserted trajectory in the bucket.
         - 'priority' mode: lowest-priority trajectory in the bucket.
         - 'reservoir' mode: a uniformly random trajectory in the bucket.
 
@@ -82,6 +83,9 @@ class Eviction:
         if self.eviction_type == "reservoir":
             ids = store.list_by_bucket(bucket)
             return self.rng.choice(ids) if ids else None
+        if self.eviction_type == "fifo":
+            victims = store.oldest_k(bucket, k=1)
+            return victims[0] if victims else None
         victims = store.bottom_k_priority(bucket, k=1)
         return victims[0] if victims else None
 

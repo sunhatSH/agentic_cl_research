@@ -183,6 +183,16 @@ cl:
     # not by this key.
     bucket_strategy: distance
 
+    # ── 桶内采样 + 桶内淘汰(2026-08-05 重构指南定稿)─────────────────────────
+    # within_bucket_sampling: 桶被选中后,桶内取哪几条 replay。
+    #   uniform(默认/新方向)= 桶内随机;priority 暂搁置(优先级复杂,后续再看有无更优)。
+    #   回放权重按"距离"加权由 bucket_strategy 管;桶内不再用 priority。
+    within_bucket_sampling: uniform
+    # eviction_type: 桶满(超 soft_target)后淘汰谁。桶内淘汰,禁跨桶挤出。
+    #   fifo(默认/新方向)= 淘汰最早进桶的(insert 顺序)。淘汰算法暂定 FIFO,
+    #   可选 priority(复杂,先不用)/reservoir(R0 CLEAR baseline 显式用)。
+    eviction_type: fifo
+
   weighting:
     scheme: W0                    # W0 = gamma=delta=1 (flat, priority-only).
                                   # W2 = active U-shape (gamma=delta=0.88).

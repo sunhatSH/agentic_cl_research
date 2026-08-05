@@ -84,8 +84,9 @@ class BucketReplayBuffer:
         bucket_floors: per-bucket hard floor (eviction protection). Required.
         alpha: sub-linear weighting exponent in quota formula (default 0.5).
         priority: Priority instance (anti-forgetting); pass RewardPriority for R5.
-        eviction_type: 'priority' (default) or 'reservoir' (R0 CLEAR baseline).
-        within_bucket_sampling: 'priority' (default) or 'uniform' (R0 / R3).
+        eviction_type: 'fifo' (default) evicts earliest-inserted; 'priority'
+                       evicts lowest-priority; 'reservoir' = R0 CLEAR baseline.
+        within_bucket_sampling: 'uniform' (default) or 'priority'.
         seed: optional RNG seed for reproducible reservoir / sampling.
 
     In-bucket eviction only, no cross-bucket displacement.  bucket_floors
@@ -101,9 +102,9 @@ class BucketReplayBuffer:
         bucket_task_counts: Sequence[int] | None = None,
         alpha: float = 0.5,
         priority: Priority | None = None,
-        eviction_type: str = "priority",
+        eviction_type: str = "fifo",
         bucket_floors: Sequence[int] | None = None,
-        within_bucket_sampling: str = "priority",
+        within_bucket_sampling: str = "uniform",
         bucket_strategy: str = "distance",
         seed: int | None = None,
     ):
@@ -235,9 +236,10 @@ class BucketReplayBuffer:
         if self.eviction_type == "reservoir":
             return self._reservoir_add(tid, trajectory, meta, bucket)
 
-        # Priority eviction: evict the lowest-priority in-bucket trajectory
-        # FIRST when the bucket is at/over its soft target, then insert, so the
-        # steady-state bucket size never exceeds soft_target (bug A5).
+        # FIFO / priority eviction: evict the victim (oldest for fifo, lowest
+        # -priority for priority) FIRST when the bucket is at/over its soft
+        # target, then insert, so the steady-state size never exceeds
+        # soft_target (bug A5). Victim selection is delegated to Eviction.
         while self.store.bucket_size(bucket) >= self.soft_target[bucket]:
             if self.store.bucket_size(bucket) <= self.bucket_floors[bucket]:
                 break

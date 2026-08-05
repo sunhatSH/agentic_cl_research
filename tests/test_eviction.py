@@ -35,6 +35,38 @@ def test_select_victim_returns_none_at_floor():
     assert ev.select_victim(store, "A") is None
 
 
+def test_select_victim_fifo_returns_oldest_inserted():
+    store = TrajectoryStore()
+    # Insert in a fixed order; priority is intentionally NOT monotonic with age
+    # so FIFO cannot accidentally coincide with priority order.
+    store.put("first", 1, {"bucket": "A", "priority": 0.9})
+    store.put("second", 2, {"bucket": "A", "priority": 0.1})
+    store.put("third", 3, {"bucket": "A", "priority": 0.5})
+    ev = Eviction(soft_target={"A": 1}, floors={"A": 0}, eviction_type="fifo")
+    # FIFO evicts the earliest-inserted regardless of priority.
+    assert ev.select_victim(store, "A") == "first"
+    store.delete("first")
+    assert ev.select_victim(store, "A") == "second"
+
+
+def test_fifo_reinsert_keeps_original_order():
+    store = TrajectoryStore()
+    store.put("a", 1, {"bucket": "A", "priority": 0.5})
+    store.put("b", 2, {"bucket": "A", "priority": 0.5})
+    store.put("c", 3, {"bucket": "A", "priority": 0.5})
+    # Re-put "a" (in-place update) must NOT move it to the back of the queue.
+    store.put("a", 99, {"bucket": "A", "priority": 0.5})
+    ev = Eviction(soft_target={"A": 1}, floors={"A": 0}, eviction_type="fifo")
+    assert ev.select_victim(store, "A") == "a"
+
+
+def test_unknown_eviction_type_raises():
+    import pytest
+
+    with pytest.raises(ValueError):
+        Eviction(soft_target={"A": 1}, eviction_type="bogus")
+
+
 def test_pioneer_boost_decays_with_bucket_size():
     store = TrajectoryStore()
     ev = Eviction(soft_target={"A": 100}, pioneer_boost=0.5, pioneer_threshold=10)

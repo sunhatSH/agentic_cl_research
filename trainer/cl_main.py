@@ -121,8 +121,8 @@ def build_buffer(cfg):
         bucket_floors=list(bcfg.get("bucket_floors", [])) or None,
         alpha=float(bcfg.get("alpha", 0.5)),
         priority=priority,
-        eviction_type=bcfg.get("eviction_type", "priority"),
-        within_bucket_sampling=bcfg.get("within_bucket_sampling", "priority"),
+        eviction_type=bcfg.get("eviction_type", "fifo"),
+        within_bucket_sampling=bcfg.get("within_bucket_sampling", "uniform"),
         bucket_strategy=bcfg.get("bucket_strategy", "distance"),
         seed=bcfg.get("seed", None),
     )

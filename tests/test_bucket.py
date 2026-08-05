@@ -83,6 +83,26 @@ def test_reservoir_eviction_caps_size():
     assert buf.store.bucket_size("All") == 10
 
 
+def test_fifo_eviction_drops_oldest_within_bucket():
+    # Default eviction_type is now 'fifo'. Fill one bucket past its cap and
+    # confirm the survivors are the LATEST inserts (oldest were evicted), and
+    # the bucket never drops below its floor / never touches another bucket.
+    buf = BucketReplayBuffer(
+        num_buckets=2, total_capacity=20,
+        bucket_names=["A", "B"], bucket_task_counts=[1, 1],
+        bucket_floors=[1, 1], alpha=0.5,
+    )
+    cap = buf.soft_target["A"]
+    for i in range(cap + 20):
+        buf.add_trajectory({"i": i}, "A", metadata={"trajectory_id": f"t{i}", "pattern_id": "p"})
+    assert buf.store.bucket_size("A") <= cap
+    assert buf.store.bucket_size("B") == 0  # never cross-bucket
+    survivors = set(buf.store.list_by_bucket("A"))
+    # The very first inserts must be gone; the last inserts must survive.
+    assert "t0" not in survivors
+    assert f"t{cap + 19}" in survivors
+
+
 def test_persistent_sampler_keeps_state():
     buf = BucketReplayBuffer(total_capacity=14000, bucket_floors=D9, seed=0)
     s1 = buf._sampler
