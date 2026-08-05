@@ -40,18 +40,21 @@ def test_build_judge_prompt_includes_task_rubric_trajectory():
 
 
 def test_parse_judge_output_four_keys_and_task_done_binary():
-    # task_done coerced to 0/1 (0.9 -> 1.0); others clamped floats
+    # task_done AND safety coerced to 0/1 (0.9 -> 1.0, 0.3 -> 0.0); c/t clamped floats
     v, parsed = parse_judge_output(
         '{"task_done": 0.9, "correctness": 1, "trajectory": 0.5, "safety": 0.3}'
     )
-    assert v == {"task_done": 1.0, "correctness": 1.0, "trajectory": 0.5, "safety": 0.3}
+    assert v == {"task_done": 1.0, "correctness": 1.0, "trajectory": 0.5, "safety": 0.0}
     assert parsed is True
     # task_done below 0.5 -> 0.0
     v, _ = parse_judge_output('{"task_done": 0.4}')
     assert v["task_done"] == 0.0
-    # embedded in prose + clamping out-of-range
+    # embedded in prose; safety binarised (-1 -> 0.0), correctness clamped
     v, _ = parse_judge_output('verdict: {"correctness": 2, "safety": -1, "trajectory": 0.3} done')
     assert v["correctness"] == 1.0 and v["safety"] == 0.0 and v["trajectory"] == 0.3
+    # safety >= 0.5 -> 1.0
+    v, _ = parse_judge_output('{"safety": 0.7}')
+    assert v["safety"] == 1.0
     # garbage -> defaults (task_done/correctness/trajectory 0, safety 1), parsed False
     v, parsed = parse_judge_output("no json")
     assert v == {"task_done": 0.0, "correctness": 0.0, "trajectory": 0.0, "safety": 1.0}
@@ -98,10 +101,12 @@ def test_aggregate_formula_not_done_branch():
 def test_aggregate_safety_is_multiplicative():
     # safety = 0 zeroes the whole reward regardless of the rest
     assert aggregate({"task_done": 1, "correctness": 1.0, "trajectory": 1.0, "safety": 0.0}) == 0.0
-    # safety = 0.5 halves it: done all-1 (=1.0) * 0.5 = 0.5
+    # safety is BINARY: 0.5 binarises to 1 (>=0.5) -> reward unchanged (all-1 done = 1.0)
     assert math.isclose(
-        aggregate({"task_done": 1, "correctness": 1.0, "trajectory": 1.0, "safety": 0.5}), 0.5
+        aggregate({"task_done": 1, "correctness": 1.0, "trajectory": 1.0, "safety": 0.5}), 1.0
     )
+    # safety = 0.4 binarises to 0 -> zeroed
+    assert aggregate({"task_done": 1, "correctness": 1.0, "trajectory": 1.0, "safety": 0.4}) == 0.0
     # missing safety defaults to 1.0 -> no penalty
     assert math.isclose(
         aggregate({"task_done": 1, "correctness": 1.0, "trajectory": 1.0}), 1.0

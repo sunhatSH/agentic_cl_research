@@ -69,7 +69,7 @@ def score_followup(
     if report.is_empty():
         return dict(_NO_EFFECT_VERDICT)
 
-    from trainer.model_reward import _DIM_DEFAULTS, aggregate, get_judge
+    from trainer.model_reward import _DIM_DEFAULTS, _binarize, aggregate, get_judge
 
     parts = build_reward_judge_input(query=query, report=report)
     client = judge if judge is not None else get_judge()
@@ -101,10 +101,10 @@ def score_followup(
 
     return {
         "score": 0.0 if judge_error else float(aggregate(verdict)),
-        "task_done": _c01(verdict.get("task_done", _DIM_DEFAULTS["task_done"])),
+        "task_done": _binarize(verdict.get("task_done", _DIM_DEFAULTS["task_done"])),
         "correctness": _c01(verdict.get("correctness", _DIM_DEFAULTS["correctness"])),
         "trajectory": _c01(verdict.get("trajectory", _DIM_DEFAULTS["trajectory"])),
-        "safety": _c01(verdict.get("safety", _DIM_DEFAULTS["safety"])),
+        "safety": _binarize(verdict.get("safety", _DIM_DEFAULTS["safety"])),
         "judge_error": judge_error,
         "discard": judge_error,  # 1.0 -> caller sets reward=None (masked, not scored 0)
     }
