@@ -308,19 +308,31 @@ class OpenAIJudgeClient:
 
     def _call_once(self, messages: list[dict[str, str]]) -> Mapping[str, float]:
         """One judge round-trip. Raises TruncatedOutputError on truncation or an
-        unparseable verdict (so the caller can retry / discard)."""
+        unparseable verdict (so the caller can retry / discard).
+
+        Thinking is explicitly ENABLED for all judge models (gemini/deepseek/gpt):
+        the 2026-08-05 sweep showed disabling thinking destabilises scoring
+        (deepseek within-traj std 0.048→0.088 + 15% judge_error). Keep it on.
+        """
         import httpx
 
         # max_tokens is set on the client (default 16384, env REWARD_JUDGE_MAX_TOKENS).
         # See __init__ for why 4096 was fatal for thinking judges.
+        body = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        # Explicitly enable thinking for models that accept these fields; models
+        # that don't will ignore them. We never send thinking=disabled.
+        body["thinking"] = {"type": "enabled"}
+        body["enable_thinking"] = True
+        body["reasoning_effort"] = "medium"
+        body["chat_template_kwargs"] = {"enable_thinking": True}
         resp = httpx.post(
             f"{self.base_url}/chat/completions",
-            json={
-                "model": self.model,
-                "messages": messages,
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
-            },
+            json=body,
             headers={"Authorization": f"Bearer {self.api_key}"},
             timeout=self.timeout,
         )

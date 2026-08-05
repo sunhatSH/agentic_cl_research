@@ -33,6 +33,20 @@ reward = reward * safety       # safety(0~1)作为整体门控,危险操作直�
 - safety 乘性门控:再高的 correctness+trajectory,若有危险操作也会被 safety 压低 → 抗 reward hacking。
 - 未完成任务仍给 trajectory 分(过程有价值),但无完成基线分。
 
+**Reward judge 选型(2026-08-05,n=20 轨迹 × 8 次重复,项目正式 rubric)**
+
+| 模型 | 稳定度(within-traj std) | 延迟均值 | 延迟 max | judge_error | 备注 |
+|------|------|------|------|------|------|
+| `google/gemini-3.5-flash-lite` | **0.004** | **2.2s** | **5.9s** | 0% | ✅ 主 judge(已采用) |
+| `openai/gpt-5.6-luna`(开思考) | 0.036 | 8.9s | 48s | 0% | 稳定度差 gemini 9 倍 |
+| `deepseek/deepseek-v4-flash`(开思考) | 0.048 | 19.2s | 104s | 0% | 备用 judge |
+| `gpt-5.6-luna`(关思考) | 0.045 | 7.1s | 36s | 0% | 关思考后变差 |
+| `deepseek-v4-flash`(关思考) | 0.088 | 2.4s | 5.7s | **15%** | 关思考后稳定度翻倍 + 出 judge_error |
+
+结论:**gemini 全面最优**,稳定度碾压、延迟最低、无 error。关思考对 deepseek/gpt 都是负优化
+(deepseek 关思考后 15% 请求异常)。**所有模型保持开思考**,主 judge 用 gemini。
+选型脚本:`rewardmodel_choose/compare_reward_models.py`,原始结果:`rewardmodel_choose/results/`。
+
 **2. 四个 4 卡旧实验结果(baseline,无 CL 算法)**
 
 用**专门为 Continual Learning 适配的数据**训练,**不加入自己的 CL 算法**(纯 baseline)。
