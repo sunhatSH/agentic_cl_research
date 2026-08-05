@@ -1,18 +1,8 @@
 % References for the agentic continual-learning paper.
-% Citation keys match the [A2]/[B4]/... tags used in the drafts
-% (paper/drafts/Paper_*) and in doc/CL_Update_Sunhao.md (single source).
-% arXiv ids copied verbatim from the reference table; verify before submission.
+% 信源:doc/source/CL_Design.md §参考文献(已去重,修正重复 arXiv ID)。
+% 仅保留当前论文/学位论文实际引用的条目;新增引用前先在 doc 里更新筛选。
 
-% ── A. Replay Buffer optimization & Continual RL ──────────────────────────────
-
-@article{A1,
-  title  = {Replay-enhanced Continual Reinforcement Learning},
-  author = {Zhang, Tiantian and others},
-  year   = {2018},
-  eprint = {1811.11682},
-  archivePrefix = {arXiv},
-  note   = {Full history replay + on/off-policy mix + behavior cloning; reduces forgetting without task IDs.}
-}
+% ── A. Replay Buffer 优化 & Continual RL ──────────────────────────────────────
 
 @article{A2,
   title  = {Experience Replay for Continual Learning (CLEAR)},
@@ -23,80 +13,18 @@
   note   = {Task-agnostic vanilla ER + V-trace + behavioral cloning matches EWC/P\&C; our R0 baseline.}
 }
 
-@article{A3,
-  title  = {Using Curiosity for Even Representation of Tasks in Continual Offline RL},
-  author = {Pathmanathan, Pankayaraj and others},
-  year   = {2023},
-  eprint = {2312.03177},
-  archivePrefix = {arXiv}
-}
-
-@article{A4,
-  title  = {DISTR: Diffusion-based Trajectory Replay for Continual RL},
-  author = {Chen, Feng and others},
-  year   = {2026},
-  eprint = {2603.02951},
-  archivePrefix = {arXiv}
-}
-
-@article{A5,
-  title  = {ARROW: Augmented Replay for Robust World Models},
-  author = {Alyahya, Abdulaziz and others},
-  year   = {2026},
-  eprint = {2601.22475},
-  archivePrefix = {arXiv}
-}
-
-@article{A6,
-  title  = {Improvements of Dark Experience Replay and Reservoir Sampling},
-  author = {Kobayashi, Taisuke and others},
-  year   = {2026},
-  eprint = {2601.05787},
-  archivePrefix = {arXiv}
-}
-
-@article{A7,
-  title  = {OER: Offline Experience Replay for Continual Offline RL},
-  author = {Gai, Sibo and others},
-  year   = {2023},
-  eprint = {2302.11510},
-  archivePrefix = {arXiv}
-}
-
-@article{A8,
-  title  = {Selective Experience Replay Compression Using Coresets},
-  author = {Zheng, Guangyao and others},
-  year   = {2026},
-  eprint = {2603.08561},
-  archivePrefix = {arXiv}
-}
-
-@article{A9,
-  title  = {Prioritized Generative Replay},
-  author = {Wang, Renhao and others},
-  year   = {2023},
-  eprint = {2311.11557},
-  archivePrefix = {arXiv},
-  note   = {Optimal replay distribution from a regularized RL objective; basis for priority weighting.}
-}
-
-@article{A10,
-  title  = {Adaptive Replay Buffer for Offline-to-Online RL},
-  author = {Song, Chihyeon and others},
-  year   = {2025},
-  eprint = {2512.10510},
-  archivePrefix = {arXiv}
+@article{A11,
+  title   = {Overcoming catastrophic forgetting in neural networks},
+  author  = {Kirkpatrick, James and Pascanu, Razvan and Rabinowitz, Neil and others},
+  journal = {Proceedings of the National Academy of Sciences},
+  volume  = {114},
+  number  = {13},
+  pages   = {3521--3526},
+  year    = {2017},
+  note    = {EWC: Fisher-weighted quadratic penalty on important parameters.}
 }
 
 % ── B. LLM Agent continual learning & RL training ─────────────────────────────
-
-@article{B1,
-  title  = {RetroAgent: Retrospective Dual Intrinsic Feedback},
-  author = {Zhang, Xiaoying and others},
-  year   = {2026},
-  eprint = {2605.02913},
-  archivePrefix = {arXiv}
-}
 
 @article{B2,
   title  = {RFT Naturally Mitigates Forgetting in Continual Post-Training},
@@ -105,14 +33,6 @@
   eprint = {2507.05386},
   archivePrefix = {arXiv},
   note   = {RFT forgets less than SFT; motivates RL-based continual post-training.}
-}
-
-@article{B3,
-  title  = {Generate, Filter, Control, Replay (GFCR): A Survey of LLM RL Rollout Strategies},
-  author = {Surana, Rohan and others},
-  year   = {2026},
-  eprint = {2601.20732},
-  archivePrefix = {arXiv}
 }
 
 @article{B4,
@@ -124,29 +44,13 @@
   note   = {Naive PPO/GRPO in multi-turn agents collapses via Echo Trap; motivates the entropy term.}
 }
 
-@article{B5,
-  title  = {BEPA: Bi-level Expert-to-Policy Assimilation},
-  author = {Wang, Zezhou and others},
-  year   = {2025},
-  eprint = {2601.05787},
-  archivePrefix = {arXiv}
-}
-
-@article{B6,
-  title  = {Continual Policy Distillation from Distributed RL Teachers},
-  author = {Li, Yuxuan and others},
-  year   = {2025},
-  eprint = {2507.05386},
-  archivePrefix = {arXiv}
-}
-
 @article{B7,
   title  = {It Takes Two: Your GRPO Is Secretly DPO},
   author = {Wu, Yihong and Ma, Liheng and Ding, Lei and Li, Muzhi and Wang, Xinyu and Chen, Kejia and Su, Zhan and Huang, Chenyang and Zhang, Zhanguang and Li, Derek and Zhang, Yingxue and Nie, Jian-Yun and Coates, Mark},
   year   = {2025},
   eprint = {2510.00977},
   archivePrefix = {arXiv},
-  note   = {GRPO variance reduction is driven by mini-batch rollout count B = Q*G (prompts x group size), not group size alone; decreasing G can be compensated by increasing Q to keep B fixed. Anchors our rollout-batch sizing (B in 256-512).}
+  note   = {GRPO variance reduction is driven by mini-batch rollout count B = Q*G.}
 }
 
 % ── C. GUI Agent RL & continual learning ──────────────────────────────────────
@@ -157,23 +61,7 @@
   year   = {2025},
   eprint = {2504.20073},
   archivePrefix = {arXiv},
-  note   = {GRPO's Matthew effect yields natural forgetting resistance; SFT FM=-5.73 vs GRPO FM=-0.62.}
-}
-
-@article{C2,
-  title  = {Continual GUI Agents},
-  author = {Liu, Ziwei and others},
-  year   = {2026},
-  eprint = {2603.11395},
-  archivePrefix = {arXiv}
-}
-
-@article{C3,
-  title  = {GUI Agents with Reinforcement Learning: Toward Digital Inhabitants},
-  author = {Hu, Junan and others},
-  year   = {2024},
-  eprint = {2410.18082},
-  archivePrefix = {arXiv}
+  note   = {GRPO's Matthew effect yields natural forgetting resistance.}
 }
 
 % ── D. Classic foundations ────────────────────────────────────────────────────
