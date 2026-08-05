@@ -365,15 +365,18 @@ _run_single() {
   #   不改 verl 源码(项目铁律)。故:
   #   · resume(有 ckpt):启动前把上一 run 的 metrics.jsonl 折叠进永久累积 metrics.all.jsonl
   #     (按 step 去重;续训 step 不与旧重叠,合并无损)。all 永不覆盖、跨 run 连续 = 完整历史。
-  #   · 全新(无 ckpt):清掉旧 metrics.jsonl + metrics.all.jsonl,metrics 从头重开,不接旧数据。
+  #   · 全新(无 ckpt):启动前**同样**把上一 run 的 metrics.jsonl 折叠进 metrics.all.jsonl
+  #     (不再直接清掉;防止 2026-08-05 的 b1_16gpu step-38 数据丢失事故重现),然后 rm 当前
+  #     metrics.jsonl 让 verl 重写。all 只增不减,跨多次全新训练累积全部 step。
   if [ -n "$latest" ]; then
     latest_step=$(basename "$latest" | grep -oP '\d+')
     echo "[train_cl] 检测到 checkpoint step=$latest_step → 自动续训(数据游标随 data.pt 续,不重复)"
     _fold_metrics "$_mdir"
     set -- "--resume-from" "$latest" "$@"
   else
-    echo "[train_cl] 无 checkpoint → 全新训练(不 resume;metrics 从头重开)"
-    rm -f "$_mdir/metrics.jsonl" "$_mdir/metrics.all.jsonl"
+    echo "[train_cl] 无 checkpoint → 全新训练(不 resume;旧 metrics 先折叠进 .all 再重开)"
+    _fold_metrics "$_mdir"
+    rm -f "$_mdir/metrics.jsonl"
   fi
 
   echo "[train_cl] 启动 $_exp → $_LOGDIR"
