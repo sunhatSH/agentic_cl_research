@@ -14,7 +14,7 @@
 set -uo pipefail
 ROOT="/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research"
 LIGHTLLM="/mnt/afs_toolcall/sunhao4/workspace/LightLLM"
-PY="${PY:-/mnt/afs_toolcall/sunhao4/miniconda3/bin/python3}"
+PY="${PY:-/opt/conda/bin/python}"
 MODEL="${MODEL:-/mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B}"
 PORT="${PORT:-9911}"
 IMG="${IMG:-$LIGHTLLM/test/test_api/test.jpg}"
@@ -24,14 +24,25 @@ TEXT_MODEL_ONLY="${TEXT_MODEL_ONLY:-}"  # 传给 lightllm 的纯文本模型开�
 export PYTHONPATH="$LIGHTLLM:$ROOT:${PYTHONPATH:-}"
 [ -n "$TEXT_MODEL_ONLY" ] && export TEXT_MODEL_ONLY
 
-_mm_flag=""
-[ "$ENABLE_MM" = "1" ] && _mm_flag="--enable_multimodal" || _mm_flag="--disable_vision --disable_audio"
+# 起服 flag —— 与训练 (_train_impl.sh 的 TEXT_MODEL_ONLY 段) 语义对齐:
+#   本 lightllm 版本【没有 --enable_multimodal】(多模态按模型 config 默认开),CLI 只有【关】开关:
+#   --disable_vision / --disable_audio。所以:
+#   · 开视觉 = 不传 --disable_vision(默认加载视觉);关音频 = 传 --disable_audio
+#     (Qwen3.5 无 audio_config,开音频起 audioserver 会 KeyError 崩)。
+#   · TEXT_MODEL_ONLY=0|1(或 ENABLE_MM=1)→ 开视觉+关音频 → 只传 --disable_audio
+#   · 否则(纯文本,复现收图崩)→ --disable_vision --disable_audio
+if [ "$TEXT_MODEL_ONLY" = "0" ] || [ "$TEXT_MODEL_ONLY" = "1" ] || [ "$ENABLE_MM" = "1" ]; then
+  _mm_flag="--disable_audio"          # 视觉默认开(不传 disable_vision),仅关音频
+else
+  _mm_flag="--disable_vision --disable_audio"
+fi
 
-echo "[test] 起 lightllm server: model=$MODEL port=$PORT enable_mm=$ENABLE_MM TEXT_MODEL_ONLY=${TEXT_MODEL_ONLY:-unset}"
+echo "[test] 起 lightllm server: model=$MODEL port=$PORT flag='$_mm_flag' TEXT_MODEL_ONLY=${TEXT_MODEL_ONLY:-unset} PY=$PY"
 "$PY" -m lightllm.server.api_server \
   --model_dir "$MODEL" --port "$PORT" --tp 1 \
   --trust_remote_code $_mm_flag \
   --mem_fraction 0.6 --max_total_token_num 40000 \
+  --max_req_total_len 32768 \
   > /tmp/lightllm_imgtest.log 2>&1 &
 _SRV_PID=$!
 echo "[test] server pid=$_SRV_PID, 等起服(最多 240s)..."
