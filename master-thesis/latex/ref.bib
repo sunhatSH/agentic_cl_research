@@ -1,6 +1,7 @@
 % References for the agentic continual-learning paper.
-% 信源:doc/source/CL_Design.md §参考文献(已去重,修正重复 arXiv ID)。
-% 仅保留当前论文/学位论文实际引用的条目;新增引用前先在 doc 里更新筛选。
+% 信源:doc/refs.md(论文/学位论文参考文献单一信源)。
+% 仅保留当前论文实际引用的条目;新增引用前先在 doc/refs.md 登记用途,再同步本文件。
+% 旧 bib 曾因重复 arXiv ID 污染(A1/A2 同 1811.11682 等),已清理。
 
 % ── A. Replay Buffer 优化 & Continual RL ──────────────────────────────────────
 
@@ -11,6 +12,15 @@
   eprint = {1811.11682},
   archivePrefix = {arXiv},
   note   = {Task-agnostic vanilla ER + V-trace + behavioral cloning matches EWC/P\&C; our R0 baseline.}
+}
+
+@article{A9,
+  title  = {Prioritized Generative Replay},
+  author = {Wang, Renhao and others},
+  year   = {2023},
+  eprint = {2311.11557},
+  archivePrefix = {arXiv},
+  note   = {Optimal replay distribution from a regularized RL objective; basis for priority weighting.}
 }
 
 @article{A11,
