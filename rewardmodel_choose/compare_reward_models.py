@@ -124,21 +124,30 @@ def _load_trajectories(path: Path, n: int) -> list[dict]:
 
 
 def _score_once(base: str, model: str, api_key: str, messages: list[dict],
-                timeout: float, max_tokens: int) -> tuple[dict | None, float, str]:
+                timeout: float, max_tokens: int,
+                no_thinking: bool = False) -> tuple[dict | None, float, str]:
     """One judge call. Returns (verdict|None, latency_s, error_str).
 
     verdict None 表示解析失败/截断/IO 失败(算 judge_error)。
+    no_thinking=True 时尝试关闭思考(sufy/OpenAI 兼容端点的常见参数)。
     """
     t0 = time.time()
     try:
+        body: dict = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.0,
+            "max_tokens": max_tokens,
+        }
+        if no_thinking:
+            # 多家厂商关思考的参数名都塞进 extra_body,端点会忽略不认识的
+            body["thinking"] = {"type": "disabled"}
+            body["enable_thinking"] = False
+            body["reasoning_effort"] = "none"
+            body["chat_template_kwargs"] = {"enable_thinking": False}
         resp = httpx.post(
             f"{base.rstrip('/')}/chat/completions",
-            json={
-                "model": model,
-                "messages": messages,
-                "temperature": 0.0,
-                "max_tokens": max_tokens,
-            },
+            json=body,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
         )
@@ -177,6 +186,10 @@ def main() -> None:
     ap.add_argument("--timeout", type=float, default=180.0)
     ap.add_argument("--max-tokens", type=int, default=16384,
                     help="thinking 模型要留足推理预算(deepseek 尤其)")
+    ap.add_argument("--no-thinking", action="store_true",
+                    help="关闭思考模式(thinking/enable_thinking/reasoning_effort 都塞进 extra_body)")
+    ap.add_argument("--concurrency", type=int, default=1,
+                    help="并发调用数(线程池);1=串行")
     ap.add_argument("--out", default="rewardmodel_choose/results/run.json")
     args = ap.parse_args()
 
@@ -198,6 +211,12 @@ def main() -> None:
 
     # results[model] = {dim: [all scores across traj*repeat], reward: [...],
     #                   latency: [...], errors: int, calls: int}
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _call_one(p):
+        return _score_once(args.base, model, api_key, p["messages"],
+                           args.timeout, args.max_tokens, args.no_thinking)
+
     results: dict[str, dict] = {}
     for model in models:
         print(f"\n===== MODEL {model} =====")
@@ -212,10 +231,10 @@ def main() -> None:
         for i, p in enumerate(prompts):
             traj_rewards: list[float] = []
             traj_dims: dict[str, list[float]] = {d: [] for d in JUDGE_DIMENSIONS}
-            for _ in range(args.repeat):
-                verdict, latency, err = _score_once(
-                    args.base, model, api_key, p["messages"], args.timeout, args.max_tokens
-                )
+            # 同一轨迹的 repeat 次并发(并发度由 --concurrency 控制)
+            with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+                iter_out = list(ex.map(_call_one, [p] * args.repeat))
+            for verdict, latency, _err in iter_out:
                 calls += 1
                 latencies.append(latency)
                 if verdict is None:
