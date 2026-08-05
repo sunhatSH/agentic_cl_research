@@ -132,7 +132,7 @@ def build_judge_prompt(*, task: str, trajectory: str, rubric: str) -> list[dict[
         parts.append(f"# Rubric\n{rubric.strip()}")
     if trajectory.strip():
         parts.append(f"# Agent trajectory\n{trajectory.strip()}")
-    parts.append("# Output\nReturn ONLY the JSON object with completion, safety, robustness.")
+    parts.append("# Output\nReturn ONLY the JSON object with task_done, correctness, trajectory, safety.")
     return [
         {"role": "system", "content": _JUDGE_SYSTEM},
         {"role": "user", "content": "\n\n".join(parts)},
