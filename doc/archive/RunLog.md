@@ -2230,3 +2230,24 @@ test_agents/test_simulated_session/test_judge_agreement 改四维 mock 后过;�
 
 §50/51 的 M-RoPE 图片崩溃根因=Qwen3.5 无条件继承 qwen2_vl 多模态位置编码。根治(用户定):LightLLM `qwen3_5/model.py` 新增 `Qwen3_5TextTpPartModel`(替换 `Qwen35InferStateInfo→Qwen3NextInferStateInfo`,标准 RoPE,无 M-RoPE),条件注册 `llm_model_type_is("qwen3_5_text")`。无图时 M-RoPE 退化为标准 RoPE(数学等价,能力不变),图片来了也不崩(M-RoPE 分支不存在)。不改任何 config(HF config.json 已有 text_config,LightLLM 自动匹配)。验证:ModelRegistry 匹配通过。网关图片拦截 patch 降为可选防御。
 > 详见 `doc/debug/Training_Debug_2026-07-24.md` §51 末尾"根治"段。
+
+---
+## §62 — 端到端铁证:图片 M-RoPE 崩 = 4卡+16卡死锁统一导火索,推翻"4卡良性"旧结论(2026-08-04)
+
+逐 log 坐实一条**跨规模统一死亡链**(k1/k2/k3 4卡 + k2 16卡,证据逐字一致):
+
+1. **图片打崩 infer_loop**:`impl.py:78 infer_loop → prefill_normal → model.forward → qwen2_vl/infer_struct.py:66 get_mrope_position → b_image_start_idx=torch.tensor(None).cuda() → RuntimeError: Could not infer dtype of NoneType`(§50/51 的 M-RoPE start_idx=None,各 run 恰 6 次)→ `Exception in thread Thread-7 (infer_loop)` 推理核心线程死。
+2. **线程崩 → 持有的请求 shm 引用无法 put_back** → `refcount 5` 泄漏疯狂累积(4卡 k1/k2/k3=6818/6642/6633,16卡=3011)。
+3. **僵尸占满 KV → 每 step pause 等不到清空** → 原版 `manager.py:1023` 无限 while `pause_generation abort_all still waiting` → job hang 至死。
+
+**时间线严格顺序(图片崩 → N分钟后死锁):**
+| run | 图片崩 | 死锁起(still waiting) | 间隔 | 死锁时 step |
+|---|---|---|---|---|
+| k1-4gpu | 13:05:09 | 13:19:54 | ~15min | ~193 |
+| k2-4gpu | 13:09:05 | 13:20:11 | ~11min | ~193 |
+| k3-4gpu | 14:17:37 | 14:21:43 | ~4min  | ~195 |
+| k2-16gpu | 14:27:55 | 14:35:04 | ~7min  | ~32(死锁前 reward 0.38→0.67 健康上升) |
+
+**关键更正**:此前(§60)结论"4卡泄漏但良性、跑到 step158-170不死锁"**被推翻**。真相:4卡同样死锁,只是池大/每step pause压力小,撑到 step~193 才爆(16卡 step6/32 早爆)。差的是**撑的时长**不是**会不会死**——图片是共同必然导火索。`invalid memory access=0`,本轮崩因就是 M-RoPE 图片(非同事说的内存越界;殊途同归:都是推理进程崩→refcount无法释放)。
+
+**修复优先级锁定**:堵图片(导火索,§61 纯文本模型类 / cutlass4.3.4+冻结视觉 TEXT_MODEL_ONLY=1)> pause有界patch(§60,第二道防线)。图片不崩→无泄漏源→根本不累积到死锁。四个死锁 run 均 08-02 起的旧 run,既无 cutlass 修复也无 pause patch,故走完整条链。k2-16gpu 死锁前 metrics 32步 reward 0.38→0.67、pg_loss 近0震荡、KL 0.003-0.007 全健康,证明训练本身有效、仅被图片死锁打断。
