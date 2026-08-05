@@ -140,7 +140,7 @@ algorithm:
 # ── CL 语义（本实验唯一差异区）──────────────────────────────────────────────────
 cl:
   lambda_replay: 0.5
-  replay_batch_size: 512
+  replay_batch_size: 64
   buffer:
     enabled: true
     num_buckets: 1
@@ -149,7 +149,7 @@ cl:
     within_bucket_sampling: uniform
     priority_type: uniform
   weighting:
-    scheme: W2
+    scheme: W0
     gamma: 1.0
     delta: 1.0
 

@@ -140,7 +140,7 @@ algorithm:
 # ── CL 语义（本实验唯一差异区）──────────────────────────────────────────────────
 cl:
   lambda_replay: 0.3
-  replay_batch_size: 512
+  replay_batch_size: 64
   buffer:
     enabled: true
     num_buckets: 9
