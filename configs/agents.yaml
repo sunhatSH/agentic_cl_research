@@ -51,5 +51,5 @@ reward:
       api_base: "https://openai.sufy.com/v1"
       key_env: "SUFY_API_KEY"
       models:
-        - "deepseek/deepseek-v4-flash-20260731"  # 主 judge(便宜);sufy 必须带 deepseek/ 前缀(实测)
-        - "qwen/qwen3.6-plus"  # 备用
+        - "google/gemini-3.5-flash-lite"  # 主 judge(2026-08-05 sweep 选型:稳定度 0.004/lat 2.2s)
+        - "deepseek/deepseek-v4-flash-20260731"  # 备用 judge(稳定度 0.048/lat 19.2s)
