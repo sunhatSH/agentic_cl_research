@@ -26,8 +26,9 @@
 % TODO macro for unfilled, results-dependent numbers.
 \newcommand{\TODO}[1]{{\color{red}[TODO: #1]}}
 
-\title{Continual Reinforcement Learning of Multi-Turn Agentic LLMs\\
-       \large Producing a Clean Learning Signal Before Consolidating It}
+\title{Continual Reinforcement Learning of Agentic LLMs\\
+       \large Capability-Partitioned Replay and Anti-Forgetting Evaluation}
+
 \author{Sun Hao}
 \date{}
 
@@ -35,8 +36,7 @@
 \maketitle
 
 \begin{abstract}
-% Source: ../drafts/Paper_论文向总览.md §0 (Abstract draft).
-\TODO{paste abstract from drafts/Paper\_论文向总览.md §0; fill headline numbers after training.}
+We address continual reinforcement learning of agentic LLMs under sequential, capability-by-capability training---the realistic online scenario where data for all capabilities is rarely available at once, so the model must learn one domain after another without forgetting earlier ones. We design a capability-partitioned nine-bucket experience replay buffer whose capacity is allocated by a square-root weighting of task counts and whose replay is sampled by capability-space distance, so farther (higher-forgetting-risk) buckets receive more weight. Eviction is in-bucket only, preventing cross-capability displacement. The continual-learning objective---policy gradient, reverse-KL anchor, replay loss, and a fixed entropy regularizer---is injected into GRPO with no framework fork. Reward is scored by a single frozen external LLM judge under one rubric, aggregated multiplicatively with safety as a binary gate. We evaluate with a single post-training pass, applying a post-hoc decay weighting by training recency to quantify the core signal---earlier-trained buckets forget more---and compare against a same-scale baseline without CL. We implement and validate the system on a Qwen3.5-9B agent across nine capability domains.
 \end{abstract}
 
 \input{sections/01_introduction}

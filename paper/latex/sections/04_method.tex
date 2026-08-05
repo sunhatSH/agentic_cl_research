@@ -1,0 +1,94 @@
+\section{Method}
+\label{sec:method}
+
+\subsection{Composite Continual-Learning Objective}
+
+We augment the standard GRPO policy gradient with three continual-learning regularizers, yielding a composite loss:
+
+\begin{equation}
+  L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_4 L_{ent}.
+  \label{eq:cl-loss}
+\end{equation}
+$L_{rl}$ is the GRPO term (group-relative advantage estimation). $L_{kl}=D_{KL}(\pi_{new}\,\|\,\pi_{ref})$ is a reverse-KL anchor to a reference policy $\pi_{ref}$ (either $\pi_0$ or the previous checkpoint $\pi_{t-1}$). $L_{replay}$ is the experience replay loss applied to historical trajectories sampled from the buffer (Section~\ref{sec:buffer}); replay rows carry a separate \texttt{replay\_response\_mask} and do not enter the PPO loss. $L_{ent}$ is an entropy regularizer with $\lambda_4=0.001$ fixed across all experiments, guarding against Echo Trap~\cite{B4}. The earlier L2 regularization term ($L_{reg}$) is deprecated and replaced by entropy.
+
+The objective is injected into GRPO with \textbf{no framework fork}---we use the framework's loss-injection API and hook system, adding no custom code to the upstream RL engine.
+
+\subsection{Reward Design}
+\label{sec:reward}
+
+We use a single frozen external LLM judge---not rule-based rewards---to score every trajectory on four dimensions under one rubric:
+
+\begin{itemize}
+  \item \textbf{Done} (0/1): did the agent actually complete the task?
+  \item \textbf{Correctness} ($[0,1]$): is the output correct (graded against an answer key when available)?
+  \item \textbf{Trajectory} ($[0,1]$): tool-call quality, no wasted/repeated steps, coherent reasoning. Also penalizes adding things not asked for (unneeded packages, out-of-scope edits).
+  \item \textbf{Safety} (\textbf{binary 0/1}): was a harmful/unauthorized/destructive action taken? A binary gate rather than a graded score---borderline-but-harmless behavior is penalized under trajectory, not here---for higher scoring consistency.
+\end{itemize}
+
+The final reward aggregates multiplicatively:
+
+\begin{equation}
+  r =
+  \begin{cases}
+    (0.4\cdot\text{correctness} + 0.4\cdot\text{trajectory} + 0.2)\cdot\text{safety}, & \text{done}=1,\\[4pt]
+    0.4\cdot\text{trajectory}\cdot\text{safety}, & \text{done}=0.
+  \end{cases}
+  \label{eq:reward}
+\end{equation}
+
+Safety as a $\{0,1\}$ gate zeroes the entire reward if triggered. Unfinished trajectories still receive trajectory credit (process has value) but no completion bonus or correctness credit. JSON parse failures are retried once; on a second failure the trajectory is discarded. A GRPO group losing over half its trajectories is dropped entirely.
+
+\subsection{Nine-Bucket Experience Replay Buffer}
+\label{sec:buffer}
+
+\paragraph{Bucket partitioning.} Buckets are partitioned by \textbf{capability/domain} rather than difficulty. The nine text-only capability domains (Table~\ref{tab:buckets}) are obtained by merging the official categories of the evaluation benchmark, excluding multimodal tasks. This gives $K=9$ buckets with 195 pure-text tasks total. Single-layer, no sub-buckets.
+
+\begin{table}[t]
+\centering
+\caption{Bucket task counts and capacity caps.}
+\label{tab:buckets}
+\begin{tabular}{lrr}
+\toprule
+Bucket (capability domain) & Tasks & Cap \\
+\midrule
+workflow & 56 & 4915 \\
+ops & 44 & 4354 \\
+qa & 36 & 3938 \\
+finance & 20 & 2935 \\
+office & 11 & 2177 \\
+communication & 11 & 2177 \\
+safety & 9 & 1969 \\
+research & 6 & 1607 \\
+coding & 2 & 928 \\
+\midrule
+Total & 195 & 25000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Capacity allocation.} Per-bucket capacity $\text{cap}_i$ follows a square-root weighting of task counts $n_i$:
+
+\begin{equation}
+  \text{cap}_i = C\cdot\frac{n_i^{\alpha}}{\sum_j n_j^{\alpha}},\qquad C=25000,\;\alpha=0.5.
+  \label{eq:quota}
+\end{equation}
+$\alpha=0.5$ (sub-linear) dampens the dominance of large buckets: the workflow-to-coding ratio drops from $9.3\!:\!1$ (linear, $\alpha=1$) to $5.3\!:\!1$, lifting the long tail. Each bucket also has a hard \textbf{floor} (roughly $\text{cap}_i/30$) below which eviction is blocked.
+
+\paragraph{Eviction and sampling.} Eviction is \textbf{in-bucket only}---no cross-bucket displacement---so capabilities never crowd each other out. The default eviction policy is FIFO (first-in-first-out, evict the earliest-inserted trajectory). Reservoir sampling~\cite{A2} is used for the CLEAR baseline.
+
+Replay sampling is \textbf{two-level}: first select buckets, then sample within the selected bucket. The bucket-level strategy is \textbf{distance-weighted}: each replay bucket's weight equals its capability-space distance from the current batch's bucket centroid---the farther the bucket, the higher its forgetting risk and replay weight. Buckets in the current batch (on-policy, just trained) receive $\approx 0$ weight. Within each bucket, sampling is uniform (random). The total number of replay rows per step is fixed.
+
+\paragraph{Cold-start seeding.} Pre-collected full trajectories (complete multi-turn sessions with tool calls and reasoning, in OpenAI message format) can pre-populate the buffer, so $L_{replay}$ always has historical experience.
+
+\subsection{Replay Loss Weighting}
+\label{sec:replay-weight}
+
+Each replayed trajectory receives a per-token weight in $L_{replay}$:
+
+\begin{equation}
+  w_t^{(i)} = \text{normalize}\!\Big(\text{clip}\big(\text{priority}_i \cdot \tfrac{\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}}{2},\; q_5,\; q_{95}\big)\Big),
+  \label{eq:u-weight}
+\end{equation}
+where blocks are split by OpenAI chat message boundaries (assistant / tool messages) and $K_i$ is the trajectory's response message count. The second factor is the general form of a \textbf{U-shaped block weight} (early branching decisions and concluding segments weighted higher than the middle).
+
+\textbf{In the current default configuration we disable the U-shape:} $\gamma=\delta=1$, so the block weight degenerates to a constant $1.0$ and the weighting reduces to priority-only (scheme W0). The U-shape ($\gamma=\delta<1$, scheme W2) is retained as a separate ablation axis so that its contribution can be isolated rather than confounded with the buffer structure.
