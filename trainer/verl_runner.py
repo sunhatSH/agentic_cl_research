@@ -63,6 +63,80 @@ def inject_cl_loss(trainer: Any, cfg: Any, buffer: Any | None = None) -> None:
     trainer.actor_rollout_wg.set_loss_fn(make_cl_loss_from_cfg(cfg))
 
 
+def compute_std_metrics(batch: Any) -> dict[str, float]:
+    """Dispersion metrics verl's ``compute_data_metrics`` does NOT emit.
+
+    verl logs reward/advantage mean/max/min but no std, and no GRPO
+    group-level spread. Those are exactly what we watch to catch a collapsing
+    policy (advantage std → 0) or degenerate groups (all trajectories in a
+    prompt's group scoring identically → 0 learning signal). Emitted under the
+    ``cl/`` namespace so they never collide with verl's native keys.
+
+    Computed from the RL batch AFTER ``compute_advantage`` (verl fit runs it
+    before ``_update_actor``), so ``token_level_rewards`` / ``advantages`` /
+    ``response_mask`` are present, and ``non_tensor_batch["uid"]`` identifies
+    the GRPO group. Returns ``{}`` when torch or the required fields are absent
+    (off-cluster / unexpected layout) rather than raising.
+
+    Keys:
+      - cl/reward_std          : std of per-sequence reward (sum over tokens)
+      - cl/reward_mean         : mean of per-sequence reward (cross-check vs verl)
+      - cl/advantage_std       : std of valid (masked) advantages
+      - cl/group_reward_std    : mean over groups of the within-group reward std
+                                 (GRPO "group std" -- 0 => degenerate groups)
+      - cl/group_reward_std_max: worst (largest) within-group reward std
+      - cl/num_groups          : number of distinct uids in the batch
+    """
+    try:
+        import torch
+    except ImportError:
+        return {}
+    bb = getattr(batch, "batch", None)
+    if bb is None:
+        return {}
+    try:
+        tlr = bb.get("token_level_rewards")
+        resp_mask = bb.get("response_mask")
+        adv = bb.get("advantages")
+    except Exception:  # noqa: BLE001 -- TensorDict access variability
+        tlr = resp_mask = adv = None
+    if tlr is None:
+        return {}
+
+    out: dict[str, float] = {}
+    seq_reward = tlr.sum(dim=-1).float()  # [B]
+    if seq_reward.numel() > 0:
+        out["cl/reward_std"] = float(seq_reward.std(unbiased=False).item())
+        out["cl/reward_mean"] = float(seq_reward.mean().item())
+
+    if adv is not None and resp_mask is not None:
+        valid = torch.masked_select(adv, resp_mask.bool())
+        if valid.numel() > 0:
+            out["cl/advantage_std"] = float(valid.std(unbiased=False).item())
+
+    # GRPO group spread: std of per-sequence reward within each uid group.
+    uids = None
+    nt = getattr(batch, "non_tensor_batch", None)
+    if isinstance(nt, dict):
+        uids = nt.get("uid")
+    if uids is not None and seq_reward.numel() == len(uids):
+        groups: dict[Any, list[float]] = {}
+        for u, r in zip(list(uids), seq_reward.tolist(), strict=False):
+            groups.setdefault(u, []).append(r)
+        stds = []
+        for vals in groups.values():
+            if len(vals) > 1:
+                t = torch.tensor(vals)
+                stds.append(float(t.std(unbiased=False).item()))
+            else:
+                stds.append(0.0)
+        if stds:
+            out["cl/group_reward_std"] = float(sum(stds) / len(stds))
+            out["cl/group_reward_std_max"] = float(max(stds))
+        out["cl/num_groups"] = float(len(groups))
+    return out
+
+
 def _persist_winners(winners: list, exp_name: str, step: int) -> None:
     """Write winner trajectories as JSONL for offline analysis."""
     if not winners:
@@ -178,6 +252,22 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
         # 它拿到 verl fit 聚合后的完整 metrics(reward/advantage/loss 全套)并实时写 JSONL。
         # 旧的 _log_training_metrics 已删:它 hook 在 _update_actor 返回值上,那里 metrics 未 reduce
         # 且不含 reward/advantage(在 fit 主循环 compute_data_metrics 算),取不到 → 从未生成文件。
+
+        # 1b. Dispersion metrics verl doesn't emit (reward/adv std + GRPO group
+        #     spread). Computed from the RL batch (advantages already present)
+        #     and merged into the SAME meta_info["metrics"] channel the buffer
+        #     stats use, so verl's FileLogger picks them up. cl/ namespaced.
+        try:
+            std_metrics = compute_std_metrics(rl_batch)
+            if std_metrics:
+                meta = getattr(result, "meta_info", None)
+                if isinstance(meta, dict) and isinstance(meta.get("metrics"), dict):
+                    # Match the buffer-stats path: insert as scalars (reduce_metrics
+                    # is scalar-safe via np.mean; no key contains max/min except the
+                    # explicit *_max which reduce_metrics will np.max harmlessly).
+                    meta["metrics"].update(std_metrics)
+        except Exception:  # noqa: BLE001 -- metrics must never crash training
+            pass
 
         # 2. Post: activate forgetting_risk -- recompute current-policy log-probs
         #    for the just-replayed trajectories and backfill their priority.
