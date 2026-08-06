@@ -51,5 +51,5 @@ reward:
       api_base: "https://openai.sufy.com/v1"
       key_env: "SUFY_API_KEY"
       models:
-        - "google/gemini-3.5-flash-lite"  # 主 judge(2026-08-05 sweep 选型:稳定度 0.004/lat 2.2s)
-        - "deepseek/deepseek-v4-flash-20260731"  # 备用 judge(稳定度 0.048/lat 19.2s)
+        - "openai/gpt-5.6-luna"  # 主 judge(2026-08-06 切换:扣分prompt下 reward 0.607 vs gemini 0.889,分布更均匀)
+        - "deepseek/deepseek-v4-flash-20260731"  # 备用
