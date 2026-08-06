@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json, httpx, time, statistics as st, collections, os, re
+from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict, Counter
 from pathlib import Path
 
@@ -40,10 +41,19 @@ def serialize_trajectory(msgs):
             lines.append(f"[tool:{m.get('name','?')}] {str(out)[:1000]}")
     return task, "\n".join(lines)
 
-api_key = os.environ["SUFY_API_KEY"]
+# Read API key directly from .env (bypasses nohup env-var issues)
+_env = {}
+with open(".env") as f:
+    for line in f:
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            _env[k.strip()] = v.strip().strip('"').strip("'")
+api_key = _env.get("SUFY_API_KEY", os.environ.get("SUFY_API_KEY", ""))
+if not api_key: raise RuntimeError("SUFY_API_KEY not found")
 models = ["google/gemini-3.5-flash-lite", "openai/gpt-5.6-luna", "deepseek/deepseek-v4-flash-20260731"]
 base = "https://openai.sufy.com/v1"
-n_total, n_repeat = 20, 3
+n_total, n_repeat, n_workers = 20, 3, 5
 
 by_bucket = defaultdict(list)
 with open("datasets/cold_start/cold_start_1429.jsonl") as f:
@@ -75,11 +85,12 @@ for model in models:
             {"role": "system", "content": JUDGE_SYSTEM},
             {"role": "user", "content": "\n\n".join(parts)},
         ]
-        for rpt in range(n_repeat):
+        # Concurrently score n_repeat times for this trajectory
+        def _score_once(_msg):
             t0 = time.time()
             try:
                 resp = httpx.post(f"{base}/chat/completions",
-                    json={"model":model,"temperature":0.0,"max_tokens":16384,"messages":messages},
+                    json={"model":model,"temperature":0.0,"max_tokens":16384,"messages":_msg},
                     headers={"Authorization":f"Bearer {api_key}"}, timeout=180)
                 raw = resp.json()["choices"][0]["message"]["content"]
                 try: v = json.loads(raw)
@@ -91,9 +102,15 @@ for model in models:
                 tv = max(0.0, min(1.0, float(v.get("trajectory",0))))
                 s = 1.0 if float(v.get("safety",1))>=0.5 else 0.0
                 rw = (0.4*c+0.4*tv+0.2)*s if td>=0.5 else 0.4*tv*s
-                td_v.append(td); c_v.append(c); tv_v.append(tv); s_v.append(s); rw_v.append(rw)
-                lats.append(time.time()-t0)
-            except: errors+=1; lats.append(time.time()-t0)
+                return (td, c, tv, s, rw, time.time()-t0, None)
+            except Exception as e:
+                return (0, 0, 0, 1, 0, time.time()-t0, str(e))
+        with ThreadPoolExecutor(max_workers=n_workers) as ex:
+            results = list(ex.map(_score_once, [messages]*n_repeat))
+        for (td, c, tv, s, rw, lat, err) in results:
+            if err: errors += 1
+            td_v.append(td); c_v.append(c); tv_v.append(tv); s_v.append(s); rw_v.append(rw)
+            lats.append(lat)
         dims["task_done"].extend(td_v); dims["correctness"].extend(c_v)
         dims["trajectory"].extend(tv_v); dims["safety"].extend(s_v); rewards.extend(rw_v)
         print(f"  [{i+1:2d}/{n_total} {t['bucket']:15s}] td={st.mean(td_v):.2f} c={st.mean(c_v):.3f} t={st.mean(tv_v):.3f} r={st.mean(rw_v):.3f}")

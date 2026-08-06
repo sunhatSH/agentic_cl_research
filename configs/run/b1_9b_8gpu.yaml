@@ -83,7 +83,7 @@ reward:
       name: vllm
 
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_aligned.parquet
   val_files: null
   train_batch_size: 32                # 64→32：32 query × n8 = 256 轨迹/step
   gen_batch_size: 32

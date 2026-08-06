@@ -115,7 +115,7 @@ reward:
 
 # ── 数据（CLAgentDataset fs-seed 注入；长度对齐 b1_9b_16gpu）─────────────────────
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_aligned.parquet
   val_files: null
   custom_cls:
     path: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/trainer/cl_agent_dataset.py

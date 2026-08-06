@@ -144,7 +144,7 @@ reward:
 # 单轮化:每 query 一条轨迹,按桶配额采样。baseline shuffle=false 按桶序训(可测遗忘)。
 # 长度照搬参考脚本(与卡数无关):prompt 8196 / response 65536(remove_padding 变长打包能扛)。
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_aligned.parquet
   val_files: null
   # ★ fs-seed 注入(阶段 E)：CLAgentDataset 按 record_id 把 data/taskspecs_w3/<rid>/files
   # 注入沙箱 ./inputs（agent_assets/type=dir）。仍读本地 parquet,不依赖 aoss_client/OSS。

@@ -84,7 +84,7 @@ reward:
 
 # ── 数据：能力桶打标产物 ──────────────────────────────────────────────────────
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_aligned.parquet
   val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet
   train_batch_size: 256
   gen_batch_size: 256
