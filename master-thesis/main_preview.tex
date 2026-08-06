@@ -22,9 +22,8 @@
 \usepackage{url}
 \usepackage{tabularx}
 \usepackage{array}
-% biber → bibtex for Linux compatibility (2026-08-06); switch back to biber on production machine
-\usepackage[backend=bibtex,bibstyle=gb7714-2015,gbnamefmt=lowercase,gbpub=false]{biblatex}
-\addbibresource{latex/ref.bib}
+\usepackage{cite}
+% \addbibresource{latex/ref.bib} (plain bibtex mode)
 \newcommand{\upcite}[1]{\textsuperscript{\textsuperscript{\cite{#1}}}}
 
 % ── 字体覆盖（模板 cls 硬编码了 Windows 字体 PostScript 名，Linux 上用后备字体兜底）──
@@ -116,7 +115,8 @@
 %参考文献
 \cleardoublepage
 \addcontentsline{toc}{chapter}{参考文献}
-\printbibliography
+\bibliographystyle{plain}
+\bibliography{latex/ref}
 
 %附录
 \appendix

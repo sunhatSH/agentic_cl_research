@@ -4,7 +4,7 @@ Deployed agentic large language models evolve through periodic RL updates. This 
 
 We tackle this with experience replay. Three core contributions:
 
-First, a \textbf{capability-partitioned nine-bucket replay buffer}. Buckets are split by capability domain, obtained from official benchmark categories merged into nine text-only groups. Each bucket has a fixed capacity cap (square-root-weighted by task count) and a hard floor. Eviction is in-bucket only, preventing cross-capability displacement. Replay is sampled by \textbf{distance} in capability space: farther buckets (higher forgetting risk) receive higher weight. Within-bucket sampling is uniform; eviction is FIFO.
+First, a \textbf{capability-partitioned nine-bucket replay buffer}. Buckets are split by capability domain, obtained from official benchmark categories merged into nine text-only groups. Each bucket has a fixed capacity cap (square-root-weighted by task count) and a hard floor. Eviction is in-bucket only, preventing cross-capability displacement. Replay is sampled by \textbf{distance} in capability space: farther buckets (higher forgetting risk) receive higher weight. Within-bucket sampling and eviction are pluggable policies (currently uniform and FIFO respectively).
 
 Second, a \textbf{composite continual-learning objective} injected into GRPO with no framework fork: policy gradient, reverse-KL anchor, replay loss, and a fixed entropy regularizer. Reward is scored by a single frozen external LLM judge under one rubric, aggregated multiplicatively with safety as a binary gate.
 

@@ -74,9 +74,9 @@ Total & 195 & 25000 \\
 \end{equation}
 $\alpha=0.5$ (sub-linear) dampens the dominance of large buckets: the workflow-to-coding ratio drops from $9.3\!:\!1$ (linear, $\alpha=1$) to $5.3\!:\!1$, lifting the long tail. Each bucket also has a hard \textbf{floor} (roughly $\text{cap}_i/30$) below which eviction is blocked.
 
-\paragraph{Eviction and sampling.} Eviction is \textbf{in-bucket only}---no cross-bucket displacement---so capabilities never crowd each other out. The default eviction policy is FIFO (first-in-first-out, evict the earliest-inserted trajectory). Reservoir sampling~\cite{A2} is used for the CLEAR baseline.
+\paragraph{Eviction and sampling.} Eviction is \textbf{in-bucket only}---no cross-bucket displacement---so capabilities never crowd each other out. The default eviction policy is FIFO (first-in-first-out, evict the earliest-inserted trajectory); within-bucket sampling is currently uniform. Both are pluggable.
 
-Replay sampling is \textbf{two-level}: first select buckets, then sample within the selected bucket. The bucket-level strategy is \textbf{distance-weighted}: each replay bucket's weight equals its capability-space distance from the current batch's bucket centroid---the farther the bucket, the higher its forgetting risk and replay weight. Buckets in the current batch (on-policy, just trained) receive $\approx 0$ weight. Within each bucket, sampling is uniform (random). The total number of replay rows per step is fixed.
+Replay sampling is \textbf{two-level}: first select buckets, then sample within the selected bucket. The bucket-level strategy is \textbf{distance-weighted}: each replay bucket's weight equals its capability-space distance from the current batch's bucket centroid---the farther the bucket, the higher its forgetting risk and replay weight. Buckets in the current batch (on-policy, just trained) receive $\approx 0$ weight. Within each bucket, sampling is uniform (random); both the within-bucket sampling and eviction policies are pluggable. The total number of replay rows per step is fixed.
 
 \paragraph{Cold-start seeding.} Pre-collected full trajectories (complete multi-turn sessions with tool calls and reasoning, in OpenAI message format) can pre-populate the buffer, so $L_{replay}$ always has historical experience.
 
