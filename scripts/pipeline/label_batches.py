@@ -11,11 +11,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-QUERIES_IN = ROOT / "datasets" / "queries_new.jsonl"
+QUERIES_IN = ROOT / "datasets" / "queries_filtered_all.jsonl"
 OUT = ROOT / "data" / "labeled" / "new_trajectories_labeled.jsonl"
 API_BASE = "https://tokenhub.sensetime.com/v1"
 TARGET = 1280  # per bucket minimum (40 steps × 32)
-BATCH_SIZE = 10000  # label this many at a time, then check
+BATCH_SIZE = 5000  # label this many at a time, then check
 
 CANONICAL = ["workflow","ops","qa","finance","office","communication","safety","coding","research"]
 BUCKET_DEFS = {
