@@ -7,6 +7,8 @@
 
 \textbf{Training protocol.} Training proceeds \textbf{sequentially by bucket}: the model trains on one capability domain, then moves to the next, mimicking the online deployment constraint that data for all capabilities is rarely available at once. Within each bucket, task order is randomized. The base model is Qwen3.5-9B, trained with fully-asynchronous policy-separated deployment (inference and training on separate GPUs), BF16 throughout.
 
+\textbf{Data organization.} The training data is sorted by bucket, and each bucket's row count is truncated to a multiple of the batch size (\texttt{train\_batch\_size}=32), removing at most 31 trailing rows per bucket ($<0.5\%$ total). After truncation, every training step draws all its queries from a single bucket — no step mixes capability domains. This enables clean per-bucket tracking of reward and loss, and precise measurement of cross-bucket forgetting.
+
 \textbf{Algorithm configuration.} The policy is GRPO with group size 8 per query. The judge model is a frozen external LLM served separately. The RL framework (verl 0.8.0) is used unmodified; all CL logic is injected via its loss-function API and buffer hooks.
 
 \subsection{Anti-Forgetting Evaluation Protocol}
