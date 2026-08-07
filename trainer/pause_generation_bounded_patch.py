@@ -43,6 +43,7 @@ def install() -> None:
 
         from lightllm.server.httpserver.manager import HttpServerManager, logger
         from lightllm.server.io_struct import AbortReq
+        from lightllm.server.core.objs.req import FinishStatus
     except Exception as exc:  # noqa: BLE001 -- lightllm absent off-cluster
         print(f"[cl] pause_generation 有界化 patch 跳过（lightllm 不可用: {exc}）", flush=True)
         return
@@ -66,14 +67,39 @@ def install() -> None:
                 # abort_request 内 _wait_for_abort_released 每轮最多阻塞 ~60s(其自身 timeout),
                 # 故实际每轮耗时 ~1+60s;waited 累加两者,让 deadline 语义反映真实墙钟。
                 waited += 1.0 + 60.0
-            # 超时放行:此刻 pause_and_abort_context 已把状态置 PAUSED(生成已停),放行不破坏
-            # "暂停"语义 → 权重同步安全。残留僵尸请求(refcount 泄漏,recycle 回收不了)留在
-            # req_id_to_out_inf,由 recycle_resource_loop 后台继续尝试,不再阻塞整 job(§59)。
+
+            # ── 超时放行：修复僵尸请求，使其能被 recycle_resource_loop 正常回收 ──
+            # 问题：abort_all 超时后 zombie req 仍在 req_id_to_out_inf，阻塞整条释放链路：
+            #   release_memory_occupation → assert len(req_id_to_out_inf)==0 → 500
+            #   → 下个 step 的 on_step_end → resume_memory_occupation → timeout → 训练崩
+            #
+            # 解法：对每个 zombie 补齐 can_release() 的 4 个条件，然后 recycle_resource_loop
+            # （每 0.02s 运行）自然走完 put_back→ref_count=0→release_req_index→shm 真释放。
+            # 不直接调 put_back：各进程的 proc_private_get_state 不同，HTTP manager 只能减自己
+            # 那一份；直接设 ref_count=1 再由 recycle loop 减 1→0 才是安全的单进程操作。
+            zombie_count = len(self.req_id_to_out_inf)
+            for req_status in list(self.req_id_to_out_inf.values()):
+                if req_status is None:
+                    continue
+                for req in req_status.group_req_objs.shm_req_objs:
+                    # (1) ref_count → 1：让 can_release 的 ref_count==1 检查通过。
+                    #     recycle loop 会再调一次 put_back → 0 → 真释放 shm slot。
+                    idx = req.index_in_shm_mem
+                    with self.shm_req_manager.get_req_lock_by_index(idx):
+                        req.ref_count = 1
+                    # (2) finish_status → FINISHED_ABORTED：满足 is_finished() 条件
+                    req.finish_status.status = FinishStatus.FINISHED_ABORTED
+                    # (3) can_released_mark → True：各 worker 已通过 abort 标记退出，
+                    #     不会再写 shm，安全释放。
+                    req.can_released_mark = True
+                    # (4) out_tokens_queue → 空：head == tail
+                    req.out_tokens_queue.head = req.out_tokens_queue.tail
+
             logger.error(
                 "pause_generation abort_all 超 %ss 未清空(疑 lightllm refcount 泄漏僵尸请求 "
-                "ref_count 不降),放行以免整 job 死锁;残留 %d 组留待后台 recycle 回收。见 §59。",
+                "ref_count 不降),已标记 %d 组僵尸为可释放,recycle_resource_loop 将回收 shm。见 §59。",
                 _max_wait,
-                len(self.req_id_to_out_inf),
+                zombie_count,
             )
             return
 
