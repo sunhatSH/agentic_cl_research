@@ -98,12 +98,13 @@ class DistanceStrategy:
     uniform so every non-empty bucket is eligible.
     """
 
-    def __init__(self, coords_path: str | Path | None = None):
+    def __init__(self, coords_path: str | Path | None = None, metric: str = "euclidean"):
         if coords_path is None:
             coords_path = Path(__file__).resolve().parent.parent / "configs" / "bucket_coords.json"
         with open(coords_path, encoding="utf-8") as f:
             data = json.load(f)
         self._coords: dict[str, list[float]] = data["coordinates"]
+        self._metric = metric
         self._dimensions: list[str] = data["dimensions"]
 
     def _centroid(self, distribution: dict[str, float]) -> list[float] | None:
@@ -146,6 +147,8 @@ class DistanceStrategy:
                 distances[b] = 0.0
                 continue
             d = math.sqrt(sum((centroid[i] - other[i]) ** 2 for i in range(len(centroid))))
+            if self._metric == "manhattan":
+                d = sum(abs(centroid[i] - other[i]) for i in range(len(centroid)))
             distances[b] = d
 
         mean_d = sum(distances.values()) / max(1, sum(1 for v in distances.values() if v > 0))

@@ -106,6 +106,7 @@ class BucketReplayBuffer:
         bucket_floors: Sequence[int] | None = None,
         within_bucket_sampling: str = "uniform",
         bucket_strategy: str = "distance",
+        distance_metric: str = "euclidean",
         seed: int | None = None,
     ):
         if bucket_names is None:
@@ -170,7 +171,7 @@ class BucketReplayBuffer:
             # ``bucket_strategy`` is accepted for backward compat but ignored --
             # distance is the only bucket-level strategy now (quota/uniform
             # archived 2026-07-23). Pass a DistanceStrategy instance directly.
-            strategy = bucket_strategy if not isinstance(bucket_strategy, str) else DistanceStrategy()
+            strategy = bucket_strategy if not isinstance(bucket_strategy, str) else DistanceStrategy(metric=distance_metric)
             self._sampler = TwoLevelSampler(
                 self,
                 bucket_strategy=strategy,

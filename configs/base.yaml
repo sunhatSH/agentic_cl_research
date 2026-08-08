@@ -183,6 +183,12 @@ cl:
     # not by this key.
     bucket_strategy: distance
 
+    # ── 距离度量（2026-08-08 加入 R 阶段实验变量）────────────────────────
+    # euclidean = 欧氏距离(L2), manhattan = 曼哈顿距离(L1)。
+    # 曼哈顿对每维独立评分场景更合理(维间不可互换,差异直接叠加)。
+    # R 系列实验可 override 此值做 ablation。
+    distance_metric: euclidean
+
     # ── 桶内采样 + 桶内淘汰(2026-08-05 重构指南定稿)─────────────────────────
     # within_bucket_sampling: 桶被选中后,桶内取哪几条 replay。
     #   uniform(默认/新方向)= 桶内随机;priority 暂搁置(优先级复杂,后续再看有无更优)。

@@ -124,6 +124,7 @@ def build_buffer(cfg):
         eviction_type=bcfg.get("eviction_type", "fifo"),
         within_bucket_sampling=bcfg.get("within_bucket_sampling", "uniform"),
         bucket_strategy=bcfg.get("bucket_strategy", "distance"),
+        distance_metric=bcfg.get("distance_metric", "euclidean"),
         seed=bcfg.get("seed", None),
     )
 
