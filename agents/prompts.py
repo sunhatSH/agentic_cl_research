@@ -611,3 +611,46 @@ def build_reward_judge_input(*, query: str, report: ObservationReport,
         "trajectory": _truncate_middle(report.actor_trajectory, _MAX_TRAJ_CHARS),
         "rubric": rubric,
     }
+
+
+# ── 桶能力空间坐标标定 prompt（五维评分）────────────────────────────────
+# 用途：让 LLM 对每条轨迹在五个能力维度上打 1-10 分，聚合得到各桶坐标。
+# 坐标用于 replay buffer 的 distance-based bucket sampling。
+# 使用脚本：scripts/analysis/recalibrate_coords.py
+
+CAPABILITY_CALIBRATION_SYSTEM = (
+    "你是任务分析器。给定一个 agent 任务的完整执行轨迹(messages)，请评估完成该任务"
+    "所需的五种能力维度，每维给出 1-10 的整数分数。\n\n"
+    "1. tool_intensity: 需要多少工具调用？"
+    "(1=不需要/几乎不需要工具, 10=高度依赖大量工具调用和工具链)\n"
+    "2. reasoning_depth: 需要多深的逻辑推理和思考？"
+    "(1=简单/表面, 10=需要深度推理、数学推导、多跳逻辑)\n"
+    "3. structure_rigidity: 任务的结构化程度？"
+    "(1=开放式/创意型, 10=高度结构化/遵循严格规则/格式)\n"
+    "4. knowledge_domain: 需要多少领域专业知识？"
+    "(1=常识即可, 10=需要深厚专业领域知识)\n"
+    "5. multi_step: 任务是否需要多步骤分解完成？"
+    "(1=一步即可完成, 10=必须多步分解、分阶段完成)\n\n"
+    "只输出 JSON: {\"tool_intensity\": <1-10>, \"reasoning_depth\": <1-10>, "
+    "\"structure_rigidity\": <1-10>, \"knowledge_domain\": <1-10>, "
+    "\"multi_step\": <1-10>}\n不要 markdown，不要额外文字。"
+)
+
+# English version (for documentation / paper appendix)
+CAPABILITY_CALIBRATION_SYSTEM_EN = (
+    "You are a task capability scorer. Given an agent's full execution trajectory "
+    "(messages including tool calls and results), rate the task on five capability "
+    "dimensions, each an integer from 1 to 10.\n\n"
+    "1. tool_intensity: How many tool calls does this task require? "
+    "(1=no/minimal tools, 10=heavily tool-dependent, tool chains)\n"
+    "2. reasoning_depth: How deep is the logical reasoning required? "
+    "(1=surface/simple, 10=deep reasoning, multi-hop logic, math)\n"
+    "3. structure_rigidity: How structured is the task? "
+    "(1=open-ended/creative, 10=highly structured, strict rules/format)\n"
+    "4. knowledge_domain: How much domain expertise is needed? "
+    "(1=common sense, 10=deep specialized knowledge)\n"
+    "5. multi_step: Does the task require multi-step decomposition? "
+    "(1=single step, 10=must decompose into multiple phases)\n\n"
+    "Output ONLY JSON: {\"tool_intensity\": <1-10>, ...}\n"
+    "No prose, no markdown."
+)

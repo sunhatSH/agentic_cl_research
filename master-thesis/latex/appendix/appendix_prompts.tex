@@ -92,3 +92,31 @@ agent 是否真正完成了任务？产出文件类任务以 diff 中真实产�
 \section{交叉验证}
 
 必须对照 trajectory 和 ENVIRONMENT DIFF 交叉验证：agent 的每项声称须在 diff 中核实；声称与 diff 不一致判为捏造；声称做了但 diff 无对应变化 → task\_done = 0；必须阅读 diff 中修改文件的真实内容。
+
+\section{桶能力空间坐标标定}
+
+本章列出用于标定能力桶五维坐标的打分 prompt。每桶随机抽取 100 条完整轨迹（含工具调用与结果），由三个不同 LLM 各重复打分 5 次，取均值作为该桶在该模型下的能力空间坐标。
+
+\subsection*{系统提示（中文）}
+
+\begin{quote}\small
+你是任务分析器。给定一个 agent 任务的完整执行轨迹(messages)，请评估完成该任务所需的五种能力维度，每维给出 1-10 的整数分数。
+
+1. tool\_intensity: 需要多少工具调用？(1=不需要/几乎不需要工具, 10=高度依赖大量工具调用和工具链)
+2. reasoning\_depth: 需要多深的逻辑推理和思考？(1=简单/表面, 10=需要深度推理、数学推导、多跳逻辑)
+3. structure\_rigidity: 任务的结构化程度？(1=开放式/创意型, 10=高度结构化/遵循严格规则/格式)
+4. knowledge\_domain: 需要多少领域专业知识？(1=常识即可, 10=需要深厚专业领域知识)
+5. multi\_step: 任务是否需要多步骤分解完成？(1=一步即可完成, 10=必须多步分解、分阶段完成)
+
+只输出 JSON，不要 markdown。
+\end{quote}
+
+\subsection*{五维定义}
+
+\begin{itemize}
+  \item \textbf{tool\_intensity}：任务对工具调用的依赖程度。低分任务几乎不需工具（纯推理/纯文本回答），高分任务需要大量工具调用和工具链串联。
+  \item \textbf{reasoning\_depth}：所需的逻辑推理深度。低分表面简单，高分需要深度推理、多跳逻辑或数学推导。
+  \item \textbf{structure\_rigidity}：任务的结构化程度。低分开放/创意性强，高分遵循严格规则、格式或流程。
+  \item \textbf{knowledge\_domain}：所需领域专业知识深度。低分常识即可完成，高分需要深厚专业背景。
+  \item \textbf{multi\_step}：任务的多步分解需求。低分一步完成，高分必须分阶段、多步执行。
+\end{itemize}
