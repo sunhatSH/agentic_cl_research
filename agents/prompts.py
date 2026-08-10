@@ -620,95 +620,45 @@ def build_reward_judge_input(*, query: str, report: ObservationReport,
 
 CAPABILITY_CALIBRATION_SYSTEM = (
     "你是任务能力评估器。给定一个 agent 任务的完整执行轨迹(messages，含工具调用"
-    "和结果)，请评估完成该任务所需的七种能力维度，每维给出 1-10 的整数分数。
-
-"
-    "1. knowledge: 对外部/专业知识的依赖程度
-"
-    "   (1=常识即可完成, 10=高度依赖深厚专业领域知识)
-"
-    "2. reasoning: 逻辑推理、分析、计算复杂度
-"
-    "   (1=简单/表面, 10=需要深度推理、数学推导、多跳逻辑)
-"
-    "3. tool_use: 使用工具的频率和复杂程度
-"
-    "   (1=几乎不使用工具, 10=高度依赖大量复杂工具调用和工具链)
-"
-    "4. planning: 将目标拆解为多步骤计划的需求
-"
-    "   (1=一步完成, 10=必须多阶段分步执行、协调多个子任务)
-"
-    "5. generation: 内容生成、改写、长文本产出的需求
-"
-    "   (1=不需要产出新内容, 10=需要大量内容创作、改写或长文本生成)
-"
-    "6. interaction: 多轮对话、上下文维护、沟通需求
-"
-    "   (1=单轮即可完成, 10=需要持续多轮交互、维护复杂上下文)
-"
-    "7. environment: 对文件系统/OS/沙箱环境的操作需求
-"
-    "   (1=不涉及环境操作, 10=大量文件读写、系统命令、环境配置)
-
-"
-    "只输出 JSON: {"knowledge": <1-10>, "reasoning": <1-10>, "
-    ""tool_use": <1-10>, "planning": <1-10>, "
-    ""generation": <1-10>, "interaction": <1-10>, "
-    ""environment": <1-10>}
-不要 markdown，不要额外文字。"
+    "和结果)，请评估完成该任务所需的七种能力维度，每维给出 1-10 的整数分数。\n\n"
+    "1. knowledge: 对外部/专业知识的依赖程度\n"
+    "   (1=常识即可完成, 10=高度依赖深厚专业领域知识)\n"
+    "2. reasoning: 逻辑推理、分析、计算复杂度\n"
+    "   (1=简单/表面, 10=需要深度推理、数学推导、多跳逻辑)\n"
+    "3. tool_use: 使用工具的频率和复杂程度\n"
+    "   (1=几乎不使用工具, 10=高度依赖大量复杂工具调用和工具链)\n"
+    "4. planning: 将目标拆解为多步骤计划的需求\n"
+    "   (1=一步完成, 10=必须多阶段分步执行、协调多个子任务)\n"
+    "5. generation: 内容生成、改写、长文本产出的需求\n"
+    "   (1=不需要产出新内容, 10=需要大量内容创作、改写或长文本生成)\n"
+    "6. interaction: 多轮对话、上下文维护、沟通需求\n"
+    "   (1=单轮即可完成, 10=需要持续多轮交互、维护复杂上下文)\n"
+    "7. environment: 对文件系统/OS/沙箱环境的操作需求\n"
+    "   (1=不涉及环境操作, 10=大量文件读写、系统命令、环境配置)\n\n"
+    "只输出 JSON: {\"knowledge\": <1-10>, \"reasoning\": <1-10>, "
+    "\"tool_use\": <1-10>, \"planning\": <1-10>, "
+    "\"generation\": <1-10>, \"interaction\": <1-10>, "
+    "\"environment\": <1-10>}\n不要 markdown，不要额外文字。"
 )
+
 CAPABILITY_CALIBRATION_SYSTEM_EN = (
     "You are a task capability scorer. Given an agent's full execution trajectory "
     "(messages including tool calls and results), rate the task on seven capability "
-    "dimensions, each an integer from 1 to 10.
-
-"
-    "1. knowledge: External/domain expertise dependency
-"
-    "   (1=common sense, 10=deep specialized knowledge)
-"
-    "2. reasoning: Logic, analysis, computation complexity
-"
-    "   (1=surface/simple, 10=deep reasoning, math, multi-hop logic)
-"
-    "3. tool_use: Frequency and complexity of tool usage
-"
-    "   (1=minimal tools, 10=heavily tool-dependent, tool chains)
-"
-    "4. planning: Need to decompose goals into multi-step plans
-"
-    "   (1=single step, 10=multi-phase, coordinating subtasks)
-"
-    "5. generation: Content creation, rewriting, long-form output
-"
-    "   (1=no new content, 10=heavy content creation, rewriting, long text)
-"
-    "6. interaction: Multi-turn dialog, context maintenance
-"
-    "   (1=single turn, 10=sustained multi-turn, complex context tracking)
-"
-    "7. environment: File system/OS/sandbox operations
-"
-    "   (1=no env interaction, 10=heavy file I/O, system commands, env config)
-
-"
-    "Output ONLY JSON: {"knowledge": <1-10>, ...}
-No prose, no markdown."
-)
-    "You are a task capability scorer. Given an agent's full execution trajectory "
-    "(messages including tool calls and results), rate the task on five capability "
     "dimensions, each an integer from 1 to 10.\n\n"
-    "1. tool_intensity: How many tool calls does this task require? "
-    "(1=no/minimal tools, 10=heavily tool-dependent, tool chains)\n"
-    "2. reasoning_depth: How deep is the logical reasoning required? "
-    "(1=surface/simple, 10=deep reasoning, multi-hop logic, math)\n"
-    "3. structure_rigidity: How structured is the task? "
-    "(1=open-ended/creative, 10=highly structured, strict rules/format)\n"
-    "4. knowledge_domain: How much domain expertise is needed? "
-    "(1=common sense, 10=deep specialized knowledge)\n"
-    "5. multi_step: Does the task require multi-step decomposition? "
-    "(1=single step, 10=must decompose into multiple phases)\n\n"
-    "Output ONLY JSON: {\"tool_intensity\": <1-10>, ...}\n"
+    "1. knowledge: External/domain expertise dependency\n"
+    "   (1=common sense, 10=deep specialized knowledge)\n"
+    "2. reasoning: Logic, analysis, computation complexity\n"
+    "   (1=surface/simple, 10=deep reasoning, math, multi-hop logic)\n"
+    "3. tool_use: Frequency and complexity of tool usage\n"
+    "   (1=minimal tools, 10=heavily tool-dependent, tool chains)\n"
+    "4. planning: Need to decompose goals into multi-step plans\n"
+    "   (1=single step, 10=multi-phase, coordinating subtasks)\n"
+    "5. generation: Content creation, rewriting, long-form output\n"
+    "   (1=no new content, 10=heavy content creation, rewriting, long text)\n"
+    "6. interaction: Multi-turn dialog, context maintenance\n"
+    "   (1=single turn, 10=sustained multi-turn, complex context tracking)\n"
+    "7. environment: File system/OS/sandbox operations\n"
+    "   (1=no env interaction, 10=heavy file I/O, system commands, env config)\n\n"
+    "Output ONLY JSON: {\"knowledge\": <1-10>, ...}\n"
     "No prose, no markdown."
 )
