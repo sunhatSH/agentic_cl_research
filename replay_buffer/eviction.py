@@ -72,7 +72,10 @@ class Eviction:
     def select_victim(self, store: TrajectoryStore, bucket: str) -> str | None:
         """Return the trajectory_id to evict.
 
-        - 'fifo' mode (default): the EARLIEST-inserted trajectory in the bucket.
+        - 'fifo' mode (default): the EARLIEST-inserted non-cold-start trajectory
+          in the bucket. Cold-start data (``warmup=True`` in metadata) is
+          preserved — it represents high-quality base-model outputs and should
+          not be evicted just because it was loaded first.
         - 'priority' mode: lowest-priority trajectory in the bucket.
         - 'reservoir' mode: a uniformly random trajectory in the bucket.
 
@@ -84,8 +87,17 @@ class Eviction:
             ids = store.list_by_bucket(bucket)
             return self.rng.choice(ids) if ids else None
         if self.eviction_type == "fifo":
-            victims = store.oldest_k(bucket, k=1)
-            return victims[0] if victims else None
+            # FIFO skips cold-start (warmup) trajectories — they're high-quality
+            # base-model outputs, not training data.  Walk from oldest to newest
+            # and return the first non-warmup entry.
+            candidates = store.oldest_k(bucket, k=store.bucket_size(bucket))
+            for tid in candidates:
+                meta = store.get_metadata(tid)
+                if not (meta or {}).get("warmup"):
+                    return tid
+            # All trajectories are warmup (pure cold-start buffer, no training
+            # data yet).  Fall back to evicting the oldest to avoid deadlock.
+            return candidates[0] if candidates else None
         victims = store.bottom_k_priority(bucket, k=1)
         return victims[0] if victims else None
 
