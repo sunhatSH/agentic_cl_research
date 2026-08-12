@@ -34,8 +34,9 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
     调用时机：CLTaskRunnerV1.run 里 ``trainer.init()`` 之后、``fit()`` 之前
     （与 inject_cl_loss 并列）。buffer is None（b1）时空转。
     """
-    if buffer is None:
-        return
+    if buffer is None and lambda_replay <= 0:
+        # 无 buffer 且无 replay：只装 std metrics hook，不装回放逻辑
+        pass
 
     cl = cfg.get("cl", {}) or {}
     lambda_replay = float(cl.get("lambda_replay", 0.0))
@@ -102,30 +103,36 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
         # ── 2. 原生 actor 更新（worker 从 tq 按 batch.keys 取张量训练）──
         result = original_update(batch, metrics)
 
-        step = getattr(trainer, "global_steps", buffer._step)
-        buffer.set_step(step)
+        # ── 2b. 计算 reward std / group std 并写入 metrics（无论有无 buffer 都落盘）──
+        _merge_std_metrics(rl_batch, metrics)
 
-        # ── 3. POST：forgetting_risk 回填（对刚回放的轨迹重算 current-policy logprob）──
-        tids = replay_rows.get(REPLAY_TIDS_KEY) if replay_rows else None
-        if tids and forgetting_update_freq > 0 and step % forgetting_update_freq == 0:
-            means = compute_replay_current_logprobs(trainer, replay_rows)
-            if means is not None:
-                backfill_forgetting(buffer, tids, means)
+        step = getattr(trainer, "global_steps", 0)
 
-        # ── 4. POST：抽 winner（每 task_id reward 最高）入 9桶 buffer ──
-        _ingest_winners(rl_batch, buffer, exp_name, step)
+        # 以下 buffer 操作仅在 buffer 启用时执行
+        if buffer is not None:
+            buffer.set_step(step)
 
-        # ── 5. POST：buffer 动态证据（metrics + sidecar JSONL）──
-        if stats_log_freq > 0 and step % stats_log_freq == 0:
-            stats = buffer.stats()
-            _merge_buffer_metrics(metrics, stats, flatten_buffer_stats)
-            stats_logger.log(step, stats)
+            # ── 3. POST：forgetting_risk 回填（对刚回放的轨迹重算 current-policy logprob）──
+            tids = replay_rows.get(REPLAY_TIDS_KEY) if replay_rows else None
+            if tids and forgetting_update_freq > 0 and step % forgetting_update_freq == 0:
+                means = compute_replay_current_logprobs(trainer, replay_rows)
+                if means is not None:
+                    backfill_forgetting(buffer, tids, means)
 
-        # ── 6. POST：周期性 buffer 全量快照 ──
-        if save_freq > 0 and step > 0 and step % save_freq == 0:
-            snap = Path(f"buffer_dumps/{exp_name}-step-{step}.sqlite")
-            snap.parent.mkdir(parents=True, exist_ok=True)
-            buffer.dump(snap)
+            # ── 4. POST：抽 winner（每 task_id reward 最高）入 9桶 buffer ──
+            _ingest_winners(rl_batch, buffer, exp_name, step)
+
+            # ── 5. POST：buffer 动态证据（metrics + sidecar JSONL）──
+            if stats_log_freq > 0 and step % stats_log_freq == 0:
+                stats = buffer.stats()
+                _merge_buffer_metrics(metrics, stats, flatten_buffer_stats)
+                stats_logger.log(step, stats)
+
+            # ── 6. POST：周期性 buffer 全量快照 ──
+            if save_freq > 0 and step > 0 and step % save_freq == 0:
+                snap = Path(f"buffer_dumps/{exp_name}-step-{step}.sqlite")
+                snap.parent.mkdir(parents=True, exist_ok=True)
+                buffer.dump(snap)
 
         # ── 7. 清理本 step 掺入的回放 keys（不让它们污染下一 step 的 tq 元数据）──
         if replay_meta is not None:
@@ -134,7 +141,8 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
         return result
 
     trainer._update_actor = patched_update
-    print("[cl] v1: 9桶 buffer hook 已装 (patched _update_actor, KVBatchMeta 适配)", flush=True)
+    tag = "9桶 buffer + std metrics" if buffer is not None else "std metrics only (no buffer)"
+    print(f"[cl] v1: hook 已装 ({tag}, patched _update_actor, KVBatchMeta 适配)", flush=True)
 
 
 def _merge_buffer_metrics(metrics: dict, stats: Any, flatten_fn) -> None:
@@ -153,11 +161,17 @@ def _ingest_winners(rl_batch: Any, buffer: Any, exp_name: str, step: int) -> Non
     from data.cleaning import strip_zw
     from trainer.trajectory_adapter_v1 import extract_trajectories_from_kvbatch
 
+    bucket_names = getattr(buffer, "bucket_names", None)
+    # 单桶实验(R0 CLEAR):所有轨迹默认归入唯一桶,不做 bucket 过滤
+    default_bucket = bucket_names[0] if bucket_names and len(bucket_names) == 1 else None
+
     groups: dict[str, list[tuple[Any, str, dict]]] = {}
     for trajectory, bucket, meta in extract_trajectories_from_kvbatch(
-        rl_batch, valid_buckets=getattr(buffer, "bucket_names", None)
+        rl_batch, default_bucket=default_bucket, valid_buckets=bucket_names
     ):
-        for msg in trajectory.get("messages", []):
+        # trajectory from v1 extractor is a list of messages; v0 returned {"messages": [...]}
+        msgs = trajectory if isinstance(trajectory, list) else trajectory.get("messages", [])
+        for msg in msgs:
             if isinstance(msg.get("content"), str):
                 msg["content"] = strip_zw(msg["content"])
         tid = meta.get("task_id") or ""
@@ -267,6 +281,58 @@ def _persist_winners(winners: list, exp_name: str, step: int) -> None:
             }
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     print(f"[persist] {len(winners)} winners → {out_file}", flush=True)
+
+
+def _merge_std_metrics(rl_batch: Any, metrics: dict) -> None:
+    """从 rl_batch 的 tags 提取 reward 信息 → 计算 reward_std / group_reward_std。
+
+    v1 KVBatchMeta 的 tags 包含每个 rollout 行的元数据，其中 reward 非标量则
+    跳过（回放行/replay 行没有有效 reward）。group by task_id 后统计组内 std。
+    """
+    tags = getattr(rl_batch, "tags", None)
+    if not tags:
+        return
+    try:
+        import numpy as np
+    except ImportError:
+        return
+
+    rewards = []
+    by_task: dict[str, list[float]] = {}
+    for tag in (tags or []):
+        if not isinstance(tag, dict):
+            continue
+        if tag.get("is_replay") or tag.get("is_padding"):
+            continue
+        r = tag.get("reward")
+        if r is None:
+            continue
+        try:
+            rv = float(r)
+        except (TypeError, ValueError):
+            continue
+        tid = tag.get("task_id") or tag.get("record_id") or tag.get("id") or ""
+        rewards.append(rv)
+        by_task.setdefault(tid, []).append(rv)
+
+    if not rewards:
+        return
+    arr = np.array(rewards, dtype=np.float64)
+    metrics["cl/reward_mean"] = float(arr.mean())
+    metrics["cl/reward_std"] = float(arr.std())
+
+    group_stds = []
+    for t_rewards in by_task.values():
+        if len(t_rewards) >= 2:
+            group_stds.append(float(np.std(t_rewards, dtype=np.float64)))
+    if group_stds:
+        gs = np.array(group_stds, dtype=np.float64)
+        metrics["cl/group_reward_std"] = float(gs.mean())
+        metrics["cl/group_reward_std_max"] = float(gs.max())
+        metrics["cl/num_groups"] = len(group_stds)
+
+    # advantage_std: if verl already computed it, reuse critic/advantages/mean
+    # vs std; otherwise leave empty so plotter skips it.
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -646,10 +646,9 @@ def _inject_cl_into_v1_trainer(trainer: Any, config: Any, buffer: Any | None = N
     trainer.actor_rollout_wg.set_loss_fn(make_cl_loss_from_cfg(config))
     print("[cl] v1: CL loss 已注入 (actor_rollout_wg.set_loss_fn)", flush=True)
 
-    if buffer is not None:
-        from trainer.cl_replay_hook_v1 import install_buffer_hooks_v1
+    from trainer.cl_replay_hook_v1 import install_buffer_hooks_v1
 
-        install_buffer_hooks_v1(trainer, buffer, config)
+    install_buffer_hooks_v1(trainer, buffer, config)
 
 
 def run_cl_ppo(cfg: Any, resume_from: str | None = None) -> None:
