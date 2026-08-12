@@ -158,7 +158,7 @@ trainer:
   nnodes: 2
   n_gpus_per_node: 8
   total_epochs: 1
-  total_training_steps: 500
+  total_training_steps: 420
   save_freq: 25                     # 100->25:更频繁存档(debug 阶段)
   max_actor_ckpt_to_keep: 2       # 只保留最近 2 个 actor ckpt(verl 原生 rotate,超出 shutil.rmtree 最旧)
   max_critic_ckpt_to_keep: 2      # critic 同理(本项目 GRPO 无 critic,留着无害)

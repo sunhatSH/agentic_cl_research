@@ -148,6 +148,7 @@ cl:
     eviction_type: reservoir
     within_bucket_sampling: uniform
     priority_type: uniform
+    warmup_path: null             # CLEAR baseline: 空启动，原文如此
   weighting:
     scheme: W0
     gamma: 1.0
