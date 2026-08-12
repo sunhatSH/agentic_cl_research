@@ -106,12 +106,13 @@ def extract_trajectories_from_kvbatch(
             meta["task_id"] = task_id
             meta["pattern_id"] = task_id
 
-        # reward：优先 rm_scores 张量标量，回退 tag。
+        # reward：rm_scores 是 [R] 张量，reward 放在最后有效 token 位（其余为 0），
+        # sum 得到标量。回退到 tag 里的 reward/score 字段。
         rm = _tensor_row("rm_scores", i)
         if rm is not None:
             try:
-                meta["reward"] = float(rm.item() if hasattr(rm, "item") else rm)
-            except (TypeError, ValueError):
+                meta["reward"] = float(rm.detach().float().sum().item())
+            except (TypeError, ValueError, RuntimeError):
                 pass
         if "reward" not in meta:
             r = _tag_get(tag, "reward", "score")
