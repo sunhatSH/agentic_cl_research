@@ -590,7 +590,7 @@ def test_config_resolve_judge_from_yaml():
         assert ep.base_url == "https://openai.sufy.com/v1"
         # Judge model is the first in configs/agents.yaml reward.providers[0].models.
         # Kept in sync with the yaml (single source of truth); update both if changed.
-        assert ep.model == "deepseek/deepseek-v4-flash-20260731"
+        assert ep.model == "openai/gpt-5.6-luna"
         assert ep.temperature == 0.0
     finally:
         _reload_config(None)
