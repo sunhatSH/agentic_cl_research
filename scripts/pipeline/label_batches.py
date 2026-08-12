@@ -11,11 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-QUERIES_IN = ROOT / "datasets" / "queries_filtered_all.jsonl"
+QUERIES_IN = ROOT / "datasets" / "queries_new.jsonl"
 OUT = ROOT / "data" / "labeled" / "new_trajectories_labeled.jsonl"
 API_BASE = "https://tokenhub.sensetime.com/v1"
 TARGET = 1280  # per bucket minimum (40 steps × 32)
-BATCH_SIZE = 5000  # label this many at a time, then check
+BATCH_SIZE = 100  # label this many at a time, then check (incremental reporting)
+# Only these buckets need more data; others already met target.  Can
+# be overridden with --buckets on the command line.
+FOCUS_BUCKETS = None  # None = all; set to ["ops","research"] to skip others
 
 CANONICAL = ["workflow","ops","qa","finance","office","communication","safety","coding","research"]
 BUCKET_DEFS = {
@@ -100,7 +103,7 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="claude-sonnet-4-6")
-    ap.add_argument("--workers", type=int, default=16)
+    ap.add_argument("--workers", type=int, default=100)
     ap.add_argument("--batch", type=int, default=BATCH_SIZE)
     ap.add_argument("--target", type=int, default=TARGET)
     ap.add_argument("--dry-run", action="store_true")

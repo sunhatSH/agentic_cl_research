@@ -32,8 +32,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from replay_buffer.bucket import BucketReplayBuffer
-from scripts.convert_dataset import bucket_hint
 from trainer.domain_tagging import DEFAULT_BUCKETS
+
+try:
+    from scripts.convert_dataset import bucket_hint
+except ImportError:
+    bucket_hint = lambda msgs=None: None  # noqa: E731
 
 VALID_BUCKETS = tuple(DEFAULT_BUCKETS)  # 9 buckets from configs/base.yaml via trainer/domain_tagging
 FALLBACK_BUCKET = "qa"  # least-specific catch-all; evicted later if low value
