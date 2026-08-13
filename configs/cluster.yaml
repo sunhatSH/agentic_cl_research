@@ -40,7 +40,7 @@ actor_rollout_ref:
     clip_ratio_high: 0.28
     clip_ratio_c: 10.0
     optim:
-      lr: 1.0e-6
+      lr: 2.0e-6
     use_dynamic_bsz: true
     ppo_mini_batch_size: 32
     ppo_max_token_len_per_gpu: 32768

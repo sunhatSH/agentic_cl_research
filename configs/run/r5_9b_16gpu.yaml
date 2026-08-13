@@ -144,6 +144,7 @@ cl:
   buffer:
     enabled: true
     num_buckets: 9
+    warmup_path: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/cold_start/warmup_1429.sqlite
     priority_type: reward
   weighting:
     scheme: W0

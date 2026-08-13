@@ -24,7 +24,7 @@ actor_rollout_ref:
     ppo_micro_batch_size_per_gpu: 1       # 27B 激活更大,先 1
     ppo_max_token_len_per_gpu: 16384      # 27B 单卡前向上限更保守(待压测)
     optim:
-      lr: 1.0e-6                          # 27B 保持更低 lr(不跟 9B 涨,用户 2026-07 定)
+      lr: 2.0e-6                          # 统一 lr(2026-08 用户定全系列 2e-6)
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
     fsdp_config:
