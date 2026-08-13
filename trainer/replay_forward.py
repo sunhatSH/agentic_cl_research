@@ -161,10 +161,19 @@ def build_replay_rows(
 
     tw = token_weights if token_weights is not None else [None] * len(samples)
     for (_tid, _traj, meta), w in zip(samples, tw, strict=True):
-        messages = meta.get("messages") or []
-        if not messages:
-            continue
-        prompt_ids, resp_ids = _split_prompt_response(messages, tokenizer, max_length)
+        # v1 路径：buffer 存的是 token ids（prompt_token_ids/response_token_ids），
+        # tq 里没有完整 messages 文本，无法重新 tokenize。直接用存好的 ids。
+        # v0 路径：meta 有 messages，用 tokenizer 现切 prompt/response。
+        prompt_ids = meta.get("prompt_token_ids")
+        resp_ids = meta.get("response_token_ids")
+        if prompt_ids and resp_ids:
+            prompt_ids = [int(t) for t in prompt_ids][:max_length]
+            resp_ids = [int(t) for t in resp_ids][:max_length]
+        else:
+            messages = meta.get("messages") or []
+            if not messages:
+                continue
+            prompt_ids, resp_ids = _split_prompt_response(messages, tokenizer, max_length)
         if not prompt_ids or not resp_ids:
             # no_padding_2_padding asserts prompt_len > 0; skip degenerate rows
             continue

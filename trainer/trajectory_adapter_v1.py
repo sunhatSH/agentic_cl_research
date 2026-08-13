@@ -24,7 +24,16 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # 从 tq 取的张量字段（与 rollout 写入对齐；缺失字段 kv_batch_get 忽略）。
-_TENSOR_FIELDS = ["prompts", "responses", "response_mask", "old_log_probs", "rollout_log_probs", "rm_scores"]
+# prompts/attention_mask 用于回放行构建（v1 直接用 token ids，不重新 tokenize messages）。
+_TENSOR_FIELDS = [
+    "prompts",
+    "responses",
+    "response_mask",
+    "attention_mask",
+    "old_log_probs",
+    "rollout_log_probs",
+    "rm_scores",
+]
 
 
 def _row_to_list(row) -> list[float] | None:
@@ -74,6 +83,9 @@ def extract_trajectories_from_kvbatch(
     # 取张量（best-effort：只取存在的 field，避免 KeyError）。
     fields_present = set(getattr(batch, "fields", None) or [])
     want = [f for f in _TENSOR_FIELDS if not fields_present or f in fields_present]
+    # v1 的 bucket/task_id 在 extra_info（non_tensor field）里，不在 tag。也要取。
+    if not fields_present or "extra_info" in fields_present:
+        want.append("extra_info")
     td = None
     if want:
         try:
@@ -90,6 +102,13 @@ def extract_trajectories_from_kvbatch(
         except (IndexError, KeyError, TypeError):
             return None
 
+    def _non_tensor_row(name, i):
+        """取 non_tensor 字段（NonTensorData 包装需解 .data）。"""
+        val = _tensor_row(name, i)
+        if val is not None and hasattr(val, "data") and not hasattr(val, "detach"):
+            return val.data
+        return val
+
     out: list[tuple[Any, str, dict]] = []
     skipped = 0
     n = len(keys)
@@ -100,11 +119,26 @@ def extract_trajectories_from_kvbatch(
             continue
 
         meta: dict[str, Any] = {}
-        bucket = _tag_get(tag, "bucket", "category", default=default_bucket)
-        task_id = _tag_get(tag, "task_id", "record_id", "id")
+        # bucket / task_id 优先从 extra_info（v1 non_tensor field）取，回退到 tag。
+        extra = _non_tensor_row("extra_info", i)
+        ei = extra if isinstance(extra, dict) else {}
+        # 单桶实验(default_bucket 非 None，如 R0 CLEAR)强制归入单桶，忽略 extra_info 的真实
+        # bucket —— 否则真实 bucket("coding") 会撞进单桶 buffer 报 unknown bucket。
+        if default_bucket is not None:
+            bucket = default_bucket
+        else:
+            bucket = (
+                ei.get("bucket") or ei.get("category") or _tag_get(tag, "bucket", "category", default=None)
+            )
+        task_id = ei.get("record_id") or ei.get("task_id") or _tag_get(tag, "task_id", "record_id", "id")
         if task_id is not None:
             meta["task_id"] = task_id
             meta["pattern_id"] = task_id
+
+        # rollout 成功状态：v1 的 status 在 tag 里（session_worker worker.py:961）。
+        st = _tag_get(tag, "status")
+        if st is not None:
+            meta["status"] = str(st)
 
         # reward：rm_scores 是 [R] 张量，reward 放在最后有效 token 位（其余为 0），
         # sum 得到标量。回退到 tag 里的 reward/score 字段。
@@ -145,6 +179,21 @@ def extract_trajectories_from_kvbatch(
             else:
                 rids = [int(t) for t in rids]
             meta["response_token_ids"] = rids
+
+        # prompt token ids（v1 回放行构建用）：v1 tq 存的是 token ids 张量，没有完整
+        # messages 文本，无法在回放时重新 tokenize。故这里把 prompt/response token ids
+        # 直接存进 meta，build_replay_rows 走 v1 分支直接用（见 replay_forward.py）。
+        # prompts 是 left-padded，用 attention_mask 去 padding；无 mask 时按 pad!=0 兜底。
+        pids = _row_to_list(_tensor_row("prompts", i))
+        if pids is not None:
+            pmask = _row_to_list(_tensor_row("attention_mask", i))
+            if pmask:
+                # attention_mask 覆盖 prompt+response，取前 len(prompts) 段
+                pmask = pmask[: len(pids)]
+                pids = [int(t) for t, m in zip(pids, pmask, strict=False) if m]
+            else:
+                pids = [int(t) for t in pids]
+            meta["prompt_token_ids"] = pids
 
         # trajectory messages：v1 从 tag/extra_info 取（session_worker 存的 message_history）。
         trajectory = _tag_get(tag, "messages", "message_history")

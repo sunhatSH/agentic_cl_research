@@ -180,6 +180,8 @@ class BaselineSampler:
             return []
 
         total = len(self.buffer.store)
+        # buffer 不足 batch_size 时【尽可能回放】（采全部可用），不报错 ——
+        #   冷启动前几步 buffer 必然不满，报错会让训练起步就崩；这里 min 平滑过渡。
         target = min(batch_size, total)
         out = []
         chosen: set[str] = set()
@@ -266,6 +268,8 @@ class TwoLevelSampler:
             return []
 
         total = len(self.buffer.store)
+        # buffer 不足 batch_size 时【尽可能回放】（采全部可用），不报错 ——
+        #   冷启动前几步 buffer 必然不满，报错会让训练起步就崩；这里 min 平滑过渡。
         target = min(batch_size, total)
         out = []
         chosen: set[str] = set()
@@ -273,7 +277,8 @@ class TwoLevelSampler:
         tries = 0
 
         weights = self.bucket_strategy.get_weights(
-            self.buffer, current_distribution=self._current_distribution,
+            self.buffer,
+            current_distribution=self._current_distribution,
         )
         names = list(weights.keys())
         wlist = [weights[b] for b in names]
