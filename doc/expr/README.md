@@ -139,6 +139,6 @@ step 4: rows 96-127 → workflow
 ## 附:数据来源与复现
 
 - metrics 原始:`logs/metrics/qwen35_9b_<exp>/metrics.jsonl`(verl FileLogger)
-- 画图脚本:`scripts/plot_metrics_compare.py`(多实验叠加 / 单实验)
+- 画图脚本:`scripts/plot/plot_metrics_compare.py`(多实验叠加 / 单实验)
 - 逐条运行流水:`doc/archive/RunLog.md`
 - reward 维度定义:`doc/ops/reward.md`

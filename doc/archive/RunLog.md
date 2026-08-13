@@ -2251,3 +2251,20 @@ test_agents/test_simulated_session/test_judge_agreement 改四维 mock 后过;�
 **关键更正**:此前(§60)结论"4卡泄漏但良性、跑到 step158-170不死锁"**被推翻**。真相:4卡同样死锁,只是池大/每step pause压力小,撑到 step~193 才爆(16卡 step6/32 早爆)。差的是**撑的时长**不是**会不会死**——图片是共同必然导火索。`invalid memory access=0`,本轮崩因就是 M-RoPE 图片(非同事说的内存越界;殊途同归:都是推理进程崩→refcount无法释放)。
 
 **修复优先级锁定**:堵图片(导火索,§61 纯文本模型类 / cutlass4.3.4+冻结视觉 TEXT_MODEL_ONLY=1)> pause有界patch(§60,第二道防线)。图片不崩→无泄漏源→根本不累积到死锁。四个死锁 run 均 08-02 起的旧 run,既无 cutlass 修复也无 pause patch,故走完整条链。k2-16gpu 死锁前 metrics 32步 reward 0.38→0.67、pg_loss 近0震荡、KL 0.003-0.007 全健康,证明训练本身有效、仅被图片死锁打断。
+
+---
+## §63 — 数据难度筛选 + lr 统一回 2e-6 + v1 extra_info 字段修复(2026-08-13)
+
+**背景**：上一轮(08-12)三实验(B1/K2/R0)重启后 lr 混用(B1/K2=1.5e-6、R0=2e-6)，且发现两个 v1 字段映射 bug 导致 R0 回放空转、std 指标缺失。
+
+**1. 训练数据难度筛选(双模型交集)**：
+- 数据源 `new_trajectories_labeled.jsonl` 119,763 条，其中 47,835 条 `seed_query` 是 `<system-reminder>` 垃圾(提取 pipeline 把系统提示词当用户 query 截了前 2000 字符)。
+- 双模型打分：grok-4.5 + gpt-5.6-luna(tokenhub)，四维度严格 prompt。claude-sonnet-5 端点 tokenhub 未配路由(`get_channel_failed`)、qwen3.8-max token 无权限，均弃用。
+- 筛选策略：双方**交集**判中等。coding/office/ops 用 4-6 交集，research/workflow 用 4-7 交集(4-6 池不足)。产出 `datasets/train.parquet` 16,000 行(5桶×3,200，0 重复)，训练序 coding→office→ops→research→workflow。
+- 产物 + 逻辑见 `doc/ops/数据筛选逻辑_20260812.md`，构建脚本 `scripts/pipeline/build_train.py`。
+
+**2. lr 统一回 2e-6**：1.5e-6 学得太慢(reward 长期平在 0.42 不动)。2e-6 能学到东西但 reward 波动大——**波动根因不是 lr，而是数据难度没控制(未筛中等难度)+ system-reminder 垃圾干扰任务执行**。统一 base + 全部单实验 yaml 为 2e-6，需要改时命令行传参 `--lr`(train.sh 已加，优先级 命令行>实验>base)。
+
+**3. v1 字段映射 bug 修复(重要)**：`trajectory_adapter_v1.py` 原从 `tag` 取 bucket/task_id，但 v1 的 `extra_info`(含 bucket/record_id)在 **field** 里不在 tag。导致 `extract_trajectories_from_kvbatch` skip 346/512 轨迹、R0 buffer 每步只进 1 条 winner(应 32)、回放池永远空(`replay_empty=1.0`)。修复：从 `extra_info` field 取 bucket/task_id。`_merge_std_metrics` 改直接取 `rm_scores` 张量算 reward_std/group_reward_std(原走 extractor 也被 bucket 过滤坑)。两者需重启验证。
+
+**4. rollout 成功率记录**：新增记录每 query 的 n=8 rollout 成功/失败状态(见 `_persist_rollout_status`)，排查波动/失败用。每实验启动时清掉上一轮的 `rollouts/training/<exp>/` 防磁盘膨胀。
