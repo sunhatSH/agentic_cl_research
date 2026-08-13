@@ -10,7 +10,7 @@ Zero-coefficient short-circuit (mandatory project rule):
   buffer hooks. The cl_loss closure also picks a no-replay branch.
 
 Usage:
-    python -m trainer.cl_main --config configs/phase1/b1.yaml
+    python -m trainer.cl_main --config configs/run/b1_9b_16gpu.yaml
 """
 
 from __future__ import annotations
@@ -26,9 +26,18 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Path to experiment yaml.")
     parser.add_argument("--resume-from", type=str, default=None, help="Optional checkpoint to resume.")
+    # 具名传参（优先级最高：命令行具名 > 命令行 override > 实验配置 > 基础配置）
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help="Override actor_rollout_ref.actor.optim.lr (e.g. --lr 1.5e-6).",
+    )
     # Hydra-style key=value overrides, e.g. trainer.total_training_steps=50
     parser.add_argument(
-        "overrides", nargs="*", default=[],
+        "overrides",
+        nargs="*",
+        default=[],
         help="Config overrides in key=value format (e.g. data.train_files=/path/to/file.parquet).",
     )
     return parser.parse_args()
@@ -162,6 +171,10 @@ def main():
     args = parse_args()
     cfg = load_config(args.config)
     _apply_overrides(cfg, args.overrides)
+    # 具名参数优先级最高（在 overrides 之后应用，覆盖任何配置）
+    if args.lr is not None:
+        OmegaConf.update(cfg, "actor_rollout_ref.actor.optim.lr", args.lr, force_add=True)
+        print(f"[cl] --lr override: actor_rollout_ref.actor.optim.lr={args.lr}", flush=True)
     from trainer.verl_runner import run_cl_ppo
 
     run_cl_ppo(cfg, resume_from=args.resume_from)

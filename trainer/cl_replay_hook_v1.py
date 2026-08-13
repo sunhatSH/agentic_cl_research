@@ -19,7 +19,6 @@ b1 baseline（buffer.enabled=false / lambda_replay=0）不装此 hook。仅 R �
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -34,18 +33,29 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
     调用时机：CLTaskRunnerV1.run 里 ``trainer.init()`` 之后、``fit()`` 之前
     （与 inject_cl_loss 并列）。buffer is None（b1）时空转。
     """
+    cl = cfg.get("cl", {}) or {}
+    # lambda_replay：CL loss 里 L_replay 项的系数（=0 时无回放 loss，buffer 也不装）。
+    lambda_replay = float(cl.get("lambda_replay", 0.0))
+
     if buffer is None and lambda_replay <= 0:
         # 无 buffer 且无 replay：只装 std metrics hook，不装回放逻辑
         pass
 
-    cl = cfg.get("cl", {}) or {}
-    lambda_replay = float(cl.get("lambda_replay", 0.0))
+    # replay_batch_size：回放量【上限兜底】。replay_ratio>0 时实际回放量由 ratio 动态算，
+    #   此值只作封顶（buffer 再大也不超它）。replay_ratio<=0 时退回固定用它作回放量。
     replay_batch_size = int(cl.get("replay_batch_size", 512))
-    # replay_ratio: 新:旧 的比值（默认 5 → 每 5 条新轨迹配 1 条回放，占比恒定 1/6）。
-    # >0 时回放量按【本 step 实际新轨迹数】动态算 ceil(new / ratio)，不再用固定 replay_batch_size，
-    # 使回放随新数据等比缩放——新轨迹因沙箱失败缩水时回放同步缩小，占比不漂移（见 RunLog 2026-07-30）。
-    # <=0 时退回旧行为（固定 replay_batch_size）。replay_batch_size 仍作为上限兜底。
+    # replay_ratio：训练 batch 里【新:旧】的比值（默认 5 = 每 5 条新 rollout 配 1 条回放）。
+    #   关键语义（易误解，务必分清两个独立概念）：
+    #     · "新" = 本 step 实际新 rollout 行数（32 query × multi-turn ≈ 300 行，全部参与训练，
+    #       不限于 winner）。winner 只是【进 buffer 存起来】的那 1 条/query。
+    #     · "旧" = 从 buffer 采样的回放行数 = ceil(新行数 / ratio)。
+    #   所以回放占比 = 1/(ratio+1)：ratio=5 → 1/6≈16.7%，ratio=2 → 1/3≈33%，ratio=1 → 1/2=50%。
+    #   >0 时回放量按新轨迹数动态算（新数据因沙箱失败缩水时回放同步缩小、占比不漂移，见 RunLog 2026-07-30）。
+    #   <=0 时退回固定 replay_batch_size。replay_batch_size 仍作上限兜底。
     replay_ratio = float(cl.get("replay_ratio", 5.0))
+    # replay_warmup_size：冷启动 ramp。>0 时回放量随 buffer 填充线性爬坡（0→满额），
+    #   <=0 关闭 ramp（buffer 一有数据就满额回放）。R0 空启动 buffer 前几步不足时，
+    #   sampler 会 min(采样量, buffer 实际大小) 尽可能回放、不报错。
     replay_warmup_size = int(cl.get("replay_warmup_size", 0))
     stats_log_freq = int(cl.get("buffer_stats_log_freq", 1))
     forgetting_update_freq = int(cl.get("forgetting_update_freq", 1))
@@ -79,8 +89,11 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
 
         # ── 1. PRE：从 9桶 buffer 采旧桶 winner，掺进 tq + 合并 KVBatchMeta ──
         if lambda_replay > 0:
-            # 回放量：replay_ratio>0 时按【本 step 实际新轨迹数】动态算 ceil(new/ratio)，
-            # 新轨迹数 = 非 padding 行数（掺入前的 rl_batch）。否则退回固定 replay_batch_size。
+            # 回放量 eff_replay 的动态计算：
+            #   new_count = 本 step 非 padding 行数（≈300，32 query × multi-turn 每 query ~9-10 行；
+            #     ⚠️ 是【rollout 行数】不是 query 数(32)）。这些行【全部参与训练】，不限于 winner。
+            #   eff_replay = ceil(new_count / replay_ratio) → 每 ratio 条新行配 1 条回放，
+            #     replay_batch_size 作上限封顶。replay_ratio<=0 时退回固定 replay_batch_size。
             eff_replay = replay_batch_size
             if replay_ratio > 0:
                 new_count = sum(
@@ -91,6 +104,8 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
                 # replay_batch_size 作上限兜底（buffer 再大也不超它）
                 if replay_batch_size > 0:
                     eff_replay = min(eff_replay, replay_batch_size)
+            # 采样 eff_replay 条回放行；buffer 前几步不足时 prepare_replay_rows→sampler 会
+            # min(采样量, buffer 大小) 尽可能回放（不报错），随 step 累积爬满。
             replay_rows = prepare_replay_rows(
                 buffer, weighting, tokenizer, eff_replay, warmup_size=replay_warmup_size
             )
@@ -184,6 +199,45 @@ def _ingest_winners(rl_batch: Any, buffer: Any, exp_name: str, step: int) -> Non
         winners.append(best)
 
     _persist_winners(winners, exp_name, step)
+    _persist_rollout_status(groups, exp_name, step)
+
+
+def _persist_rollout_status(groups: dict, exp_name: str, step: int) -> None:
+    """记录每 query(task_id) 的 n 条 rollout 全量轨迹 + 成功状态 + reward。
+
+    排查 reward 波动/rollout 失败用。写 rollouts/training/<exp>/rollout_status-<step>.jsonl，
+    全量 messages 占空间，但每次实验启动时由 _train_impl.sh 清掉上一轮目录(防磁盘膨胀)。
+    winner 不入此文件——winner 单独进训练回放池(buffer.add_trajectory)。
+    """
+    if not groups:
+        return
+    import json
+
+    out_dir = Path(f"rollouts/training/{exp_name}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"rollout_status-{step}.jsonl"
+    with open(out_file, "w", encoding="utf-8") as f:
+        for tid, candidates in groups.items():
+            bucket = candidates[0][1] if candidates else None
+            rollouts = []
+            n_success = 0
+            for traj, _bkt, meta in candidates:
+                st = str(meta.get("status", "unknown"))
+                rw = meta.get("reward")
+                if st == "success":
+                    n_success += 1
+                msgs = traj if isinstance(traj, list) else traj.get("messages", [])
+                rollouts.append({"status": st, "reward": rw, "messages": msgs})
+            row = {
+                "step": step,
+                "task_id": tid,
+                "bucket": bucket,
+                "n_rollouts": len(rollouts),
+                "n_success": n_success,
+                "rollouts": rollouts,
+            }
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print(f"[persist] rollout 全量轨迹 {len(groups)} queries → {out_file}", flush=True)
 
 
 def _append_replay_rows_v1(batch, replay_rows: dict, rl_batch, shuffle_seed: int = 0):
@@ -202,14 +256,10 @@ def _append_replay_rows_v1(batch, replay_rows: dict, rl_batch, shuffle_seed: int
     集群实测对齐。本机给出结构，字段清单标注在 _replay_tensordict。"""
     try:
         import transfer_queue as tq
-        from tensordict import TensorDict
         from transfer_queue import KVBatchMeta
     except ImportError:
         return batch, None
 
-    from trainer.replay_forward import REPLAY_TIDS_KEY
-
-    tids = replay_rows.get(REPLAY_TIDS_KEY)
     fields_td = _replay_tensordict(replay_rows, batch)
     if fields_td is None or fields_td.batch_size[0] == 0:
         return batch, None
@@ -237,7 +287,6 @@ def _replay_tensordict(replay_rows: dict, batch):
     replay_response_mask/replay_token_weights/is_replay + 镜像 old_log_probs/advantages。
     ⚠️ CLUSTER-TODO：与 v1 rollout 写 tq 的字段对齐（见 _append_replay_rows_v1 说明）。"""
     try:
-        import torch
         from tensordict import TensorDict
     except ImportError:
         return None
@@ -272,11 +321,13 @@ def _persist_winners(winners: list, exp_name: str, step: int) -> None:
     out_file = out_dir / f"step-{step}.jsonl"
     with open(out_file, "w", encoding="utf-8") as f:
         for traj, bucket, meta in winners:
+            # v1 trajectory 是 list，v0 是 {"messages": [...]}
+            msgs = traj if isinstance(traj, list) else traj.get("messages", [])
             row = {
                 "task_id": meta.get("task_id", ""),
                 "bucket": bucket,
                 "reward": meta.get("reward"),
-                "messages": traj.get("messages", []),
+                "messages": msgs,
                 "step": step,
             }
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -284,40 +335,60 @@ def _persist_winners(winners: list, exp_name: str, step: int) -> None:
 
 
 def _merge_std_metrics(rl_batch: Any, metrics: dict) -> None:
-    """从 rl_batch 的 tags 提取 reward 信息 → 计算 reward_std / group_reward_std。
+    """从 v1 rollout batch 的 rm_scores 张量直接算 reward_std / group_reward_std。
 
-    v1 KVBatchMeta 的 tags 包含每个 rollout 行的元数据，其中 reward 非标量则
-    跳过（回放行/replay 行没有有效 reward）。group by task_id 后统计组内 std。
+    v1 的 reward 在 tq 的 rm_scores 张量里（[N, R]，最后有效 token 位是 reward，
+    其余为 0，sum(-1) 得标量）。不走 extract_trajectories_from_kvbatch —— 后者强制
+    要求 bucket 解析成功（v1 实测 bucket 未进 tag，会 skip 大半轨迹），而 std 指标
+    不需要 bucket。group by task_id（从 tags 取）后统计组内 std（GRPO 组内一致性）。
     """
-    tags = getattr(rl_batch, "tags", None)
-    if not tags:
-        return
     try:
         import numpy as np
+        import transfer_queue as tq
     except ImportError:
         return
 
-    rewards = []
+    try:
+        td = tq.kv_batch_get_by_meta(rl_batch, select_fields=["rm_scores", "extra_info"])
+    except Exception:  # noqa: BLE001
+        return
+    if td is None or "rm_scores" not in td:
+        return
+
+    rm = td["rm_scores"]
+    try:
+        rewards = rm.detach().float().sum(-1).tolist()
+    except (AttributeError, RuntimeError):
+        return
+
+    tags = getattr(rl_batch, "tags", None)
     by_task: dict[str, list[float]] = {}
-    for tag in (tags or []):
-        if not isinstance(tag, dict):
+    valid: list[float] = []
+    for i, r in enumerate(rewards):
+        tag = tags[i] if tags and i < len(tags) else None
+        if isinstance(tag, dict) and (tag.get("is_replay") or tag.get("is_padding")):
             continue
-        if tag.get("is_replay") or tag.get("is_padding"):
-            continue
-        r = tag.get("reward")
-        if r is None:
-            continue
-        try:
-            rv = float(r)
-        except (TypeError, ValueError):
-            continue
-        tid = tag.get("task_id") or tag.get("record_id") or tag.get("id") or ""
-        rewards.append(rv)
+        rv = float(r)
+        valid.append(rv)
+        tid = ""
+        # v1 的 task_id(record_id) 在 extra_info field 里，不在 tag；优先从 extra_info 取。
+        if "extra_info" in td:
+            try:
+                val = td["extra_info"][i]
+                ei = val.data if hasattr(val, "data") and not hasattr(val, "detach") else val
+                if isinstance(ei, dict):
+                    tid = ei.get("record_id") or ei.get("task_id") or ""
+            except (IndexError, KeyError, TypeError):
+                pass
+        if not tid and isinstance(tag, dict):
+            tid = tag.get("task_id") or tag.get("record_id") or tag.get("id") or ""
+        if not tid:
+            tid = f"row{i}"
         by_task.setdefault(tid, []).append(rv)
 
-    if not rewards:
+    if not valid:
         return
-    arr = np.array(rewards, dtype=np.float64)
+    arr = np.array(valid, dtype=np.float64)
     metrics["cl/reward_mean"] = float(arr.mean())
     metrics["cl/reward_std"] = float(arr.std())
 
