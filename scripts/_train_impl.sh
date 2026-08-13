@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── 默认值 ──────────────────────────────────────────────────────────────
-CONFIG="$ROOT_DIR/configs/run/b1_8b.yaml"
+CONFIG="$ROOT_DIR/configs/run/b1_9b_16gpu.yaml"
 NNODES=1
 GPUS_PER_NODE=8
 ROLLOUT_TP=""
@@ -349,6 +349,9 @@ PYEOF
 _run_single() {
   local ckpt="$ROOT_DIR/ckpts/$_exp"
   local _mdir="$ROOT_DIR/logs/metrics/$_exp"
+  # 清理上一轮的 rollout 记录(_persist_winners/_persist_rollout_status 写 rollouts/training/<exp>/),
+  # 每次实验启动清掉,防磁盘膨胀。metrics/ckpt 不在此列(有各自的历史折叠/轮转)。
+  rm -rf "$ROOT_DIR/rollouts/training/$_exp"
   mkdir -p "$ckpt" "$_LOGDIR/rollout" "$_LOGDIR/val" "$_mdir"
   export CKPT_DIR="$ckpt" ROLLOUT_DATA_DIR="$_LOGDIR/rollout" VAL_DATA_DIR="$_LOGDIR/val"
   export VERL_FILE_LOGGER_PATH="$_mdir/metrics.jsonl"
