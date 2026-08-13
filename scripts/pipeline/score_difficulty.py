@@ -244,6 +244,8 @@ SYSTEM_PROMPT = (
 )
 
 TARGET_BUCKETS = ["coding", "office", "ops", "research", "workflow"]
+# 当前只打这 3 个桶（coding/office 数据已够），改为 TARGET_BUCKETS 恢复全量
+SCORE_BUCKETS = ["workflow"]
 MEDIUM_MIN, MEDIUM_MAX = 4, 7
 PER_BUCKET = 3200  # 100 steps × 32
 
@@ -391,6 +393,7 @@ def main():
 
     all_records = []
     stripped = 0
+    skipped_empty = 0
     for line in IN.read_text().splitlines():
         if not line.strip():
             continue
@@ -399,9 +402,15 @@ def main():
         if "<system-reminder>" in q:
             rec["seed_query"] = _REMINDER_RE.sub("", q).strip()
             stripped += 1
+            if not rec["seed_query"]:
+                skipped_empty += 1
+                continue  # 剥离后为空，跳过不打分（截断导致无真实 query）
+        if rec["bucket"] not in SCORE_BUCKETS:
+            continue  # 只打指定桶
         all_records.append(rec)
     print(
-        f"loaded {len(all_records)} records ({stripped} system-reminder stripped)",
+        f"loaded {len(all_records)} records "
+        f"({stripped} system-reminder stripped, {skipped_empty} empty skipped)",
         flush=True,
     )
 

@@ -12,8 +12,8 @@ pandas/无外网装不上时用这个。
 另出一张关键指标总览。
 
 用法:
-  python scripts/plot_metrics_nopandas.py <jsonl> -o <outdir>
-  python scripts/plot_metrics_nopandas.py <jsonl> --groups actor,critic
+  python scripts/plot/plot_metrics_nopandas.py <jsonl> -o <outdir>
+  python scripts/plot/plot_metrics_nopandas.py <jsonl> --groups actor,critic
 """
 import argparse
 import json

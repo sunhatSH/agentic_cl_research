@@ -9,9 +9,9 @@
 分组,每组一张 PNG(组内每个标量指标一个子图),另出一张"关键指标总览"。
 
 用法:
-  python scripts/plot_metrics.py logs/experiments/qwen35_9b_b1_16gpu/metrics.jsonl
-  python scripts/plot_metrics.py <jsonl> -o figs/            # 指定输出目录
-  python scripts/plot_metrics.py <jsonl> --groups actor,critic  # 只画部分组
+  python scripts/plot/plot_metrics.py logs/experiments/qwen35_9b_b1_16gpu/metrics.jsonl
+  python scripts/plot/plot_metrics.py <jsonl> -o figs/            # 指定输出目录
+  python scripts/plot/plot_metrics.py <jsonl> --groups actor,critic  # 只画部分组
 """
 import argparse
 import json

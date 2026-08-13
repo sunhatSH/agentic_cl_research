@@ -3,7 +3,7 @@
 import json, sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent  # scripts/plot/ → repo root
 LOG_DIR = ROOT / "logs" / "metrics"
 
 EXPERIMENTS = {

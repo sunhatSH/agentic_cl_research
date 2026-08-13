@@ -98,7 +98,7 @@ echo "存活:      $ALIVE"
 - **`metrics.jsonl` 会被覆盖**：verl FileLogger 每次启动 `open(path,"wb")`，只含**本次 run**。要完整曲线读同目录 `metrics.all.jsonl`（`_train_impl.sh` resume 前折叠进去的）。
 - **卡数以 config 为准**：文件名 `_16gpu` 只是 preset 标签；实际 `nnodes×gpus` 才是权威，preset 缩放（16→4 debug）时可能对不上。
 - **step 没涨 + 日志不动 ≠ 一定挂**：可能在一个超长 rollout 里（`session/duration_s/max` 可达数百秒）。判 hang 前先 `tail train.log` 看最后在干嘛；16 卡静默 PENDING 是已知根因（memory `16gpu-hang-missing-8th-replica`）。
-- **画曲线**：要看 reward/loss 趋势而非单点，用 `scripts/plot_metrics_nopandas.py <metrics.all.jsonl> -o <outdir>`（无 pandas 依赖）。
+- **画曲线**：要看 reward/loss 趋势而非单点，用 `scripts/plot/plot_metrics_nopandas.py <metrics.all.jsonl> -o <outdir>`（无 pandas 依赖）。
 - **纯只读**：本 skill 不启动训练（那要 `scripts/train.sh <topo> --config <cfg>`，且必须 tmux/nohup 后台，见项目 CLAUDE.md）。
 
 ## 代码锚点
