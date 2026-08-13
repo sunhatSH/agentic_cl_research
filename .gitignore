@@ -62,10 +62,12 @@ buffer_dumps/
 datasets/
 
 # Runtime collected data (mock rollouts + warm-start buffers; regenerated, not source)
-data/
+/data/
 rollouts/
 # 例外:doc/expr/data/ 是实验档案(每step桶信息/metrics快照),属源码要入库,非运行时产物
 !doc/expr/data/
+# 例外:scripts/data/ 是数据管道源码(convert/label/parquet 等),非运行时产物
+!scripts/data/
 
 # Tencent / CCR local credentials (never commit)
 docker/sandbox/tencent.env
