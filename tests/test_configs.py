@@ -19,7 +19,10 @@ CONFIG_ROOT = Path(__file__).resolve().parents[1] / "configs"
 # `smoke_*` configs are 4-GPU sanity probes, not formal experiments: they pin an
 # absolute verl `_generated_ppo_trainer.yaml` path (cluster-only) and self-declare
 # "不是正式实验配置". Exclude them from the experiment roster / schema checks.
-EXPERIMENT_CONFIGS = sorted(p for p in CONFIG_ROOT.glob("phase*/*.yaml") if not p.stem.startswith("smoke"))
+# 旧 phaseN 配置 2026-08-13 归位到 _legacy_phases/（被 run/ 取代，仅回溯 + schema 校验）。
+EXPERIMENT_CONFIGS = sorted(
+    p for p in CONFIG_ROOT.glob("_legacy_phases/phase*/*.yaml") if not p.stem.startswith("smoke")
+)
 
 
 def test_found_all_experiment_configs():

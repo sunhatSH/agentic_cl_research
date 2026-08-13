@@ -4,7 +4,7 @@
 # CLEAR 原论文 10k buffer。配套 R0-25k 测同方法在 25k 容量下的表现。
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

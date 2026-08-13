@@ -3,7 +3,7 @@
 #
 # Usage:
 #   source scripts/env/load_training_env.sh
-#   bash scripts/train.sh configs/phase1/b1.yaml
+#   bash scripts/train.sh configs/run/b1_9b_16gpu.yaml
 
 _ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 _ENV="${_ROOT}/.env"

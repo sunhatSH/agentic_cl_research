@@ -3,7 +3,7 @@
 # 对照轴：KL × Replay 交互 (R4 → R4-K)
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

@@ -3,7 +3,7 @@
 # 验证目标：量化灾难性遗忘程度（遗忘下界）
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

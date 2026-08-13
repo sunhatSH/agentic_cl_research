@@ -3,7 +3,7 @@
 # 对照轴：priority 类型 (R4 → R5)，验证 BucketDesign 核心主张
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

@@ -3,7 +3,7 @@
 # 对照轴：桶结构 vs CLEAR (R0 → R3), 是否使用 priority (R3 → R4)
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

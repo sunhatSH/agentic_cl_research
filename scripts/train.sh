@@ -26,9 +26,8 @@ PHASE_EXPS[5]="s1 s2"
 
 # ── topology presets ─────────────────────────────────────────────────────
 # key -> nnodes gpus/node rollout-tp ulysses-sp train-batch ppo-mini gpu-mem-util default-config
+# 只保留 16/32/64 卡（4gpu/8gpu 变体已弃用，2026-08-13）。
 declare -A TP=()
-TP[4gpu]="   1     4           2          2            4          4         0.75          configs/run/b1_9b_4gpu.yaml"
-TP[8gpu]="   1     8           2          1          256         32         0.75          configs/run/b1_8b.yaml"
 TP[16gpu]="  2     8           2          4           32         32         0.75          configs/run/b1_9b_16gpu.yaml"
 TP[32gpu]="  4     8           4          4          512         64         0.75          configs/run/b1.yaml"
 TP[64gpu]="  8     8           4          4         1024         64         0.75          configs/run/b1.yaml"
@@ -37,9 +36,9 @@ TP[64gpu]="  8     8           4          4         1024         64         0.75
 _autodetect() {
   local gpus
   gpus=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l) || gpus=0
-  if   [ "$gpus" -le 4 ]; then echo "4gpu"
-  elif [ "$gpus" -le 8 ]; then echo "8gpu"
-  else echo "16gpu"
+  if [ "$gpus" -le 16 ]; then echo "16gpu"
+  elif [ "$gpus" -le 32 ]; then echo "32gpu"
+  else echo "64gpu"
   fi
 }
 
@@ -72,6 +71,7 @@ while [ $# -gt 0 ]; do
     --train-batch)   TRAIN_BATCH="$2"; shift 2;;
     --ppo-mini)      PPO_MINI="$2"; shift 2;;
     --gpu-mem-util)  GPU_MEM_UTIL="$2"; shift 2;;
+    --lr)            EXTRA+=("actor_rollout_ref.actor.optim.lr=$2"); shift 2;;
     *)               EXTRA+=("$1"); shift;;
   esac
 done
@@ -103,7 +103,7 @@ _run_impl_bg() {
     --rollout-tp "$ROLLOUT_TP" --ulysses-sp "$ULYSSES_SP" \
     --train-batch "$TRAIN_BATCH" --ppo-mini "$PPO_MINI" \
     --gpu-mem-util "$GPU_MEM_UTIL" \
-    "$@"
+    "${EXTRA[@]}" "$@"
 }
 
 # ── dispatch ─────────────────────────────────────────────────────────────

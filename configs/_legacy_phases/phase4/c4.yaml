@@ -3,7 +3,7 @@
 # KL 配置 = K-best2 (低剂量), Replay 配置 = R-best2 (低剂量)
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

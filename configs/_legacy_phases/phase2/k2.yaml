@@ -3,7 +3,7 @@
 # 对照轴：lambda_2 扫描 (K1 → K2 → K3)
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

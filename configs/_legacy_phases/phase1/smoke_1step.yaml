@@ -14,7 +14,7 @@
 
 defaults:
   - /mnt/afs_toolcall/sunhao4/workspace/verl/verl/trainer/config/_generated_ppo_trainer.yaml
-  - ../base
+  - ../../base
 
 # ---- B1 语义（与 b1.yaml 一致）-------------------------------------------------
 algorithm:
@@ -54,7 +54,7 @@ actor_rollout_ref:
     kl_loss_coef: 0.0
     entropy_coeff: 0.001
     optim:
-      lr: 1.0e-6
+      lr: 2.0e-6
     ppo_mini_batch_size: 4       # 必须 <= train_batch_size
     ppo_micro_batch_size_per_gpu: 1
     fsdp_config:

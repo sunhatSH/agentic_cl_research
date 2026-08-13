@@ -3,7 +3,7 @@
 # 对照轴：priority 用法 (R4 → R4-w), W0 vs W2
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

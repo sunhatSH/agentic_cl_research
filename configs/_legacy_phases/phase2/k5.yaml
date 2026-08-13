@@ -3,7 +3,7 @@
 # 对照轴：pi_ref 锚点 (K3 ↔ K5)
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

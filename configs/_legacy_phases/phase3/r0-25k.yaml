@@ -4,7 +4,7 @@
 # 仅容量与 R0-10k 不同；纯 reservoir（用 bucket_floors 兜底）（不触发配额淘汰）。
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

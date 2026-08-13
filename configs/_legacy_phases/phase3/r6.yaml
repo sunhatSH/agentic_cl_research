@@ -3,7 +3,7 @@
 # 对照轴：lambda_3 权重 (R4 → R6)
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

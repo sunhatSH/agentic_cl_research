@@ -3,7 +3,7 @@
 # 对照轴：是否使用 priority (R3 → R4), priority 类型 (R4 → R5)
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   actor:

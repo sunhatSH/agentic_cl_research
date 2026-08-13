@@ -3,7 +3,7 @@
 # 验证目标：扩大 query 数是否进一步减缓遗忘（traj/query=8 见 base rollout.n）
 
 defaults:
-  - ../base
+  - ../../base
 
 actor_rollout_ref:
   # 其余 CL 参数待 Phase 4 最优配置确定后填入
