@@ -1,9 +1,9 @@
-"""Tests for scripts/convert_dataset.py (Gap B: jsonl -> verl parquet rows)."""
+"""Tests for scripts/data/convert_dataset.py (Gap B: jsonl -> verl parquet rows)."""
 
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "data"))
 
 import convert_dataset as cd  # noqa: E402
 

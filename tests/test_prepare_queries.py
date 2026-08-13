@@ -1,4 +1,4 @@
-"""Tests for stage ② query extraction (scripts/prepare_queries.py)."""
+"""Tests for stage ② query extraction (scripts/data/prepare_queries.py)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
     "prepare_queries",
-    Path(__file__).resolve().parent.parent / "scripts" / "prepare_queries.py",
+    Path(__file__).resolve().parent.parent / "scripts" / "data" / "prepare_queries.py",
 )
 pq = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(pq)

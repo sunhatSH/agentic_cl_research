@@ -1,13 +1,17 @@
-"""Tests for scripts/qc_trajectory.py — failure-mode QC on structured trajectories."""
+"""Tests for scripts/analysis/qc_trajectory.py — failure-mode QC on structured trajectories."""
 
 from __future__ import annotations
 
-import sys
+import importlib.util
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from scripts.qc_trajectory import HARD_CODES, audit_trajectory, scan_messages
+_spec = importlib.util.spec_from_file_location(
+    "qc_trajectory",
+    Path(__file__).resolve().parent.parent / "scripts" / "analysis" / "qc_trajectory.py",
+)
+_qc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_qc)
+HARD_CODES, audit_trajectory, scan_messages = _qc.HARD_CODES, _qc.audit_trajectory, _qc.scan_messages
 
 
 def _tc(name, args):
