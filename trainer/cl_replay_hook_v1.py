@@ -239,7 +239,13 @@ def _persist_rollout_status(groups: dict, exp_name: str, step: int) -> None:
                 if st == "success":
                     n_success += 1
                 msgs = traj if isinstance(traj, list) else traj.get("messages", [])
-                rollouts.append({"status": st, "reward": rw, "messages": msgs})
+                rollout = {"status": st, "reward": rw, "messages": msgs}
+                # judge 四维度细分（reward 涨不动根因排查用）
+                for _k in ("task_done", "correctness", "trajectory", "safety"):
+                    _v = meta.get(f"reward_{_k}")
+                    if _v is not None:
+                        rollout[_k] = _v
+                rollouts.append(rollout)
             row = {
                 "step": step,
                 "task_id": tid,

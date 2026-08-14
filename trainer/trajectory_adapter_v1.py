@@ -84,8 +84,10 @@ def extract_trajectories_from_kvbatch(
     fields_present = set(getattr(batch, "fields", None) or [])
     want = [f for f in _TENSOR_FIELDS if not fields_present or f in fields_present]
     # v1 的 bucket/task_id 在 extra_info（non_tensor field）里，不在 tag。也要取。
-    if not fields_present or "extra_info" in fields_present:
-        want.append("extra_info")
+    # reward 四维度在 reward_extra_info（non_tensor field）里，也取。
+    for _f in ("extra_info", "reward_extra_info"):
+        if not fields_present or _f in fields_present:
+            want.append(_f)
     td = None
     if want:
         try:
@@ -139,6 +141,16 @@ def extract_trajectories_from_kvbatch(
         st = _tag_get(tag, "status")
         if st is not None:
             meta["status"] = str(st)
+
+        # reward 四维度细分（judge 打的，非聚合 score）：omni 把 judge 整个 result dict
+        # 存进 trajectory.extra_fields["reward_extra_info"]（含 score/task_done/correctness/
+        # trajectory/safety/judge_error），再经 field.update 写进 tq 的 non_tensor field。
+        # 这里取出来塞 meta，_persist_rollout_status 落盘用（排查 reward 涨不动根因）。
+        rei = _non_tensor_row("reward_extra_info", i)
+        if isinstance(rei, dict):
+            for _k in ("task_done", "correctness", "trajectory", "safety"):
+                if _k in rei:
+                    meta[f"reward_{_k}"] = rei[_k]
 
         # reward：rm_scores 是 [R] 张量，reward 放在最后有效 token 位（其余为 0），
         # sum 得到标量。回退到 tag 里的 reward/score 字段。
