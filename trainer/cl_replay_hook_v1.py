@@ -123,6 +123,10 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
 
         step = getattr(trainer, "global_steps", 0)
 
+        # ── 2c. 记录本 step 全量 rollout 轨迹（无论有无 buffer 都落盘，排查 reward 用）──
+        # B1/K2 无 buffer 也要记；这里统一记一次，_ingest_winners 不再重复记。
+        _persist_rollout_status(_extract_rollout_groups(rl_batch), exp_name, step)
+
         # 以下 buffer 操作仅在 buffer 启用时执行
         if buffer is not None:
             buffer.set_step(step)
@@ -169,28 +173,37 @@ def _merge_buffer_metrics(metrics: dict, stats: Any, flatten_fn) -> None:
         metrics.update(flatten_fn(stats))
 
 
-def _ingest_winners(rl_batch: Any, buffer: Any, exp_name: str, step: int) -> None:
-    """从 rollout batch 抽每 task_id 的 winner（reward 最高）入 9桶 buffer.
+def _extract_rollout_groups(rl_batch, bucket_names=None):
+    """从 rl_batch 抽轨迹并按 task_id 分组（strip_zw 处理 content）。
 
-    v1: rl_batch 是 KVBatchMeta，需从 tq 取张量 + tags。用 v1 版 extractor。"""
+    返回 {task_id: [(trajectory, bucket, meta), ...]}。bucket_names 为空时（B1/K2 无
+    buffer）不按桶过滤，全部抽取。与 buffer 无关，可独立用于 rollout 轨迹记录。"""
     from data.cleaning import strip_zw
     from trainer.trajectory_adapter_v1 import extract_trajectories_from_kvbatch
 
-    bucket_names = getattr(buffer, "bucket_names", None)
-    # 单桶实验(R0 CLEAR):所有轨迹默认归入唯一桶,不做 bucket 过滤
     default_bucket = bucket_names[0] if bucket_names and len(bucket_names) == 1 else None
 
     groups: dict[str, list[tuple[Any, str, dict]]] = {}
     for trajectory, bucket, meta in extract_trajectories_from_kvbatch(
         rl_batch, default_bucket=default_bucket, valid_buckets=bucket_names
     ):
-        # trajectory from v1 extractor is a list of messages; v0 returned {"messages": [...]}
         msgs = trajectory if isinstance(trajectory, list) else trajectory.get("messages", [])
         for msg in msgs:
             if isinstance(msg.get("content"), str):
                 msg["content"] = strip_zw(msg["content"])
         tid = meta.get("task_id") or ""
         groups.setdefault(tid, []).append((trajectory, bucket, meta))
+    return groups
+
+
+def _ingest_winners(rl_batch: Any, buffer: Any, exp_name: str, step: int) -> None:
+    """从 rollout batch 抽每 task_id 的 winner（reward 最高）入 9桶 buffer.
+
+    v1: rl_batch 是 KVBatchMeta，需从 tq 取张量 + tags。用 v1 版 extractor。
+    注意：rollout 轨迹记录(_persist_rollout_status)已上提到 patched_update 统一做，
+    本函数只负责抽 winner 入 buffer + 写 winner 轨迹。"""
+    bucket_names = getattr(buffer, "bucket_names", None)
+    groups = _extract_rollout_groups(rl_batch, bucket_names)
 
     winners = []
     for _tid, candidates in groups.items():
@@ -199,7 +212,6 @@ def _ingest_winners(rl_batch: Any, buffer: Any, exp_name: str, step: int) -> Non
         winners.append(best)
 
     _persist_winners(winners, exp_name, step)
-    _persist_rollout_status(groups, exp_name, step)
 
 
 def _persist_rollout_status(groups: dict, exp_name: str, step: int) -> None:
