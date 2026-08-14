@@ -2268,3 +2268,22 @@ test_agents/test_simulated_session/test_judge_agreement 改四维 mock 后过;�
 **3. v1 字段映射 bug 修复(重要)**：`trajectory_adapter_v1.py` 原从 `tag` 取 bucket/task_id，但 v1 的 `extra_info`(含 bucket/record_id)在 **field** 里不在 tag。导致 `extract_trajectories_from_kvbatch` skip 346/512 轨迹、R0 buffer 每步只进 1 条 winner(应 32)、回放池永远空(`replay_empty=1.0`)。修复：从 `extra_info` field 取 bucket/task_id。`_merge_std_metrics` 改直接取 `rm_scores` 张量算 reward_std/group_reward_std(原走 extractor 也被 bucket 过滤坑)。两者需重启验证。
 
 **4. rollout 成功率记录**：新增记录每 query 的 n=8 rollout 成功/失败状态(见 `_persist_rollout_status`)，排查波动/失败用。每实验启动时清掉上一轮的 `rollouts/training/<exp>/` 防磁盘膨胀。
+
+---
+## §64 — R0 回放首次激活即崩：KVBatchMeta.concat 字段集不匹配（2026-08-13）
+
+§63 的 v1 字段修复生效后，R0 首次真正走到回放（前几版回放全空，从没到过这步）：
+- **step 1 成功**：buffer=32（winner 入库正常），extra_info 取 bucket/task_id 生效，std 指标(reward_mean/std/group_std/num_groups=32)全落盘。
+- **step 2 崩**：`cl_replay_hook_v1._append_replay_rows_v1` → `KVBatchMeta.concat([batch, replay_meta])`
+  → `ValueError: Field names do not match for concatenation`（transfer_queue/metadata.py:1016）。
+
+**根因**：concat 要求回放行与 rollout 行的 tq **field 集合完全一致**。回放行(build_replay_rows 产出)带 3 个 rollout 没有的专属字段：`is_replay` / `replay_response_mask` / `replay_token_weights`。这正是 cl_replay_hook_v1 模块头 + _append_replay_rows_v1 标注的 CLUSTER-TODO（"本机无 tq 无法验证字段对齐"）。
+
+**为何不能简单裁字段**：把回放行裁成只剩 rollout 字段 → 丢了 3 个 replay 标记 → CL loss 的 `_replay_is_empty`(cl_loss.py:110) 检测不到回放行 → 静默跳过 replay loss → 回放白掺(掺了不训)。已试此方案并回退。
+
+**正确修法（待集群，需 transfer_queue API，本机未装无法验证）**：
+- 给 **rollout batch 也补** is_replay=False / replay_response_mask=0 / replay_token_weights=0 三个零值字段，使两边 field 集合一致后再 concat。
+- rollout 数据在 tq（KVBatchMeta 是元数据句柄），补字段需往已存在的 key 写 tq —— 需先探明 KVBatchMeta/tq 是否支持给现有 key 追加 field（kv_batch_put 覆盖？还是有 add_field API？）。
+- 探测脚本：`scripts/_smoke/probe_kvbatch_concat.py`（上集群 `python scripts/_smoke/probe_kvbatch_concat.py` 打印 batch.fields + concat 要求）。
+
+**当前状态**：R0 卡在 step 1 之后（回放一激活就崩）。B1/K2（无 buffer/回放）不受影响，正常训练到 step 66-68、reward 在 coding 桶内上升(0.42→0.52)。
