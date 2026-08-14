@@ -24,6 +24,15 @@ rows only), while ``replay_response_mask`` drives the supervised replay term
 (replay rows only). The two row sets therefore never contaminate each other,
 yet share ONE differentiable forward pass.
 
+Why NOT one mask + ``is_replay`` (asked & rejected, RunLog §65): verl's native
+``ppo_loss`` is a black box we do NOT control -- it reads ONLY ``response_mask``
+(masked_mean / masked_whiten) and never our ``is_replay``. If replay rows kept a
+non-zero ``response_mask``, verl would fold their zero-advantage tokens into the
+PPO denominator (diluting RL) and into ``masked_whiten`` (corrupting the RL
+rows' advantage normalization). So replay ``response_mask`` MUST be 0, and the
+real span has to live in a second field. The redundancy is forced by verl's
+black-box ppo_loss, not a design smell.
+
 Pure helpers (``align_token_weights``, ``select_replay_rows``,
 ``pad_rows_to_seq_len``) are unit-tested without verl. ``build_replay_rows`` is
 tokenizer specific and is validated on the GPU cluster (see doc/Progress.md).

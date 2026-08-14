@@ -2287,3 +2287,53 @@ test_agents/test_simulated_session/test_judge_agreement 改四维 mock 后过;�
 - 探测脚本：`scripts/_smoke/probe_kvbatch_concat.py`（上集群 `python scripts/_smoke/probe_kvbatch_concat.py` 打印 batch.fields + concat 要求）。
 
 **当前状态**：R0 卡在 step 1 之后（回放一激活就崩）。B1/K2（无 buffer/回放）不受影响，正常训练到 step 66-68、reward 在 coding 桶内上升(0.42→0.52)。
+
+---
+## §65 — 回放 concat 字段对齐方案定案（为什么 4 字段 / 2 mask 不可省，2026-08-14）
+
+§64 的 concat 崩溃，讨论了 3 个架构方案，逐一记录**为什么**，避免后人重走弯路。
+
+### concat 校验（集群 probe 实测，transfer_queue/metadata.py:concat）
+```python
+if chunk.fields is not None and set(chunk.fields) != base_fields_set:
+    raise ValueError("Field names do not match for concatenation.")
+```
+- `base_fields = data[0].fields`（= rollout batch 的字段集）
+- 每个 chunk 字段集必须**与 base 完全相等**（不是子集/并集）
+- 合并结果用 base_fields → **replay 专属字段必须进 rollout 侧，否则 worker 不 fetch**
+
+### 三方案权衡（为什么选 A）
+| 方案 | concat | 改 verl | backward | 数学 | 计算代价 |
+|---|---|---|---|---|---|
+| **A 修 concat（选定）** | 需要，补 rollout 字段 | 否 | 1 次合并 | 严格 L_rl+L_replay | 回放搭顺风车，+~20% 前反向，1 次 step |
+| B 拆独立 forward | 不需要 | **是**(拆 engine step) | 1 次合并 | 严格 | 违背不改 verl 铁律 |
+| C 两次 update_actor | 不需要 | 否 | 2 次独立 step | 近似(小 lr) | 多一整次 optimizer step(FSDP offload 不便宜) |
+
+- **为什么不能"分别 forward 一次 backward 不 concat"**：verl `update_actor→train_mini_batch`
+  把 forward+backward+optimizer.step()+zero_grad() **焊死在一个函数**（engine_workers.py:234），
+  不暴露"只 fwd+bwd、我攒梯度、最后一起 step"的口子。要拆=改 verl（方案 B）。
+- **为什么 A 计算反而最省**：C 多一次 optimizer step 的固定开销（梯度 AllReduce + 参数更新 +
+  FSDP 双 offload 换入换出）；A 回放行只多 ~20% 前反向、共享一次 step。
+
+### 为什么必须 2 个 mask（is_replay 无法合并成 1 个）
+用户提议"用一个 response_mask + is_replay 区分"，实测不可行：
+- verl 原生 ppo_loss（core_algos.py，`_resolve_ppo_loss` 黑盒）**只认 `response_mask`**，
+  用它做 masked_mean/masked_whiten，**永远不读我们的 `is_replay`**。
+- 若回放行 `response_mask`=真实段（非 0）→ verl 把回放行也算进 PPO：
+  1. 回放行 advantages=0 进 masked_mean **分母** → 稀释 RL 梯度(~16%)；
+  2. `masked_whiten(advantages, response_mask)` 用回放行零 advantage **污染真实 rollout 行的
+     advantage 归一化**。
+- 故回放行 `response_mask` 必须=0（让 verl PPO 忽略），replay loss 另需真实段 →
+  第二个 mask `replay_response_mask` 不可省。**两 mask 服务两个 loss、需求相反，且其中
+  一个(verl ppo_loss)不是我们能改的** → 冗余是 verl 黑盒逼的，非设计问题。
+
+### A 的实现要点（补 rollout 字段的 tq 语义）
+- concat 两侧字段集需含：`response_mask`(rollout 有) + `replay_response_mask` /
+  `is_replay` / `token_weights`(3 个 replay 专属，rollout 补零值)。
+- 补字段镜像 **verl 自己的做法**：verl 给已存在 key 加 old_log_probs/advantages 用
+  `tq_client.async_put(data=output.select(*fields), metadata=meta)`（transferqueue_utils.py:255）
+  = **字段追加/合并**（非整行替换）。故给 rollout keys 补 3 个零值字段用同一 async_put 路径。
+- `token_weights`：当前 U 形权重关闭(γ=δ=1→全 1)，rollout/replay 都填全 1，语义统一。
+
+**下一步**：按 A 改 `cl_replay_hook_v1._append_replay_rows_v1`（补 rollout 字段 + concat），
+集群重启 R0 验证 step 2 回放非空（replay_empty=0 / replay_loss≠0）。
