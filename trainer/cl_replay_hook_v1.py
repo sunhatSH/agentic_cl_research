@@ -243,19 +243,22 @@ def _persist_rollout_status(groups: dict, exp_name: str, step: int) -> None:
 def _append_replay_rows_v1(batch, replay_rows: dict, rl_batch, shuffle_seed: int = 0):
     """把回放张量写进 tq，返回 (合并后的 KVBatchMeta, 回放 KVBatchMeta).
 
-    步骤：
-      1. 回放行张量(TensorDict) 补齐 rollout 的字段名（is_replay/replay_mask/replay_weights
-         + 镜像 old_log_probs/advantages 零值），rollout 行也已在 rollout 阶段带这些字段
-         （或在此不需要——v1 rollout 产出的字段由 agent_loop 决定，见 CLUSTER-TODO）。
-      2. 生成回放 keys（uid 前缀避免与 rollout key 冲突）。
-      3. kv_batch_put 写进 tq(train 分区)。
-      4. KVBatchMeta.concat([batch, replay_meta]) 合并 keys → 训练时 worker 取到回放行。
+    方案 A（RunLog §65）：concat 要求两 chunk 的 **field 名集合完全相等**
+    （transfer_queue concat: ``set(chunk.fields) != base_fields_set`` 即崩）。
+    rollout 行天然没有 3 个 replay 专属字段（is_replay / replay_response_mask /
+    replay_token_weights），故：
+      1. 回放行 TensorDict 对齐 rollout 字段（缺补零）+ 带 3 个 replay 专属字段。
+      2. 写回放行进 tq(train 分区)，建 replay_meta。
+      3. **给 rollout keys 补 3 个 replay 专属字段的零值**（镜像 verl 给已存在 key 加
+         old_log_probs/advantages 的 async_put 追加语义，transferqueue_utils.py:255）。
+      4. 用扩展后的 fields 重建 batch meta → concat 两侧字段集一致 → 通过。
 
-    ⚠️ CLUSTER-TODO：回放行的字段名/形状必须与 v1 rollout 写进 tq 的字段完全对齐
-    （KVBatchMeta.concat 校验 fields 集合一致）。具体字段由 session_worker 写入决定，
-    集群实测对齐。本机给出结构，字段清单标注在 _replay_tensordict。"""
+    ⚠️ 集群验证项：本机无 transfer_queue，kv_batch_put 对已存在 key 是否"追加字段"
+    （非整行替换）需集群实测（verl 自身用同路径加字段，强证据为追加）。"""
     try:
+        import torch
         import transfer_queue as tq
+        from tensordict import TensorDict
         from transfer_queue import KVBatchMeta
     except ImportError:
         return batch, None
@@ -276,17 +279,55 @@ def _append_replay_rows_v1(batch, replay_rows: dict, rl_batch, shuffle_seed: int
         partition_id=_REPLAY_PARTITION,
         fields=list(fields_td.keys()),
     )
+
+    # ── 给 rollout keys 补 3 个 replay 专属字段（零值），使字段集与回放行一致 ──
+    rollout_keys = list(getattr(batch, "keys", []) or [])
+    batch_fields = list(getattr(batch, "fields", None) or [])
+    replay_only = [k for k in ("is_replay", "replay_response_mask", "replay_token_weights") if k not in batch_fields]
+    if rollout_keys and replay_only:
+        m = len(rollout_keys)
+        # response 段宽度 R：优先取回放行的（与回放 mask/weights 同宽），回退 1。
+        rmask = fields_td.get("replay_response_mask") if "replay_response_mask" in fields_td.keys() else None
+        R = rmask.shape[1] if rmask is not None and rmask.dim() == 2 else 1
+        zeros: dict = {}
+        for k in replay_only:
+            if k == "is_replay":
+                zeros[k] = torch.zeros(m, dtype=torch.bool)
+            elif k == "replay_response_mask":
+                zeros[k] = torch.zeros((m, R), dtype=torch.long)
+            else:  # replay_token_weights
+                zeros[k] = torch.zeros((m, R), dtype=torch.float32)
+        tq.kv_batch_put(
+            keys=rollout_keys,
+            partition_id=getattr(batch, "partition_id", _REPLAY_PARTITION),
+            fields=TensorDict(zeros, batch_size=m),
+        )
+        # 用扩展后的 fields 重建 batch meta（concat 读 data[0].fields 作 base）。
+        batch = KVBatchMeta(
+            keys=rollout_keys,
+            tags=list(getattr(batch, "tags", []) or []),
+            partition_id=getattr(batch, "partition_id", _REPLAY_PARTITION),
+            fields=batch_fields + replay_only,
+            extra_info=getattr(batch, "extra_info", None),
+        )
+
     merged = KVBatchMeta.concat([batch, replay_meta])
     return merged, replay_meta
 
 
 def _replay_tensordict(replay_rows: dict, batch):
-    """把 prepare_replay_rows 产出的张量 dict 转成 tq 需要的 TensorDict.
+    """把 prepare_replay_rows 产出的张量 dict 转成 tq 需要的 TensorDict，字段对齐 rollout.
 
-    replay_rows 结构（build_replay_rows 产出）：prompts/responses/response_mask/
-    replay_response_mask/replay_token_weights/is_replay + 镜像 old_log_probs/advantages。
-    ⚠️ CLUSTER-TODO：与 v1 rollout 写 tq 的字段对齐（见 _append_replay_rows_v1 说明）。"""
+    方案 A（RunLog §65）：concat 要求回放行字段集 == rollout(``batch.fields``)。故：
+      · rollout 有、回放也有 → 用回放值；
+      · rollout 有、回放没有 → 补零（序列字段 [n,P+R]，response 段字段 [n,R]，标量 [n]）；
+      · 回放专属 3 字段（is_replay/replay_response_mask/replay_token_weights）→ 保留
+        （rollout 侧由 _append_replay_rows_v1 补零值对齐）。
+    build_replay_rows 产出：prompts/responses/input_ids/attention_mask/position_ids/
+    response_mask(=0)/replay_response_mask/replay_token_weights/is_replay + 镜像
+    old_log_probs/ref_log_prob/advantages 零值。"""
     try:
+        import torch
         from tensordict import TensorDict
     except ImportError:
         return None
@@ -297,7 +338,32 @@ def _replay_tensordict(replay_rows: dict, batch):
     if not rows:
         return None
     n = next(iter(rows.values())).shape[0]
-    return TensorDict(rows, batch_size=n)
+
+    batch_fields = list(getattr(batch, "fields", None) or [])
+    replay_only = ("is_replay", "replay_response_mask", "replay_token_weights")
+    if not batch_fields:
+        # 拿不到 rollout 字段集（本机/降级）→ 按回放自有字段走（旧行为）。
+        return TensorDict(rows, batch_size=n)
+
+    resp = rows.get("responses")
+    R = resp.shape[1] if resp is not None and resp.dim() == 2 else 1
+    inp = rows.get("input_ids")
+    T = inp.shape[1] if inp is not None and inp.dim() == 2 else R
+
+    aligned: dict = {}
+    # rollout 声明的字段：回放有就用，没有补零。
+    for f in batch_fields:
+        if f in rows:
+            aligned[f] = rows[f]
+        else:
+            width = T if f in ("input_ids", "attention_mask", "position_ids") else R
+            dtype = torch.long if f in ("input_ids", "attention_mask", "position_ids", "prompts", "responses", "response_mask") else torch.float32
+            aligned[f] = torch.zeros((n, width), dtype=dtype)
+    # 3 个 replay 专属字段（rollout 侧会补零对齐）。
+    for f in replay_only:
+        if f in rows:
+            aligned[f] = rows[f]
+    return TensorDict(aligned, batch_size=n)
 
 
 def _clear_replay_keys(replay_meta) -> None:
