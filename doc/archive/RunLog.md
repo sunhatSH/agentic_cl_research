@@ -2358,3 +2358,34 @@ if chunk.fields is not None and set(chunk.fields) != base_fields_set:
 - 待证：下次重启后看 group_reward_std（B1/K2 当前是修复前启动，没这个指标）。
 
 **方向**：考察切换到 3-5 难度（更简单）是否缓解（见 §66 难度分布普查）。
+
+---
+## §67 — 训练数据每 step 难度分布 + 对比实验消除难度差异（2026-08-14）
+
+**数据组织**（train.parquet，16,000 行 = 5 桶 × 100 step × 32 行，random.shuffle 后按桶顺序）：
+- 每 step 都是 3-4 种难度混合，无单一难度 step。
+- 但【难度占比固定】+ 桶间难度梯度明显：
+
+| 桶 | 难度4 | 难度5 | 难度6 | 难度7 |
+|---|---|---|---|---|
+| coding | 14.7 | 12.1 | 5.2 | — |
+| office | 16.6 | 11.9 | 3.5 | — |
+| ops | 12.8 | 11.9 | 7.4 | — |
+| research | 1.1 | 4.0 | **16.2** | **10.7** |
+| workflow | 1.9 | 6.8 | **19.1** | 4.2 |
+
+- 前 300 step（coding/office/ops）简单为主（难度 4 占半）；后 200 step（research/workflow）
+  困难为主（难度 6 是主体）。故 reward 曲线预期：step 300 切 research 时明显跳水。
+
+**reward 双峰根因（§66 修正）**：不是组内 tie。实测组内 std(0.24) > 组间 std(0.16)，组内有信号。
+reward 双峰来自 task_done 0/1 门槛：完成 reward=0.4*correctness+0.4*trajectory+0.2（0.6~1.0），
+未完成 reward=0.4*trajectory（≤0.4），完成与否差 0.6 分。要判断"学没学动"，看 task_done 完成率
+趋势，不是 reward 均值。
+
+**评估方法（关键）**：对比实验（B1/K2/R0）用同一份 train.parquet，每 step 难度分布完全一致，
+难度导致的 reward 波动在三实验同步出现。故做【组间差值/相对对比】时难度波动自动抵消，不受
+"step 间难度变化"干扰。reward 绝对值的跳水（如 step 300 切 research）不影响防遗忘结论——三个
+实验一起跳水，比的是谁防遗忘好。
+
+**难度 6 判断难**：coding/office/ops 里难度 6 仅 3-7 条/step，样本太少；真正判断难度 6 学不学
+得动要看 research/workflow 桶（难度 6 是主力 16-19 条/step）。
