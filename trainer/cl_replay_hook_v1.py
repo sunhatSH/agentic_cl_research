@@ -315,17 +315,40 @@ def _append_replay_rows_v1(batch, replay_rows: dict, rl_batch, shuffle_seed: int
     return merged, replay_meta
 
 
+_REPLAY_ONLY_FIELDS = ("is_replay", "replay_response_mask", "replay_token_weights")
+_SEQ_FIELDS = ("input_ids", "attention_mask", "position_ids")
+_LONG_FIELDS = ("input_ids", "attention_mask", "position_ids", "prompts", "responses", "response_mask")
+
+
+def plan_replay_fields(replay_field_names, batch_fields):
+    """纯函数：算回放 TensorDict 应含哪些字段、各字段来源（复用回放值还是补零）。
+
+    方案 A（RunLog §65）：concat 要求回放字段集 == rollout(batch_fields)。返回：
+      {field: "use"}  —— rollout 声明且回放有 → 用回放值
+      {field: "zero"} —— rollout 声明但回放没有 → 补零
+      + 3 个 replay 专属字段（回放有则 "use"）
+    batch_fields 为空（拿不到 rollout 字段）→ 返回 None（调用方走旧行为：直接用回放全字段）。
+
+    抽成纯函数是为了【离线单测】字段对齐（tensordict/torch 本机没装，真函数进不去）。"""
+    batch_fields = list(batch_fields or [])
+    if not batch_fields:
+        return None
+    have = set(replay_field_names)
+    plan: dict[str, str] = {}
+    for f in batch_fields:
+        plan[f] = "use" if f in have else "zero"
+    for f in _REPLAY_ONLY_FIELDS:
+        if f in have:
+            plan[f] = "use"
+    return plan
+
+
 def _replay_tensordict(replay_rows: dict, batch):
     """把 prepare_replay_rows 产出的张量 dict 转成 tq 需要的 TensorDict，字段对齐 rollout.
 
-    方案 A（RunLog §65）：concat 要求回放行字段集 == rollout(``batch.fields``)。故：
-      · rollout 有、回放也有 → 用回放值；
-      · rollout 有、回放没有 → 补零（序列字段 [n,P+R]，response 段字段 [n,R]，标量 [n]）；
-      · 回放专属 3 字段（is_replay/replay_response_mask/replay_token_weights）→ 保留
-        （rollout 侧由 _append_replay_rows_v1 补零值对齐）。
-    build_replay_rows 产出：prompts/responses/input_ids/attention_mask/position_ids/
-    response_mask(=0)/replay_response_mask/replay_token_weights/is_replay + 镜像
-    old_log_probs/ref_log_prob/advantages 零值。"""
+    方案 A（RunLog §65）：concat 要求回放行字段集 == rollout(``batch.fields``)。
+    字段选择逻辑抽到纯函数 ``plan_replay_fields``（离线可单测）；本函数只按 plan
+    组装 torch 张量。补零形状：序列字段 [n,P+R]，response 段字段 [n,R]。"""
     try:
         import torch
         from tensordict import TensorDict
@@ -339,9 +362,8 @@ def _replay_tensordict(replay_rows: dict, batch):
         return None
     n = next(iter(rows.values())).shape[0]
 
-    batch_fields = list(getattr(batch, "fields", None) or [])
-    replay_only = ("is_replay", "replay_response_mask", "replay_token_weights")
-    if not batch_fields:
+    plan = plan_replay_fields(list(rows.keys()), getattr(batch, "fields", None))
+    if plan is None:
         # 拿不到 rollout 字段集（本机/降级）→ 按回放自有字段走（旧行为）。
         return TensorDict(rows, batch_size=n)
 
@@ -351,19 +373,15 @@ def _replay_tensordict(replay_rows: dict, batch):
     T = inp.shape[1] if inp is not None and inp.dim() == 2 else R
 
     aligned: dict = {}
-    # rollout 声明的字段：回放有就用，没有补零。
-    for f in batch_fields:
-        if f in rows:
+    for f, src in plan.items():
+        if src == "use":
             aligned[f] = rows[f]
-        else:
-            width = T if f in ("input_ids", "attention_mask", "position_ids") else R
-            dtype = torch.long if f in ("input_ids", "attention_mask", "position_ids", "prompts", "responses", "response_mask") else torch.float32
+        else:  # zero
+            width = T if f in _SEQ_FIELDS else R
+            dtype = torch.long if f in _LONG_FIELDS else torch.float32
             aligned[f] = torch.zeros((n, width), dtype=dtype)
-    # 3 个 replay 专属字段（rollout 侧会补零对齐）。
-    for f in replay_only:
-        if f in rows:
-            aligned[f] = rows[f]
     return TensorDict(aligned, batch_size=n)
+
 
 
 def _clear_replay_keys(replay_meta) -> None:
