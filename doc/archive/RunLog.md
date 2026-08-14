@@ -2337,3 +2337,24 @@ if chunk.fields is not None and set(chunk.fields) != base_fields_set:
 
 **下一步**：按 A 改 `cl_replay_hook_v1._append_replay_rows_v1`（补 rollout 字段 + concat），
 集群重启 R0 验证 step 2 回放非空（replay_empty=0 / replay_loss≠0）。
+
+---
+## §66 — B1/K2 首轮中等难度(4-6)训练观察：reward 涨不动 = 组间方差大/组内 tie(2026-08-14)
+
+**实验状态（关停时）**：B1 step 75、K2 step 73，都在 coding 桶，未跨桶。
+
+**现象**：reward 从 ~0.42 缓慢升到 ~0.50 后趋平，用户判断"涨不动"。
+
+**关键数据**（B1 末 step）：
+- `critic/rewards/max=0.99`、`min=0.0`、`cl/reward_std=0.35`（全局 std，跨 256 轨迹）
+- R0 早先实测 `group_reward_std≈0.24`（组内 std）< 全局 0.35
+
+**根因分析（未完全证实，待 group_reward_std 落盘确认）**：
+- 全局 std 大 ≠ GRPO 学习信号强。GRPO advantage 用【组内】(同 query 8 条 rollout) 归一化。
+- 高方差若来自【query 间难度差异】（简单 query 8 条全对、难 query 8 条全 0）→ 组内 tie →
+  advantage≈0 → 学不动。
+- 推断：中等难度(4-6)对 9B 偏难，模型对部分 query 完全做不出（8 条全 0），对部分 query 轻松
+  （8 条全高分），分化发生在 query 间而非 query 内。
+- 待证：下次重启后看 group_reward_std（B1/K2 当前是修复前启动，没这个指标）。
+
+**方向**：考察切换到 3-5 难度（更简单）是否缓解（见 §66 难度分布普查）。
