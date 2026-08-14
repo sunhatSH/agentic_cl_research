@@ -21,8 +21,16 @@ actor_rollout_ref:
 
   # Base model -- Qwen3.6-27B (https://huggingface.co/Qwen/Qwen3.6-27B).
   # Override `path` to a local cache (e.g. /mnt/afs/models/qwen3.6-27b/).
+  #
+  # ★ 训练起点 = π₀（初始 Qwen3.6-27B），所有 21 实验 + baseline 一致（2026-07-04 定案）。
+  #   禁止把某个 phase 的 model.path 改成"接上个 phase 选中的 ckpt"——那会污染
+  #   ablation 可比性（分不清是本 phase 参数好还是继承的底子好）。上个 phase 只传
+  #   "选中的超参配置"（λ2 / replay 类型），不传权重。"局部最优拼起来不优"由 Phase 4
+  #   组合验证兜底。详见 doc/eval/训练与评测总思路_产物结构.md §2.3。
+  #   注意区分：model.path = 训练起点（恒 = π₀）；ref.path = KL 锚点 π_ref（K4/K5 才用
+  #   π_{t-1}，那只影响 KL 往哪拉，不影响训练起点）。
   model:
-    path: Qwen/Qwen3.6-27B
+    path: /mnt/afs_agents/share_models/Qwen/Qwen3.6-27B   # π₀ 本地权重(非 HF 名);cluster 覆盖为 /tmp/qwen36
 
   # Rollout (generation) config
   rollout:
@@ -38,9 +46,15 @@ actor_rollout_ref:
     #   sessions_per_step: 16       # 16 sessions in parallel (x n slots = 128)
     #   sandbox_backend: e2b        # 'e2b' (Tencent) on cluster, 'local' for dev; 'aliyun' (AgentBay) = stub/留空
 
-  # Reference policy pi_ref -- pi_0 (initial) or pi_{t-1} (prev stage ckpt).
-  ref:
-    path: ???                     # set per experiment
+  # Reference policy pi_ref -- KL 锚点。
+  # verl 0.8.0:ref policy 融合进 actor worker,其权重路径**统一取共享的
+  # actor_rollout_ref.model.path**(main_ppo.py:264),ref 段本身**不接受** `path`
+  # 或 `model` 子键(schema 为 FSDPActorConfig 类)。之前这里填扁平 `ref.path:
+  # 27B` 会被合并进 ref config → 开 KL 的实验(K*)构造 ref 时
+  # `FSDPActorConfig.__init__() got unexpected keyword 'path'` 崩(b1 无 KL 不建 ref
+  # 故不崩)。故此处**不设 path**;ref 用共享 model.path(=π₀ 的 9B)。若要 π_{t-1}
+  # 锚点(K4/K5),改共享 model.path 或用 verl 支持的 ref 专属字段,不要加扁平 path。
+  ref: {}
 
   # Actor (policy optimization) config
   actor:
@@ -55,10 +69,11 @@ actor_rollout_ref:
 
 # Data
 data:
-  train_files: ???                # set per experiment / on cluster
-  val_files: ???
-  train_batch_size: 1024
-  gen_batch_size: 1024
+  # 打标后的训练数据(scripts/labeled_to_parquet.py 产物)。可用 TRAIN_FILES/VAL_FILES 覆盖。
+  train_files: ${oc.env:TRAIN_FILES,/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet}
+  val_files: ${oc.env:VAL_FILES,/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet}
+  train_batch_size: 256            # 每步新 rollout 条数
+  gen_batch_size: 256              # rollout 生成 batch（对齐 train）
   dataloader_num_workers: 4
 
 # Algorithm
@@ -69,8 +84,15 @@ algorithm:
 # A single frozen LLM judge grades every trajectory on one consistent scale.
 # verl naive manager calls trainer/model_reward.py::compute_score per sample;
 # the judge model is NOT hardcoded -- it is resolved from env (launch with
-# scripts/serve_reward_model.sh, then export JUDGE_API_BASE + JUDGE_MODEL).
+# scripts/serve_reward_model.sh, then export REWARD_API_BASE + REWARD_MODEL).
 reward:
+  # 训练 reward 在 ROLLOUT 阶段内联算好并写进 rm_scores(cl_rollout_manager.py:
+  # generate_sequences -> _score_all_slots(observer diff + judge) -> t.reward ->
+  # trajectories_to_dataproto 的 rm_scores 张量)。verl use_rm=false 时直接读
+  # batch["rm_scores"],不调用 reward_manager。故 reward_manager 用默认 naive 即可
+  # (不会被调,rm_scores 已存在);custom_reward_function 作兜底路径留着。
+  # 注:trainer/observer_reward_manager.py 是那条「verl reward-loop」平行路径的适配,
+  # 当前不接入(reward 走 rollout 内联),保留仅备用,见该文件顶部说明。
   reward_manager:
     name: naive
   custom_reward_function:
@@ -82,7 +104,16 @@ reward:
 # Continual Learning -- replay buffer config (read by trainer/cl_main.py)
 cl:
   lambda_replay: 0.0              # lambda_3, set per experiment
-  replay_batch_size: 32
+  # 自定义 rollout 参数(verl 不解析 cl 段,故放这里而非 rollout.agent —— 后者是
+  # AgentLoopConfig 严格 dataclass,塞自定义 key 会 TypeError,见 debug doc §21)。
+  # 由 trainer/cl_rollout_manager 从 self.config.cl.rollout 读。
+  rollout:
+    sessions_per_step: 64         # rollout 并发:同时跑的轨迹数(per-row,每 session 1 条)。
+                                  # 512条/step;=64→8批,=512→1批。须 <= lightllm running_max_req_size。
+                                  # 每实验在 run/ 覆盖。
+  replay_batch_size: 64           # buffer 回放，拼在 train_batch(256) 上。20% 回放比
+                                  # batch 前向消化显存。足量以覆盖 9 桶 + 每 mini batch 都
+                                  # 有 replay 行(CL loss 每步生效)。旧值 32 太稀疏(~2/mini batch)
   replay_warmup_size: 0           # >0: linearly ramp replay batch while buffer
                                   # fills (cold-start); 0 = full batch immediately
   # Paper-evidence cadences (steps; 0 disables). See trainer/replay_metrics.py.
@@ -95,19 +126,79 @@ cl:
                                   # L_replay has old experience from step 0).
                                   # null/empty = start empty. Missing file is a
                                   # hard error (mis-set path should fail loud).
-    num_buckets: 7
+    num_buckets: 9
     total_capacity: 25000
-    q_min: 2000
-    alpha: 0.5
+    alpha: 0.5                      # 任务→容量映射曲线：√ 加权（次线性）。见 bucket_caps 说明。
+    # 桶体系(2026-07-04)= ClawEval 官方 category 合并(去多模态)。单层、无子桶。
+    # 定义+官方 category 映射见 runs/_analysis/capability_buckets/buckets.json。
+    # task_counts = 评测集分布(195 纯文本，含12条user_agent多轮按首轮归桶)，作 quota 权重基准。
     bucket_names:
-      - Workflow
-      - SysOps
-      - Dialogue
-      - Finance
-      - Communication
-      - Knowledge
-      - OfficeQA
-    bucket_task_counts: [54, 52, 38, 18, 12, 11, 10]
+      - workflow                    # 工作流编排 (workflow+productivity+organization)
+      - ops                         # 系统操作 (ops+operations+terminal+file_ops)
+      - qa                          # 问答检索 (what+knowledge+comprehension+memory)
+      - finance                     # 财务金融 (finance+procurement)
+      - office                      # 办公文档 (office_qa+data_analysis)
+      - communication               # 沟通表达 (communication+content+rewriting)
+      - safety                      # 安全合规 (safety+security+compliance)
+      - coding                      # 代码 (coding)
+      - research                    # 研究综合 (research+synthesis)
+    bucket_task_counts: [56, 44, 36, 20, 11, 11, 9, 2, 6]
+    # ── 桶容量上限（soft_target / cap）与初始比例 ──────────────────────────────
+    # 由 allocate_quota(C=25000, task_counts, α=0.5) 计算并在此固化，
+    # 便于直接查阅 / 手动微调（运行时 BucketReplayBuffer 也会按同公式重算，二者一致）。
+    # 公式：cap_i = C · n_i^0.5 / Σ_j n_j^0.5
+    # 为什么 α=0.5（平方根加权，非按比例 α=1 / 非均匀 α=0）：
+    #   - α=1（按比例）：workflow 28.7% vs coding 3.1%，比值 9.3:1——大桶碾压、长尾饿死。
+    #   - α=0（均匀）：全 11.1%，无视任务分布，主流能力吃亏。
+    #   - α=0.5（本方案）：workflow 19.7% vs coding 3.7%，比值压到 5.3:1——大桶温和倾斜、
+    #     小桶被抬起来。兼顾"评测里主流能力占比高该多回放" + "长尾能力不被遗忘"。
+    # 各桶容量占比%（= √n_i 归一化）与上限值（cap）：
+    #   workflow      19.7%  cap=4915
+    #   ops           17.4%  cap=4354
+    #   qa            15.8%  cap=3938
+    #   finance       11.7%  cap=2935
+    #   office         8.7%  cap=2177
+    #   communication  8.7%  cap=2177
+    #   safety         7.9%  cap=1969
+    #   research       6.4%  cap=1607
+    #   coding         3.7%  cap= 928
+    #   合计 25000
+    bucket_caps: [4915, 4354, 3938, 2935, 2177, 2177, 1969, 928, 1607]
+    # ── 桶容量下限（hard floor，淘汰保护线）= 各桶 cap 的 1/30 ────────────────
+    # 淘汰只在桶内做（禁止跨桶挤出），下限以下不可淘汰。
+    # 顺序对齐 bucket_names/task_counts。
+    #   workflow 163  ops 145  qa 131  finance 97  office 72
+    #   communication 72  safety 65  coding 30  research 53
+    bucket_floors: [163, 145, 131, 97, 72, 72, 65, 30, 53]
+    # Bucket-level replay sampling strategy (2026-07-23: only `distance` remains;
+    # `uniform`/`quota` archived). distance weights each replay bucket by its
+    # capability-space distance from the CURRENT BATCH's bucket centroid -- a
+    # batch may mix buckets (multi-turn sessions expand to per-turn GRPO groups,
+    # or one bucket's tail blends into the next's head), so the "current
+    # position" is the batch-weighted centroid Σ (n_i/batch) * coords[bucket_i].
+    # Farther buckets = higher forgetting risk = higher replay weight. Buckets
+    # in the current batch sit at the centroid and get ~0 (on-policy now).
+    # The CLEAR baseline (uniform over the whole pool, no bucket awareness) is
+    # selected by within_bucket_sampling='uniform' + non-reservoir eviction,
+    # not by this key.
+    bucket_strategy: distance
+
+    # ── 距离度量（2026-08-08 加入 R 阶段实验变量）────────────────────────
+    # euclidean = 欧氏距离(L2), manhattan = 曼哈顿距离(L1)。
+    # 曼哈顿对每维独立评分场景更合理(维间不可互换,差异直接叠加)。
+    # R 系列实验可 override 此值做 ablation。
+    distance_metric: euclidean
+
+    # ── 桶内采样 + 桶内淘汰(2026-08-05 重构指南定稿)─────────────────────────
+    # within_bucket_sampling: 桶被选中后,桶内取哪几条 replay。
+    #   uniform(默认/新方向)= 桶内随机;priority 暂搁置(优先级复杂,后续再看有无更优)。
+    #   回放权重按"距离"加权由 bucket_strategy 管;桶内不再用 priority。
+    within_bucket_sampling: uniform
+    # eviction_type: 桶满(超 soft_target)后淘汰谁。桶内淘汰,禁跨桶挤出。
+    #   fifo(默认/新方向)= 淘汰最早进桶的(insert 顺序)。淘汰算法暂定 FIFO,
+    #   可选 priority(复杂,先不用)/reservoir(R0 CLEAR baseline 显式用)。
+    eviction_type: fifo
+
   weighting:
     scheme: W0                    # W0 = gamma=delta=1 (flat, priority-only).
                                   # W2 = active U-shape (gamma=delta=0.88).
@@ -138,4 +229,15 @@ trainer:
   total_training_steps: 100       # verl: total_training_steps (was total_steps)
   save_freq: 25
   test_freq: 25
-  logger: ['console', 'swanlab']   # SWANLAB_API_KEY via scripts/load_training_env.sh
+  project_name: agentic-cl        # swanlab 项目名（各实验在 swanlab.cn/@you/agentic-cl 下）
+  # experiment_name: 各 phaseN/exp.yaml 覆盖（如 b1 / r4），verl 据此建 swanlab run
+  # logger 用字面 list（不用 ${oc.decode:...} 插值）：oc.decode 按 OmegaConf 设计只能返回
+  # 标量，返回 list 会在 verl_runner 的 OmegaConf.resolve 阶段报 UnsupportedValueType。
+  # 想切后端就改这行；各实验 config 可覆盖（如 b1_9b 只留 [console]）。
+  logger: [console, swanlab]   # SWANLAB_API_KEY via load_training_env.sh
+  # 全量记录（正式训练）：验证生成文本记 SwanLab + rollout/val 文本落盘。
+  # 路径由 run_phases.sh 按实验注入 logs/experiments/<phase>/<exp>/{rollout,val}；
+  # 不设 env 时为 null（本地 debug 不强制落盘）。
+  log_val_generations: 50
+  rollout_data_dir: ${oc.decode:${oc.env:ROLLOUT_DATA_DIR,null}}
+  validation_data_dir: ${oc.decode:${oc.env:VAL_DATA_DIR,null}}

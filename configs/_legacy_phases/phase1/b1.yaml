@@ -1,0 +1,16 @@
+# Phase 1 / B1 — 纯 RL 遗忘基线
+# 继承 configs/base.yaml，无 KL、无 Replay，仅 RL + entropy bonus
+# 验证目标：量化灾难性遗忘程度（遗忘下界）
+
+defaults:
+  - ../../base
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0            # lambda_2 = 0
+
+cl:
+  lambda_replay: 0.0             # lambda_3 = 0
+  buffer:
+    enabled: false

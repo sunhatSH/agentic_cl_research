@@ -1,0 +1,28 @@
+# Phase 0 / P0-A — 冷启动数据来源消融：纯 on-policy (100% Qwen3.6-27B)
+# 见 doc/Plan_冷启动数据来源消融.md
+#
+# 五臂唯一变量 = 冷启动 buffer 的 27B:gpt5 来源配比。其余全部锁死为 R4 配置
+# (lambda_replay=0.5, 抗遗忘 priority, 两级采样, lambda_kl=0)，短RL 验收固定
+# 新任务种子 + 同随机 seed，保证唯一变量是 warmup_path 指向的 buffer 来源。
+#
+# 本臂 buffer 由: warmup_buffer.py --ratio-27b 1.0 生成。
+defaults:
+  - ../base
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+
+cl:
+  lambda_replay: 0.5
+  buffer:
+    enabled: true
+    num_buckets: 9
+    warmup_path: data/mock/buffer_dumps/p0-a_27b100.sqlite   # 100% pi0_27b
+  weighting:
+    scheme: W0
+
+trainer:
+  experiment_name: p0-a-src-27b100
+  total_training_steps: 30        # 短RL 验收：只看趋势与稳定性，不追收敛

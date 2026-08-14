@@ -184,9 +184,7 @@ def test_cl_loss_with_replay_adds_weighted_term():
     # Inject a fake RL loss via base_loss_fn (bug-1: closure takes no config).
     _ensure_verl_losses_mock()
     base = MagicMock(return_value=(torch.tensor(2.0), {}))
-    loss_fn = make_cl_loss(
-        replay_enabled=True, lambda_replay=0.5, weighting_scheme="W0", base_loss_fn=base
-    )
+    loss_fn = make_cl_loss(replay_enabled=True, lambda_replay=0.5, weighting_scheme="W0", base_loss_fn=base)
     data = MagicMock()
     with patch("trainer.cl_loss._replay_is_empty", return_value=False):
         with patch("trainer.cl_loss.compute_replay_loss", return_value=torch.tensor(1.0)):

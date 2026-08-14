@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import Any
 
 from agents.observer import Observer
 from agents.questioner import Questioner
@@ -94,9 +93,7 @@ def run_usersim_session(
             # Observe (diff-driven): observer MODEL sees STATE only; trajectory carried
             # pass-through on the report. One post-snapshot, carried forward (#2).
             post = observer.snapshot(sandbox)
-            report = observer.observe(
-                sandbox, actor_trajectory=traj.messages, baseline=baseline, post=post
-            )
+            report = observer.observe(sandbox, actor_trajectory=traj.messages, baseline=baseline, post=post)
             prev_post = post
             result.reports.append(report)
 

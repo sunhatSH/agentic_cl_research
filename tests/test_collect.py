@@ -34,7 +34,7 @@ def _mock_generate():
         if calls["n"] % 2 == 1:
             text = '<toolcall>{"tool": "sandbox.exec_python", "code": "print(23*17-19)"}</toolcall>'
             return GenStep(text=text, response_ids=[10, 11, 12], logprobs=[-0.1, -0.2, -0.3])
-        text = "结果是 372。\n<task_domain>Finance</task_domain>"
+        text = "结果是 372。\n<task_domain>finance</task_domain>"
         return GenStep(text=text, response_ids=[20, 21], logprobs=[-0.05, -0.06])
 
     return gen
@@ -54,12 +54,14 @@ def test_react_agent_collects_native_fields():
     assert sum(mask) == 5  # 3 + 2 generated tokens
     assert len(mask) == len(traj.response_token_ids) == len(traj.logprobs)
     assert mask.count(0) >= 1  # at least one observation token, masked
-    assert traj.bucket == "Finance"  # parsed from <task_domain>
+    assert traj.bucket == "finance"  # parsed from <task_domain>
     # transcript has assistant + sandbox observation (user) messages
     roles = [m["role"] for m in traj.messages]
     assert "assistant" in roles
     # sandbox observations use role='user' with '[Sandbox Output]' prefix
-    sandbox_msgs = [m for m in traj.messages if m["role"] == "user" and m["content"].startswith("[Sandbox Output]")]
+    sandbox_msgs = [
+        m for m in traj.messages if m["role"] == "user" and m["content"].startswith("[Sandbox Output]")
+    ]
     assert len(sandbox_msgs) >= 1
 
 
@@ -68,14 +70,14 @@ def test_trajectory_to_buffer_item_carries_logprobs():
     traj = agent_fn(MockSandbox(), "q", {}, slot_idx=1)
     traj.reward = 1.0
     payload, bucket, meta = trajectory_to_buffer_item(traj)
-    assert bucket == "Finance"
+    assert bucket == "finance"
     assert meta["original_logprobs"] == traj.logprobs
     assert meta["reward"] == 1.0
     assert "response_token_ids" in payload and "response_mask" in payload
 
 
 def test_full_chain_into_buffer():
-    """scheduler (2×2 mock) -> score -> ingest into real 7-bucket buffer."""
+    """scheduler (2×2 mock) -> score -> ingest into real 9-bucket buffer."""
     agent_fn = make_react_agent_fn(_mock_generate(), max_turns=4)
     sched = RolloutScheduler(
         agent_fn,
@@ -92,9 +94,9 @@ def test_full_chain_into_buffer():
     for t in trajs:
         t.reward = 1.0 if "372" in (t.messages[-1]["content"]) else 0.0
 
-    buffer = BucketReplayBuffer(total_capacity=700, q_min=50)
+    buffer = BucketReplayBuffer(total_capacity=700, bucket_floors=[10]*9)
     counts = ingest_trajectories(buffer, trajs, valid_buckets=buffer.bucket_names)
-    assert counts["added"] == 8  # all tagged Finance
+    assert counts["added"] == 8  # all tagged finance
     assert counts["skipped"] == 0
     stats = buffer.stats()
     assert stats["total_size"] == 8

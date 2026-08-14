@@ -53,9 +53,7 @@ def test_extract_empty_when_no_fields():
 
 
 def test_replay_sample_to_metadata_injects_messages():
-    meta = replay_sample_to_metadata(
-        ("tid1", [{"role": "assistant", "content": "x"}], {"priority": 1.0})
-    )
+    meta = replay_sample_to_metadata(("tid1", [{"role": "assistant", "content": "x"}], {"priority": 1.0}))
     assert meta["messages"][0]["role"] == "assistant"
 
 
@@ -85,7 +83,7 @@ def test_signals_feed_nonzero_priority():
         "original_logprobs": [-1.0, -1.0],
         "current_logprobs": [-1.5, -1.5],  # drift 0.5 -> forgetting_risk 0.5
         "pattern_id": "p",
-        "success_rate": 0.4,                # difficulty 0.6
+        "success_rate": 0.4,  # difficulty 0.6
     }
     score = p.compute(traj, {"pattern_counts": {"p": 0}})  # rarity 1.0
     # 0.5*0.5 + 0.25*1.0 + 0 + 0.25*0.6 = 0.25 + 0.25 + 0.15 = 0.65

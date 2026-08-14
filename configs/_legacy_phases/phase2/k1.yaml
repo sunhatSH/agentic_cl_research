@@ -1,0 +1,19 @@
+# Phase 2 / K1 — 弱 KL + 初始锚定
+# 继承 configs/base.yaml
+# 对照轴：lambda_2 扫描 (K1 → K2 → K3)
+
+defaults:
+  - ../../base
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: true
+    kl_loss_coef: 0.01           # lambda_2 = 0.01 (弱)
+    kl_loss_type: low_var_kl     # reverse KL
+  ref:
+    path: ???                    # pi_0 初始 checkpoint
+
+cl:
+  lambda_replay: 0.0             # lambda_3 = 0, 无 replay
+  buffer:
+    enabled: false

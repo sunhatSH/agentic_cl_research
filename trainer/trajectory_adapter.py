@@ -77,9 +77,7 @@ def _domain_from_messages(trajectory: Any, valid_buckets: list[str] | None) -> s
             continue
         content = msg.get("content")
         if isinstance(content, list):
-            content = "\n".join(
-                p.get("text", "") if isinstance(p, dict) else str(p) for p in content
-            )
+            content = "\n".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content)
         domain = parse_domain(content, valid_buckets) if isinstance(content, str) else None
         if domain is not None:
             return domain
@@ -101,7 +99,7 @@ def extract_trajectories_from_batch(
     if present in ``non_tensor_batch``.
 
     Bug B12: rows without a resolvable bucket are SKIPPED (and counted in a
-    warning) rather than silently dumped into a default "Workflow" bucket,
+    warning) rather than silently dumped into a default bucket,
     which would distort the quota distribution. Pass ``default_bucket`` only
     when a deliberate catch-all bucket is wanted.
     """
@@ -121,9 +119,7 @@ def extract_trajectories_from_batch(
     #     policy at insert time; forgetting_risk later compares it to the
     #     current policy's log-probs via buffer.update_priority).
     #   - group-internal pass rate becomes `success_rate` (within_bucket_difficulty).
-    rollout_logprobs = _first_present(
-        batch, ("rollout_log_probs", "old_log_probs", "old_log_prob")
-    )
+    rollout_logprobs = _first_present(batch, ("rollout_log_probs", "old_log_probs", "old_log_prob"))
     success_rates = _get_non_tensor(batch, "success_rate")
     # Response token ids per row -> needed by TokenWeighting (U-shape block
     # weights). Available from the rollout responses tensor; trimmed below by
@@ -166,7 +162,9 @@ def extract_trajectories_from_batch(
             if ids is not None:
                 if response_mask is not None and i < len(response_mask):
                     mask = _row_to_list(response_mask[i]) or []
-                    ids = [int(t) for t, m in zip(ids, mask) if m]
+                    # ids/mask may differ in length under padding; keep the
+                    # overlap (truncate to shorter) rather than crash ingestion.
+                    ids = [int(t) for t, m in zip(ids, mask, strict=False) if m]
                 else:
                     ids = [int(t) for t in ids]
                 meta["response_token_ids"] = ids

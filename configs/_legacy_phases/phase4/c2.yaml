@@ -1,0 +1,19 @@
+# Phase 4 / C2 — 弱 KL + 强 Replay (网格 2,1)
+# 继承 configs/base.yaml
+# KL 配置 = K-best2 (低剂量), Replay 配置 = R-best1
+
+defaults:
+  - ../../base
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: true
+    kl_loss_coef: ???            # K-best2 的 lambda_2，待 Phase 2 结果确定
+    kl_loss_type: low_var_kl
+  ref:
+    path: ???                    # K-best2 的 pi_ref 选择
+
+cl:
+  lambda_replay: ???             # R-best1 的 lambda_3，待 Phase 3 结果确定
+  buffer:
+    enabled: true

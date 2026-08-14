@@ -1,0 +1,27 @@
+# Phase 3 / R0-25k — CLEAR baseline (单 buffer + reservoir + 均匀), 25k 容量
+# 继承 configs/base.yaml
+# 对照轴：buffer 容量 (R0-10k → R0-25k)，给 CLEAR 与 9 桶方案同等 25k 容量
+# 仅容量与 R0-10k 不同；纯 reservoir（用 bucket_floors 兜底）（不触发配额淘汰）。
+
+defaults:
+  - ../../base
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0            # lambda_2 = 0
+
+cl:
+  lambda_replay: 0.5             # lambda_3 = 0.5
+  replay_batch_size: 512         # 与主方案同值(对照公平); replay 量非被消融轴
+  buffer:
+    enabled: true
+    num_buckets: 1               # 单 buffer，无桶结构（名/数自动塌缩为 "All"）
+    total_capacity: 25000        # 与 9 桶方案对齐的 25k 容量
+    eviction_type: reservoir     # CLEAR：随机丢弃（reservoir sampling）
+    within_bucket_sampling: uniform  # 全 buffer 均匀采样
+    priority_type: uniform       # CLEAR 不用 priority
+  weighting:
+    scheme: W2                   # gamma=delta=1 即均权（见 base.yaml 说明）
+    gamma: 1.0
+    delta: 1.0

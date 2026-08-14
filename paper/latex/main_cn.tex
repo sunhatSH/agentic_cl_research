@@ -1,0 +1,41 @@
+% 智能体大语言模型的持续强化学习 —— 中文版
+% 编译: xelatex main_cn; bibtex main_cn; xelatex x2
+
+\documentclass[11pt]{article}
+
+\usepackage{xeCJK}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\graphicspath{{../assets/}}
+
+\newcommand{\TODO}[1]{{\color{red}[TODO: #1]}}
+\let\todo\TODO
+
+\title{智能体大语言模型的持续强化学习\\
+       \large 基于能力分区的经验回放与抗遗忘评测}
+
+\author{孙豪}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文研究智能体大语言模型在按能力域顺序训练的持续强化学习问题——线上数据更新快、分布不均衡，无法一次集齐全部分布，只能逐个能力域顺序训练，这恰好放大了灾难性遗忘。为此本文设计了一套基于能力分区的九桶经验回放缓冲区：按能力域而非难度分桶，容量由任务数平方根加权分配，桶内淘汰禁止跨桶挤出，桶间按能力空间距离采样回放以确保遗忘风险越高的桶获得越多回放权重。持续学习目标由策略梯度、逆向KL锚定、回放损失和固定熵正则四项组成，以零框架改动注入GRPO。奖励由外部冻结大模型裁判统一打分，采用多维乘性聚合并以安全作为二元门控。评测方面，本文提出按桶分组、一次统一评测、权重后置的抗遗忘评测协议，量化"越早训练的桶遗忘越重"并与同规模无持续学习机制的基线对照。本文在Qwen3.5-9B上跨九个能力域实现并验证整套系统。
+\end{abstract}
+
+\input{sections_cn/01_introduction}
+\input{sections_cn/04_method}
+\input{sections_cn/05_experiments}
+
+\bibliographystyle{plain}
+\bibliography{../refs/references}
+
+\appendix
+\input{sections_cn/A_prompts}
+
+\end{document}

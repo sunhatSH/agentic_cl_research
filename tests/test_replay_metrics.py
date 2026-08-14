@@ -28,10 +28,10 @@ def _stats():
         "eviction_type": "priority",
         "within_bucket_sampling": "priority",
         "per_bucket": {
-            "Workflow": {"size": 2, "soft_target": 10, "fill_ratio": 0.2, "evictions": 1},
-            "SysOps": {"size": 1, "soft_target": 10, "fill_ratio": 0.1, "evictions": 0},
+            "workflow": {"size": 2, "soft_target": 10, "fill_ratio": 0.2, "evictions": 1},
+            "ops": {"size": 1, "soft_target": 10, "fill_ratio": 0.1, "evictions": 0},
         },
-        "reservoir_rejected": {"Workflow": 4},
+        "reservoir_rejected": {"workflow": 4},
         "priority_active_signals": {"forgetting_risk": 0.5, "diversity": 0.0},
     }
 
@@ -39,11 +39,11 @@ def _stats():
 def test_flatten_buffer_stats_scalars():
     flat = flatten_buffer_stats(_stats())
     assert flat["buffer/total_size"] == 3.0
-    assert flat["buffer/size/Workflow"] == 2.0
-    assert flat["buffer/fill_ratio/SysOps"] == pytest.approx(0.1)
-    assert flat["buffer/evictions/Workflow"] == 1.0
+    assert flat["buffer/size/workflow"] == 2.0
+    assert flat["buffer/fill_ratio/ops"] == pytest.approx(0.1)
+    assert flat["buffer/evictions/workflow"] == 1.0
     assert flat["buffer/fill_ratio_mean"] == pytest.approx(0.15)
-    assert flat["buffer/reservoir_rejected/Workflow"] == 4.0
+    assert flat["buffer/reservoir_rejected/workflow"] == 4.0
     # diversity disabled is verifiable from the logged signal weight.
     assert flat["buffer/signal_weight/diversity"] == 0.0
     assert flat["buffer/signal_weight/forgetting_risk"] == 0.5
@@ -77,12 +77,12 @@ def test_per_row_masked_mean():
 
 
 def test_backfill_forgetting_activates_signal():
-    buf = BucketReplayBuffer(total_capacity=1000, q_min=100, seed=0)
+    buf = BucketReplayBuffer(total_capacity=1000, bucket_floors=[33]*9, seed=0)
     # Two identical trajectories; only A's current logprob drifts down.
     for tid in ("traj-A", "traj-B"):
         buf.add_trajectory(
             tid,
-            "Workflow",
+            "workflow",
             metadata={
                 "trajectory_id": tid,
                 "pattern_id": "p0",
@@ -90,9 +90,7 @@ def test_backfill_forgetting_activates_signal():
             },
         )
 
-    updated = backfill_forgetting(
-        buf, ["traj-A", "traj-B"], current_means=[-2.0, -0.1]
-    )
+    updated = backfill_forgetting(buf, ["traj-A", "traj-B"], current_means=[-2.0, -0.1])
     assert updated == 2
 
     meta_a = buf.store.get_metadata("traj-A")
@@ -106,5 +104,5 @@ def test_backfill_forgetting_activates_signal():
 
 
 def test_backfill_skips_missing_trajectory():
-    buf = BucketReplayBuffer(total_capacity=1000, q_min=100, seed=0)
+    buf = BucketReplayBuffer(total_capacity=1000, bucket_floors=[33]*9, seed=0)
     assert backfill_forgetting(buf, ["ghost"], current_means=[-1.0]) == 0

@@ -2,10 +2,10 @@
   "_comment": "沙箱 Instance 内环境变量清单（起实例时经 envVars 注入）。值为空表示待填；机密填 docker/sandbox/runtime.env（gitignore）。",
   "_doc": "见 rollout/sandbox_env.py::load_sandbox_runtime_env()",
   "env": {
-    "PYTHONUNBUFFERED": "",
+    "PYTHONUNBUFFERED": "1",
     "PYTHONDONTWRITEBYTECODE": "",
-    "TZ": "",
-    "LANG": "",
+    "TZ": "Asia/Shanghai",
+    "LANG": "C.UTF-8",
     "AGENTIC_CL_WORKSPACE": "",
     "AGENTIC_CL_DATA_DIR": "",
     "AGENTIC_CL_CACHE_DIR": "",
@@ -13,6 +13,11 @@
     "AGENTIC_CL_PERSONA": "",
     "AGENTIC_CL_FS_SEED": "",
     "OPENCLAW_MODEL": "",
+
+    "AGENT_MODEL_NAME": "",
+    "AGENT_MODEL_BASE": "",
+    "AGENT_MODEL_KEY": "",
+
     "PIP_INDEX_URL": "",
     "PIP_TRUSTED_HOST": "",
     "HTTP_PROXY": "",

@@ -1,0 +1,15 @@
+data:
+  price_csv: data/factor_panel.csv
+  return_col: fwd_ret_1d
+ic_analysis:
+  ic_window: 252
+  recent_window: 63
+  decay_threshold: 0.5   # 近窗 IC < 历史 IC * 阈值 视为衰减
+  flip_rule: sign_change # 近窗 IC 符号与注册方向相反 视为翻转
+walk_forward:
+  train_months: 12
+  test_months: 3
+  step_months: 3
+output:
+  registry: factor_registry.yaml
+  report: tasks/overnight_summary.md

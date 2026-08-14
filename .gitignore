@@ -29,13 +29,19 @@ node_modules/
 # Env / secrets
 .env
 .env.*
+!.env.example
 *.local
 
 # Training artefacts
 ckpts/
 checkpoints/
 outputs/
-runs/
+# runs/: 实验产物根目录 -- 内容忽略，但保留 README + 各目录 .gitkeep 作结构约定（见 runs/README.md）
+runs/*
+!runs/README.md
+!runs/*/
+runs/*/*
+!runs/*/.gitkeep
 logs/
 *.log
 
@@ -56,10 +62,53 @@ buffer_dumps/
 datasets/
 
 # Runtime collected data (mock rollouts + warm-start buffers; regenerated, not source)
-data/
+/data/
+rollouts/
+# 例外:doc/expr/data/ 是实验档案(每step桶信息/metrics快照),属源码要入库,非运行时产物
+!doc/expr/data/
+# 例外:scripts/data/ 是数据管道源码(convert/label/parquet 等),非运行时产物
+!scripts/data/
 
 # Tencent / CCR local credentials (never commit)
 docker/sandbox/tencent.env
 docker/sandbox/image.env
 docker/sandbox/runtime.env
 .claude/
+
+# macOS
+.DS_Store
+
+# ── master-thesis 编译产物 ──
+master-thesis/**/*.aux
+master-thesis/**/*.fdb_latexmk
+master-thesis/**/*.fls
+master-thesis/**/*.out
+master-thesis/**/*.toc
+master-thesis/**/*.lof
+master-thesis/**/*.lot
+master-thesis/**/*.bbl
+master-thesis/**/*.bcf
+master-thesis/**/*.blg
+master-thesis/**/*.run.xml
+master-thesis/**/*.idx
+master-thesis/**/*.ilg
+master-thesis/**/*.ind
+master-thesis/**/*.synctex.gz
+master-thesis/**/*.xdv
+master-thesis/*xelatex*
+*.pdf
+
+# LaTeX build artifacts
+paper/latex/main.aux
+paper/latex/main.bbl
+paper/latex/main.blg
+paper/latex/main.out
+paper/latex/main.log
+paper/latex/main.pdf
+/runs
+exps/
+
+# Reward-model selection sweep outputs (runtime logs/json; script is tracked)
+rewardmodel_choose/results/
+# stray metrics dump dir (wrong output path); real metrics in logs/metrics/
+agentic-cl/

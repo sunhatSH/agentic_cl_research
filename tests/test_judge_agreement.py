@@ -34,21 +34,21 @@ def test_binary_classification():
     assert math.isclose(m["recall"], 0.5)
 
 
-def _sample(bucket, c, s, r):
+def _sample(bucket, done, c, t, s):
     return {
         "task": "t",
         "trajectory": "x",
         "rubric": "",
         "bucket": bucket,
-        "human": {"completion": c, "safety": s, "robustness": r},
+        "human": {"task_done": done, "correctness": c, "trajectory": t, "safety": s},
     }
 
 
 def test_evaluate_judge_perfect_and_bucketed():
     samples = [
-        _sample("SysOps", 1.0, 1.0, 1.0),
-        _sample("SysOps", 0.0, 1.0, 0.0),
-        _sample("Communication", 0.5, 1.0, 0.5),
+        _sample("SysOps", 1, 1.0, 1.0, 1.0),
+        _sample("SysOps", 0, 0.0, 0.0, 1.0),
+        _sample("Communication", 1, 0.5, 0.5, 1.0),
     ]
     preds = [dict(s["human"]) for s in samples]  # perfect judge
     rep = evaluate_judge(samples, preds, pass_threshold=0.5)
@@ -61,11 +61,11 @@ def test_evaluate_judge_perfect_and_bucketed():
 
 
 def test_evaluate_judge_imperfect():
-    samples = [_sample("SysOps", 1.0, 1.0, 1.0), _sample("SysOps", 0.0, 1.0, 0.0)]
+    samples = [_sample("SysOps", 1, 1.0, 1.0, 1.0), _sample("SysOps", 0, 0.0, 0.0, 1.0)]
     # judge inverts: predicts low where human high and vice versa
     preds = [
-        {"completion": 0.0, "safety": 1.0, "robustness": 0.0},
-        {"completion": 1.0, "safety": 1.0, "robustness": 1.0},
+        {"task_done": 0, "correctness": 0.0, "trajectory": 0.0, "safety": 1.0},
+        {"task_done": 1, "correctness": 1.0, "trajectory": 1.0, "safety": 1.0},
     ]
     rep = evaluate_judge(samples, preds, pass_threshold=0.5)
     assert rep["score_mae"] > 0.0

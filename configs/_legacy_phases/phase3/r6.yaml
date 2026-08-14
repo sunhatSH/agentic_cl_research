@@ -1,0 +1,19 @@
+# Phase 3 / R6 — 高 replay 权重 (lambda_3=0.8 vs R4 的 0.5)
+# 继承 configs/base.yaml
+# 对照轴：lambda_3 权重 (R4 → R6)
+
+defaults:
+  - ../../base
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+
+cl:
+  lambda_replay: 0.8             # lambda_3 = 0.8 (高)
+  buffer:
+    enabled: true
+    num_buckets: 9
+  weighting:
+    scheme: W0

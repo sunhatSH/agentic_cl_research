@@ -1,15 +1,45 @@
-% Section 5: Experiments
-% Source: ../../drafts/Paper_论文向总览.md §8 (experiment design) +
-% doc/ClawEval_Metadata.md (benchmark) + doc/CL_Update_Sunhao.md (20-experiment route).
-
 \section{Experiments}
-\label{sec:exp}
+\label{sec:experiments}
 
-\TODO{ClawEval (Pass$^3$); 20 controlled ablations (Phase 1-5); headline forgetting / CL-Score vs CLEAR and pure-RL baselines}
+\subsection{Setup}
 
-% Skeleton:
-%  - Evaluation: ClawEval, 195 text tasks, Pass^3; reward == eval (model judge).
-%  - 20-experiment ablation route: Phase 1 (B1) -> Phase 2 (KL) /
-%    Phase 3 (Replay) -> Phase 4 (KL x Replay) -> Phase 5 (rollout scale).
-%  - Process metrics: output entropy, trajectory diversity, KL trend,
-%    L_replay/L_rl, per-bucket buffer dynamics.
+\textbf{Benchmark.} We use the pure-text subset of ClawEval, totaling 195 tasks grouped into the same nine capability domains as the buffer (Table~\ref{tab:buckets}). Scoring follows the Pass$^3$ protocol---a task passes only if all three independent runs succeed---giving a binary per-task outcome and a per-bucket pass rate.
+
+\textbf{Training protocol.} Training proceeds \textbf{sequentially by bucket}: the model trains on one capability domain, then moves to the next, mimicking the online deployment constraint that data for all capabilities is rarely available at once. Within each bucket, task order is randomized. The base model is Qwen3.5-9B, trained with fully-asynchronous policy-separated deployment (inference and training on separate GPUs), BF16 throughout.
+
+\textbf{Data organization.} The training data is sorted by bucket, and each bucket's row count is truncated to a multiple of the batch size (\texttt{train\_batch\_size}=32), removing at most 31 trailing rows per bucket ($<0.5\%$ total). After truncation, every training step draws all its queries from a single bucket — no step mixes capability domains. This enables clean per-bucket tracking of reward and loss, and precise measurement of cross-bucket forgetting.
+
+Two capability domains, qa (question answering/retrieval) and communication (writing/translation/rewriting), have extremely limited training data (2 and 9 original trajectories respectively). This stems from two factors: first, users rarely use agent harnesses for simple Q\&A or text polishing, preferring free websites; second, the \textbf{user demographic itself is skewed}---agent harness users are predominantly developers, DevOps engineers, and data analysts, whose tasks naturally concentrate in coding, ops, and office domains rather than creative writing or marketing content. These two domains are virtually absent from the continual training stream; they remain in the replay buffer and evaluation benchmark but serve solely as \textbf{auxiliary evaluation domains} for observing retention under severe data scarcity.
+
+\textbf{Algorithm configuration.} The policy is GRPO with group size 8 per query. The judge model is a frozen external LLM served separately. The RL framework (verl 0.8.0) is used unmodified; all CL logic is injected via its loss-function API and buffer hooks.
+
+\subsection{Anti-Forgetting Evaluation Protocol}
+
+We evaluate \textbf{once} after all buckets have been trained (no intermediate evaluation, saving compute):
+
+\begin{enumerate}
+  \item Evaluate the final policy $\pi_K$ on the full benchmark.
+  \item Group evaluation results by the same nine buckets, aligned to the training order. Record per-bucket scores $S_i = S(\pi_K, b_i)$.
+  \item Apply a post-hoc \textbf{decay weighting} $w_i$ by training recency: buckets trained earlier receive larger weights, reflecting that forgetting is heavier the longer a capability has been exposed to subsequent updates:
+  \begin{equation}
+    \text{CL-Score} = \sum_{i=1}^{K} w_i\,S_i,\qquad w_i \propto g(i),\;\;g\text{ decreasing}.
+  \end{equation}
+  The decay form (linear vs.\ exponential) is treated as a hyperparameter determined experimentally.
+\end{enumerate}
+
+Because the evaluation is run only once, switching among weighting schemes afterward is purely arithmetic---no re-inference needed. The core signal is whether the CL-equipped model shows \textbf{less per-bucket score degradation on earlier-trained buckets} compared to a same-scale baseline without CL.
+
+\subsection{Comparisons and Ablations}
+
+\textbf{Primary comparison:} CL-equipped (nine-bucket replay + composite loss) vs.\ a \textbf{baseline} without any CL mechanism (no replay, $\lambda_3=0$, same sequential training and evaluation). The difference in per-bucket forgetting and aggregate CL-Score quantifies the anti-forgetting benefit.
+
+\textbf{Ablation axes:}
+\begin{itemize}
+  \item \textbf{Buffer structure:} nine-bucket partitioned replay vs.\ CLEAR-style single flat buffer with reservoir sampling~\cite{A2}.
+  \item \textbf{Buffer capacity:} total capacity sweep to test scaling behavior.
+  \item \textbf{U-shape weighting:} $\gamma=\delta=1$ (flat, default) vs.\ $\gamma=\delta<1$ (active U-shape).
+\end{itemize}
+
+\subsection{Results}
+
+\todo{Fill after the new-reward 16-GPU formal experiments complete. Expected deliverables: per-bucket raw scores; CL-Score comparison table (CL vs.\ baseline); reward/loss/group-std training curves; ablation bar charts.}

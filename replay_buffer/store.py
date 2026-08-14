@@ -50,14 +50,17 @@ class TrajectoryStore:
 
     def __init__(self, backend: str = "memory", path: str | None = None):
         if backend != "memory":
-            raise NotImplementedError(
-                f"backend={backend!r} not supported in v1; only 'memory' available."
-            )
+            raise NotImplementedError(f"backend={backend!r} not supported in v1; only 'memory' available.")
         self.backend = backend
         self.path = path
         self._store: dict[str, tuple[Any, dict]] = {}
         self._by_bucket: dict[str, set[str]] = defaultdict(set)
         self._by_pattern: dict[str, set[str]] = defaultdict(set)
+        # Monotonic insertion counter for FIFO eviction. insert_step ties within a
+        # single training step (many trajectories share one step), so it cannot
+        # order FIFO victims deterministically; this strictly-increasing seq can.
+        # Stamped into meta["_insert_seq"] on every put of a NEW id.
+        self._insert_seq: int = 0
 
     def __len__(self) -> int:
         return len(self._store)
@@ -79,6 +82,19 @@ class TrajectoryStore:
             self._by_bucket[old_meta["bucket"]].discard(trajectory_id)
             if "pattern_id" in old_meta:
                 self._by_pattern[old_meta["pattern_id"]].discard(trajectory_id)
+            # Preserve the original insertion order on in-place replace so a
+            # re-put does not jump the FIFO queue to the back.
+            metadata = dict(metadata)
+            metadata.setdefault("_insert_seq", old_meta.get("_insert_seq", self._insert_seq))
+        else:
+            metadata = dict(metadata)
+            # Honor a persisted seq (SQLite snapshot reload) so FIFO order
+            # survives a resume; otherwise stamp a fresh monotonic seq.
+            if "_insert_seq" in metadata:
+                self._insert_seq = max(self._insert_seq, int(metadata["_insert_seq"]) + 1)
+            else:
+                metadata["_insert_seq"] = self._insert_seq
+                self._insert_seq += 1
 
         self._store[trajectory_id] = (trajectory, dict(metadata))
         self._by_bucket[metadata["bucket"]].add(trajectory_id)
@@ -139,6 +155,20 @@ class TrajectoryStore:
         if not ids:
             return []
         scored = [(self._store[tid][1]["priority"], tid) for tid in ids]
+        return [tid for _, tid in heapq.nsmallest(k, scored)]
+
+    def oldest_k(self, bucket: str, k: int) -> list[str]:
+        """Return up to k trajectory_ids inserted EARLIEST into the bucket
+        (ascending ``_insert_seq``). Used by FIFO eviction to find victims.
+        Falls back to insert_step then id for any legacy entry missing the seq.
+        """
+        ids = self._by_bucket.get(bucket, ())
+        if not ids:
+            return []
+        scored = [
+            ((self._store[tid][1].get("_insert_seq", self._store[tid][1].get("insert_step", 0)), tid), tid)
+            for tid in ids
+        ]
         return [tid for _, tid in heapq.nsmallest(k, scored)]
 
     def long_unreplayed(self, threshold_steps: int, current_step: int) -> list[str]:

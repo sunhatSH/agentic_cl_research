@@ -18,20 +18,26 @@
 #   - Do NOT override ENTRYPOINT (keep /init from base image)
 #   - Only add dependencies via RUN/COPY; CMD/ENTRYPOINT inherit from base
 #
-# Build (after docker login to Tencent CCR and pull base):
+# Build (after docker login to Tencent TCR and pull base):
 #   bash scripts/build_sandbox_image.sh
 #
 # Platform: linux/amd64 only (required by Agent Runtime).
 # NOTE: base image is assumed Debian/Ubuntu (apt). If the AGS code-interpreter
 # base ships a different package manager, adjust the apt blocks accordingly.
 
-ARG SANDBOX_BASE_IMAGE=ccr.ccs.tencentyun.com/ags-image/sandbox-code:latest
+ARG SANDBOX_BASE_IMAGE=tcr-rl.tencentcloudcr.com/agentos-cl-namespace/sandbox-code:latest
 FROM ${SANDBOX_BASE_IMAGE}
 
 # OpenClaw runtime: Node 24 recommended (>=22.19 supported). Pin OpenClaw for
 # reproducible母版; override at build time with --build-arg.
 ARG NODE_MAJOR=24
 ARG OPENCLAW_VERSION=latest
+
+# Hermes Agent runtime: Python 3.11 required (pyproject requires-python >=3.11,<3.14).
+# Pinned to a release tag (matches the verl-hermes-remote-agent image family).
+# Override at build time with --build-arg. See doc/Agent轨迹_Schema.md §0:
+# training uses Hermes (spawn synchronous, child-trace separated), not OpenClaw.
+ARG HERMES_VERSION=v2026.6.5
 
 # 1. System tooling for agent ACTIONS (shell/file ops) + office/doc tasks.
 #    No model/GPU/inference deps — those live outside the sandbox.
@@ -48,14 +54,27 @@ RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && node --version && npm --version
 
-# 3. OpenClaw agent harness (the in-sandbox action executor).
+# 3a. OpenClaw agent harness (the in-sandbox action executor).
 RUN npm install -g "openclaw@${OPENCLAW_VERSION}" \
     && npm cache clean --force \
     && (openclaw --version || true)
 
+# 3b. Hermes Agent (the training-time agent framework — see doc/Agent轨迹_Schema.md §0).
+#     Installed editable from a shallow clone of the NousResearch repo pinned to a
+#     release tag (same recipe as verl-hermes-remote-agent, docker/verl-hermes-remote-agent
+#     /Dockerfile.tencent-ags). --break-system-packages because the AGS base image uses
+#     system Python (no venv); pip -e installs hermes_agent + its pinned deps into the
+#     shared site-packages so `hermes` is on PATH at instance start.
+#     Mirrors setup-hermes.sh but without venv isolation (snapshot images run as root).
+RUN git clone --depth 1 --branch "${HERMES_VERSION}" \
+        https://github.com/NousResearch/hermes-agent.git \
+        /opt/hermes-agent \
+    && pip install --no-cache-dir --break-system-packages -e /opt/hermes-agent \
+    && (hermes --version || hermes --help >/dev/null 2>&1 || true)
+
 # 4. Project Python rollout extras (edit requirements.txt as tasks evolve).
 COPY requirements.txt /tmp/agentic-cl-sandbox-requirements.txt
-RUN pip install --no-cache-dir -r /tmp/agentic-cl-sandbox-requirements.txt \
+RUN pip install --no-cache-dir --break-system-packages -r /tmp/agentic-cl-sandbox-requirements.txt \
     && rm -f /tmp/agentic-cl-sandbox-requirements.txt
 
 # 5. Bake agent assets + user-filesystem persona corpus.
@@ -65,6 +84,10 @@ COPY bin/ /opt/agentic-cl/bin/
 COPY openclaw.config.template.json /opt/agentic-cl/openclaw.config.template.json
 COPY fs-seeds/ /opt/agentic-cl/fs-seeds/
 RUN chmod +x /opt/agentic-cl/bin/*.sh
+
+# 5b. Search tools (Serper + Jina) — callable scripts for hermes web search.
+COPY tools/ /opt/tools/
+RUN chmod +x /opt/tools/*.py
 
 # 6. (OPTIONAL) Browser tool for ClawEval web tasks. The text-only 195-task
 #    subset does NOT need this; it is heavy (~Chromium). Uncomment if needed.

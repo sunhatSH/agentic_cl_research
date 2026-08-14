@@ -1,4 +1,4 @@
-"""Session-level sandbox orchestration (Gap C; doc/Sandbox_管理调度指南.md).
+"""Session-level sandbox orchestration (Gap C; doc/sandbox/Sandbox_管理调度指南.md).
 
 A SessionSandboxPool runs ONE ``queries`` session:
 
@@ -89,14 +89,18 @@ def select_winner_with_fallback(
 
 
 def _default_sync(slots: list[_Slot], winner_state: Any) -> None:
-    """Mock D1: copy winner state to every slot (deep copy = independent).
+    """Copy winner state to every slot (deep copy = independent).
 
-    REAL backend contract (doc/Sandbox_管理调度指南.md §6): the winner instance is
-    the session's only live state carrier and MUST stay alive across queries --
-    kill ONLY the 7 losers and derive their replacements from the live winner.
-    NEVER kill all 8 mid-session (that drops process/in-memory state subsequent
-    queries depend on; the abandoned "D2 杀重建" path). Killing all 8 happens
-    only at session end (destroy_all).
+    This is the CORRECT single-turn behavior: after picking the winner, all 8
+    slots are aligned to the winner's state so the next turn (if any) starts
+    bit-identical. No slot is killed mid-session -- they all stay alive carrying
+    the winner's state, and are destroyed together at session end
+    (``destroy_all``). The real-backend contract (doc/ops/sandbox/
+    Sandbox_管理调度指南.md §6) is the same in spirit: the winner is the
+    session's only live state carrier; losers are derived from it, not kept as
+    independent divergent states. Killing all 8 mid-session (the abandoned
+    "D2 杀重建" path) drops process/in-memory state subsequent turns depend on
+    and only happens at session end.
     """
     for s in slots:
         s.state = copy.deepcopy(winner_state)
@@ -105,7 +109,7 @@ def _default_sync(slots: list[_Slot], winner_state: Any) -> None:
 class SessionSandboxPool:
     def __init__(
         self,
-        master_template: str = "agentic-cl-code-interpreter",
+        master_template: str = "agentic-cl-sandbox",
         slots: int = 8,
         *,
         backend: str = "local",
@@ -138,8 +142,7 @@ class SessionSandboxPool:
             raise RuntimeError("pool already spawned; call destroy_all() first")
         init = self._initial_state()
         self._slots = [
-            _Slot(idx=i, client=self._make_client(), state=copy.deepcopy(init))
-            for i in range(self.n_slots)
+            _Slot(idx=i, client=self._make_client(), state=copy.deepcopy(init)) for i in range(self.n_slots)
         ]
 
     def _make_client(self) -> Any:
@@ -204,7 +207,9 @@ class SessionSandboxPool:
     def sync_to_winner(self, winner_idx: int, trajs: Sequence[Trajectory]) -> None:
         """Align all 8 slots' disk state AND conversation history to the winner."""
         winner = trajs[winner_idx]
-        self._sync_fn(self._slots, winner.next_state if winner.next_state is not None else winner.meta.get("state"))
+        self._sync_fn(
+            self._slots, winner.next_state if winner.next_state is not None else winner.meta.get("state")
+        )
         # conversation正史 = winner trajectory (§3 ①): losers drop out of history
         self.session_history.extend(winner.messages)
 

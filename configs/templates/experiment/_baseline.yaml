@@ -1,0 +1,50 @@
+# 【模板·实验语义层】Baseline(B1)—— 遗忘下界对照
+#
+# 只装「这个实验独有的语义」:无 KL、无 replay、无 buffer。硬件/逻辑靠 defaults 继承。
+# 用法:复制到 configs/run/,改 defaults 里的硬件层引用即可换 GPU/模型规格。
+
+defaults:
+  - ../../_generated_ppo_trainer          # verl 全量默认
+  - ../../base                            # ① 逻辑层
+  - ../hardware/16GPU_9BQwen3.5           # ② 压力层(换规格改这一行:32GPU_9BQwen3.5 / 64GPU_27BQwen3.6)
+
+# ── baseline 语义 ────────────────────────────────────────────────────────────
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+    entropy_coeff: 0.001                  # λ4 固定(anti Echo Trap)
+
+reward:
+  reward_model:
+    enable: false
+    rollout:
+      name: vllm
+
+data:
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
+  val_files: null
+  shuffle: false                          # 按桶序训 → 可测遗忘
+  return_raw_chat: true
+  filter_overlong_prompts: true
+  trust_remote_code: true
+  dataloader_num_workers: 4
+  cache_dir: /tmp/verl_rlhf_cache
+
+cl:
+  lambda_replay: 0.0
+  buffer:
+    enabled: false
+
+trainer:
+  total_epochs: 1
+  total_training_steps: 500
+  save_freq: 100
+  test_freq: -1
+  val_before_train: false
+  critic_warmup: 0
+  logger: [console]
+  log_val_generations: 50
+  project_name: agentic-cl
+  experiment_name: qwen35_9b_b1_16gpu     # 换规格时同步改名
+  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_b1_16gpu}

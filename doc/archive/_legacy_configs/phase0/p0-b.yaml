@@ -1,0 +1,23 @@
+# Phase 0 / P0-B — 冷启动数据来源消融：纯 off-policy (100% gpt-5)
+# 见 doc/Plan_冷启动数据来源消融.md
+# 本臂 buffer 由: warmup_buffer.py --ratio-27b 0.0 生成。
+defaults:
+  - ../base
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+
+cl:
+  lambda_replay: 0.5
+  buffer:
+    enabled: true
+    num_buckets: 9
+    warmup_path: data/mock/buffer_dumps/p0-b_gpt5100.sqlite   # 100% gpt5
+  weighting:
+    scheme: W0
+
+trainer:
+  experiment_name: p0-b-src-gpt5100
+  total_training_steps: 30

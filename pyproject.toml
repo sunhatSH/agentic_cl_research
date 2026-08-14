@@ -52,6 +52,9 @@ exclude = ["tests*", "doc*", "configs*", "scripts*"]
 [tool.ruff]
 line-length = 110
 target-version = "py310"
+# `bin/` holds standalone one-off data utilities (tab-indented, own style); they
+# are not part of the importable library and would otherwise drown real lint.
+extend-exclude = ["bin"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
@@ -60,6 +63,8 @@ ignore = ["E501"]
 [tool.black]
 line-length = 110
 target-version = ["py310"]
+# Keep in sync with ruff: bin/ one-off utilities are not formatted by the project.
+extend-exclude = "^/bin/"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

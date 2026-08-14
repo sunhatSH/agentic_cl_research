@@ -1,0 +1,3 @@
+FDate,FVoucherGroup,FNumber,FExplanation,FAccountCode,FCurrencyName,FExchangeRate,FDebit,FCredit,FCustomerCode,FDeptCode,FQuantity,FPrice,Fitem,FRemark
+2026-04-01,付,1,代发工资,2211.01,人民币,1,128000.00,,KH001,BM01,,,,4月工资
+2026-04-01,付,1,代发工资,1002.01,人民币,1,,128000.00,,,,,,4月工资

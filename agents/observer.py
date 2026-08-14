@@ -42,8 +42,8 @@ import json
 from collections.abc import Sequence
 from typing import Any, Protocol
 
-from agents.base import ChatClient, resolve_observer_client
-from agents.prompts import build_observer_prompt
+from agents.base import ChatClient, TruncatedOutputError, resolve_observer_client
+from agents.prompts import _is_real_red_flag, build_observer_prompt
 from agents.schema import ObservationReport
 
 
@@ -61,15 +61,69 @@ def flatten_trajectory(messages: Sequence[dict[str, Any]] | str) -> str:
             continue
         content = m.get("content", "")
         if isinstance(content, list):
-            content = " ".join(
-                (c.get("text", "") if isinstance(c, dict) else str(c)) for c in content
-            )
+            content = " ".join((c.get("text", "") if isinstance(c, dict) else str(c)) for c in content)
         lines.append(f"[{m.get('role', '?')}] {str(content).strip()}")
     return "\n".join(lines)
 
+
+def _last_assistant_reply(messages: Sequence[dict[str, Any]] | str, cap: int = 4000) -> str:
+    """Return the last assistant message's text (for QA/reasoning tasks whose
+    deliverable is the reply, not a file). Empty string if none / passed a str."""
+    if isinstance(messages, str) or not messages:
+        return ""
+    for m in reversed(messages):
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        content = m.get("content", "")
+        if isinstance(content, list):
+            content = " ".join((c.get("text", "") if isinstance(c, dict) else str(c)) for c in content)
+        text = _strip_actor_noise(str(content)).strip()
+        if text:
+            return text[:cap] + (" …[truncated]" if len(text) > cap else "")
+    return ""
+
+
+# Hermes prepends a scanner-status banner to every reply; it is not part of the
+# answer and should not be surfaced to the questioner as the deliverable text.
+_ACTOR_NOISE_PREFIXES = (
+    "⚠ tirith security scanner",
+    "tirith security scanner",
+)
+
+
+def _strip_actor_noise(text: str) -> str:
+    """Drop leading hermes banner lines (security-scanner status) from a reply."""
+    lines = text.splitlines()
+    while lines and any(lines[0].lstrip().startswith(p) for p in _ACTOR_NOISE_PREFIXES):
+        lines.pop(0)
+    return "\n".join(lines)
+
+
 # Rendering caps for the prompt / report (#4): bound size regardless of workspace.
+# Content is listed in FULL (user spec 2026-07-10): a per-file 64 KB ceiling is a
+# safety bound against a single pathological file, not a semantic truncation.
 _MAX_RENDER_FILES = 50
-_MAX_RENDER_CHARS = 1200
+_MAX_RENDER_CHARS = 65536
+# Runtime / framework files that live in every workspace and are NOT deliverables.
+# Filtered from the file tree and the diff so they never show up as noise.
+_RUNTIME_FILES = frozenset(
+    {
+        ".bashrc",
+        ".bash_logout",
+        ".profile",
+        ".sudo_as_admin_successful",
+        ".viminfo",
+        ".python_history",
+        ".wget-hsts",
+        "AGENTS.md",
+        # Sandbox runtime logs (envd/uvicorn/agent runtime) — 持续写入，会制造 diff
+        # 噪声且非 agent 交付物。按 basename 过滤（_is_runtime_file 用 basename 匹配）。
+        "envd.log",
+        "uvicorn.log",
+        "envd.pid",
+        ".agentic_cl_persona",  # seed_workspace 落的种子标记，非交付物
+    }
+)
 # Rich binary formats we extract to text in the sandbox (a). Libs are in the
 # sandbox image (docker/sandbox §5: openpyxl / python-docx / python-pptx / pdfplumber).
 _RICH_EXTS = (".xlsx", ".xlsm", ".docx", ".pptx", ".pdf")
@@ -88,16 +142,25 @@ class ReadOnlySandbox(Protocol):
 # (kind=binary + ext). Extraction of changed binaries happens later, on demand. #
 # --------------------------------------------------------------------------- #
 _SNAPSHOT_PROBE = (
-    "import os, json\n"
-    "ROOT='.'; MAX_TEXT=2048\n"
-    "SKIP={'.git','__pycache__','node_modules','.cache','.ipynb_checkpoints','.venv'}\n"
+    "import os, json, hashlib\n"
+    "ROOT='.'; MAX_TEXT=65536; MAX_FILES=500\n"
+    # 非 dot 的运行时/缓存目录（dot 开头的由下方统一略过，不必列）。
+    "SKIP={'__pycache__','node_modules','node-compile-cache'}\n"
     "out={}\n"
     "for root, dirs, files in os.walk(ROOT):\n"
-    "    if root.count(os.sep) > 5:\n"
+    "    if root.count(os.sep) > 7:\n"
     "        dirs[:]=[]; continue\n"
-    "    dirs[:]=[d for d in dirs if d not in SKIP]\n"
+    # 略过所有 . 开头的目录（.git/.hermes/.cache/.venv/... 一网打尽）+ 具名 SKIP。
+    "    dirs[:]=[d for d in dirs if not d.startswith('.') and d not in SKIP]\n"
     "    for fn in files:\n"
+    # 略过所有 . 开头的文件（.bashrc/.python_history/... 运行时痕迹）。交付物如
+    # output/、inputs/、env.* 等不以 . 开头,不受影响。\n"
+    "        if fn.startswith('.'):\n"
+    "            continue\n"
     "        p=os.path.join(root, fn)\n"
+    # Belt-and-suspenders: skip any path whose components hit a SKIP/dot dir.
+    "        if any(seg in SKIP or seg.startswith('.') for seg in p.split(os.sep) if seg not in ('.','..')):\n"
+    "            continue\n"
     "        try:\n"
     "            st=os.stat(p)\n"
     "        except OSError:\n"
@@ -107,6 +170,9 @@ _SNAPSHOT_PROBE = (
     "        try:\n"
     "            with open(p,'rb') as f:\n"
     "                raw=f.read(MAX_TEXT)\n"
+    "            # content_hash for same-size change detection (full-content cap)\n"
+    "            if st.st_size <= 65536:\n"
+    "                rec['chash']=hashlib.md5(raw).hexdigest()[:12]\n"
     "            try:\n"
     "                rec['text']=raw.decode('utf-8'); rec['truncated']=st.st_size>MAX_TEXT\n"
     "            except UnicodeDecodeError:\n"
@@ -114,6 +180,10 @@ _SNAPSHOT_PROBE = (
     "        except OSError:\n"
     "            pass\n"
     "        out[p]=rec\n"
+    "        if len(out) >= MAX_FILES:\n"
+    "            break\n"
+    "    if len(out) >= MAX_FILES:\n"
+    "        break\n"
     "print(json.dumps(out))\n"
 )
 
@@ -137,7 +207,13 @@ _SYS_PROBE = (
     "        for line in f:\n"
     "            parts=line.split()\n"
     "            if len(parts)>3 and parts[3]=='0A':\n"  # 0A = LISTEN
-    "                ports.add(int(parts[1].split(':')[1], 16))\n"
+    "                port=int(parts[1].split(':')[1], 16)\n"
+    # Ephemeral ports (>=32768) are OS-assigned random binds (uvicorn/vllm
+    # default workers, httpx connection pools, etc.) — not meaningful actor
+    # effects, and they flood the diff. Only keep privileged + registered
+    # range ports that an actor would explicitly bind to.
+    "                if port < 32768:\n"
+    "                    ports.add(port)\n"
     "    out['ports']=sorted(ports)\n"
     "except Exception:\n"
     "    pass\n"
@@ -152,6 +228,9 @@ _SYS_PROBE = (
     "                names.add(f.read().strip())\n"
     "        except OSError:\n"
     "            continue\n"
+    # Drop transient/probe processes so the diff isn't polluted by the probe
+    # itself (python3 running this probe, shells, ps) — these are not actor effects.
+    "    names-={'python3','python','sh','bash','ps','comm','cat','ls','env'}\n"
     "    out['procs']=sorted(names)\n"
     "except Exception:\n"
     "    pass\n"
@@ -169,36 +248,140 @@ def _extract_probe(paths: list[str]) -> str:
     return (
         "import os, json\n"
         "PATHS=" + json.dumps(paths) + "\n"
-        "CAP=2000\n"
+        "CAP=65536\n"
+        "def _c(font):\n"
+        "    try:\n"
+        "        c=font.color\n"
+        "        if c is None or c.type is None: return None\n"
+        "        rgb=getattr(c, 'rgb', None)\n"
+        "        if rgb is None: return None\n"
+        "        s=str(rgb)\n"
+        "        if s and s!='00000000' and 'Values must be' not in s: return s\n"
+        "    except Exception: pass\n"
+        "    return None\n"
+        "def _fill(cell):\n"
+        "    try:\n"
+        "        f=cell.fill\n"
+        "        if f is not None and f.fgColor is not None and f.fgColor.rgb is not None:\n"
+        "            s=str(f.fgColor.rgb)\n"
+        "            if s and s!='00000000': return s\n"
+        "    except Exception: pass\n"
+        "    return None\n"
         "def x_xlsx(p):\n"
         "    import openpyxl\n"
-        "    wb=openpyxl.load_workbook(p, read_only=True, data_only=True)\n"
+        "    wb=openpyxl.load_workbook(p, data_only=True)\n"
         "    o=[]\n"
         "    for ws in wb.worksheets:\n"
-        "        o.append('# sheet %s' % ws.title)\n"
-        "        for i,row in enumerate(ws.iter_rows(values_only=True)):\n"
-        "            if i>=30: o.append('  …'); break\n"
-        "            o.append('  '+', '.join('' if c is None else str(c) for c in row))\n"
+        "        o.append('# sheet: %s' % ws.title)\n"
+        "        merged=[str(m) for m in ws.merged_cells.ranges]\n"
+        "        if merged: o.append('  merged: '+', '.join(merged[:5]))\n"
+        "        for i,row in enumerate(ws.iter_rows()):\n"
+        "            if i>=30: o.append('  ...'); break\n"
+        "            cells=[]\n"
+        "            for c in row:\n"
+        "                if c.value is None: continue\n"
+        "                tags=[]\n"
+        "                if c.font is not None and c.font.bold: tags.append('bold')\n"
+        "                col=_c(c.font) if c.font is not None else None\n"
+        "                if col: tags.append('fg#'+col)\n"
+        "                fl=_fill(c)\n"
+        "                if fl: tags.append('bg#'+fl)\n"
+        "                tag='['+','.join(tags)+']' if tags else ''\n"
+        "                cells.append(tag+str(c.value))\n"
+        "            if cells: o.append('  '+' | '.join(cells))\n"
         "    return '\\n'.join(o)\n"
         "def x_docx(p):\n"
         "    import docx\n"
-        "    return '\\n'.join(par.text for par in docx.Document(p).paragraphs if par.text)\n"
+        "    from docx.oxml.ns import qn\n"
+        "    from docx.text.paragraph import Paragraph\n"
+        "    from docx.table import Table\n"
+        "    d=docx.Document(p)\n"
+        "    o=[]\n"
+        "    for child in d.element.body.iterchildren():\n"
+        "        if child.tag==qn('w:p'):\n"
+        "            para=Paragraph(child, d)\n"
+        "            text=para.text\n"
+        "            if not text.strip(): continue\n"
+        "            tags=[]\n"
+        "            style=para.style.name if para.style is not None else ''\n"
+        "            if style and style!='Normal': tags.append(style)\n"
+        "            for r in para.runs:\n"
+        "                if r.bold: tags.append('bold'); break\n"
+        "            for r in para.runs:\n"
+        "                if r.italic: tags.append('italic'); break\n"
+        "            for r in para.runs:\n"
+        "                col=_c(r.font)\n"
+        "                if col: tags.append('fg#'+col); break\n"
+        "            tag='['+','.join(tags)+']' if tags else ''\n"
+        "            o.append('  '+tag+text)\n"
+        "        elif child.tag==qn('w:tbl'):\n"
+        "            tbl=Table(child, d)\n"
+        "            o.append('  [table]')\n"
+        "            for r,row in enumerate(tbl.rows):\n"
+        "                cells=[cell.text for cell in row.cells]\n"
+        "                o.append('    r%d: %s' % (r, ' | '.join(cells)))\n"
+        "    return '\\n'.join(o)\n"
         "def x_pptx(p):\n"
         "    from pptx import Presentation\n"
+        "    prs=Presentation(p)\n"
         "    o=[]\n"
-        "    for i,s in enumerate(Presentation(p).slides, 1):\n"
+        "    for i,slide in enumerate(prs.slides, 1):\n"
         "        o.append('# slide %d' % i)\n"
-        "        for sh in s.shapes:\n"
-        "            if getattr(sh,'has_text_frame',False) and sh.text_frame.text.strip():\n"
-        "                o.append('  '+sh.text_frame.text.strip())\n"
+        "        for sh in slide.shapes:\n"
+        "            ph=None\n"
+        "            try: ph=sh.placeholder_format\n"
+        "            except Exception: pass\n"
+        "            if getattr(sh,'has_table',False):\n"
+        "                o.append('  [table]')\n"
+        "                for r,row in enumerate(sh.table.rows):\n"
+        "                    cells=[cell.text for cell in row.cells]\n"
+        "                    o.append('    r%d: %s' % (r, ' | '.join(cells)))\n"
+        "            elif getattr(sh,'has_text_frame',False):\n"
+        "                role=''\n"
+        "                if ph is not None:\n"
+        "                    role={0:'title',1:'body',5:'title-only'}.get(ph.idx, 'ph%d' % ph.idx)\n"
+        "                for para in sh.text_frame.paragraphs:\n"
+        "                    if not para.text.strip(): continue\n"
+        "                    tags=[]\n"
+        "                    if role: tags.append(role)\n"
+        "                    if para.font.bold: tags.append('bold')\n"
+        "                    if para.font.italic: tags.append('italic')\n"
+        "                    col=_c(para.font)\n"
+        "                    if col: tags.append('fg#'+col)\n"
+        "                    if para.level: tags.append('L%d' % para.level)\n"
+        "                    tag='['+','.join(tags)+']' if tags else ''\n"
+        "                    o.append('  '+tag+para.text)\n"
         "    return '\\n'.join(o)\n"
         "def x_pdf(p):\n"
         "    import pdfplumber\n"
         "    o=[]\n"
         "    with pdfplumber.open(p) as pdf:\n"
         "        for i,pg in enumerate(pdf.pages):\n"
-        "            if i>=3: o.append('…'); break\n"
-        "            o.append(pg.extract_text() or '')\n"
+        "            if i>=3: o.append('...'); break\n"
+        "            o.append('# page %d' % (i+1))\n"
+        "            for t in pg.extract_tables():\n"
+        "                o.append('  [table]')\n"
+        "                for r,row in enumerate(t):\n"
+        "                    o.append('    r%d: %s' % (r, ' | '.join(c or '' for c in row)))\n"
+        "            chars=pg.chars\n"
+        "            if chars:\n"
+        "                lines={}\n"
+        "                for ch in chars:\n"
+        "                    lines.setdefault(round(ch['top']), []).append(ch)\n"
+        "                for top in sorted(lines):\n"
+        "                    chs=sorted(lines[top], key=lambda c: c['x0'])\n"
+        "                    text=''.join(c['text'] for c in chs)\n"
+        "                    if not text.strip(): continue\n"
+        "                    tags=[]\n"
+        "                    c0=chs[0]; sz=c0.get('size',0)\n"
+        "                    if sz>14: tags.append('big(title)')\n"
+        "                    elif sz>11: tags.append('mid')\n"
+        "                    color=c0.get('non_stroking_color')\n"
+        "                    if color is not None:\n"
+        "                        ct=tuple(round(x,2) for x in color)\n"
+        "                        if ct!=(0,0,0) and ct!=(0.0,): tags.append('fg'+str(ct))\n"
+        "                    tag='['+','.join(tags)+']' if tags else ''\n"
+        "                    o.append('  '+tag+text)\n"
         "    return '\\n'.join(o)\n"
         "DISP={'.xlsx':x_xlsx,'.xlsm':x_xlsx,'.docx':x_docx,'.pptx':x_pptx,'.pdf':x_pdf}\n"
         "out={}\n"
@@ -223,15 +406,37 @@ def _run_json_probe(sandbox: ReadOnlySandbox | None, probe: str) -> dict:
     try:
         res = sandbox.run_code(probe)
         out = (getattr(res, "stdout", "") or "").strip()
+        # Guard against oversized stdout (1 MB limit)
+        if len(out) > 1_000_000:
+            out = out[:1_000_000]
         data = json.loads(out) if out else {}
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001 -- observation must never crash the session
         return {}
 
 
+def _is_runtime_file(path: str) -> bool:
+    """True for framework/runtime files that are never user deliverables.
+
+    命中条件（任一）：具名 runtime 文件（.bashrc/envd.log/...）；或运行时日志/pid 后缀
+    （*.log/*.pid，如 jupyter.log/uvicorn.log/envd.log —— 沙箱服务持续写、非 agent 交付物）。
+    """
+    base = path.rsplit("/", 1)[-1]
+    if base in _RUNTIME_FILES:
+        return True
+    return base.endswith((".log", ".pid"))
+
+
 def snapshot_workspace(sandbox: ReadOnlySandbox | None) -> dict[str, dict]:
-    """Read-only FS snapshot: ``{path: {size, mtime, ext, text|binary}}``."""
-    return _run_json_probe(sandbox, _SNAPSHOT_PROBE)
+    """Read-only FS snapshot: ``{path: {size, mtime, ext, text|binary}}``.
+
+    Runtime/framework files (.bashrc, AGENTS.md, ...) are dropped so they never
+    appear as noise in the diff or file tree.
+    """
+    snap = _run_json_probe(sandbox, _SNAPSHOT_PROBE)
+    if isinstance(snap, dict):
+        return {p: rec for p, rec in snap.items() if not _is_runtime_file(p)}
+    return snap
 
 
 def snapshot_system(sandbox: ReadOnlySandbox | None) -> dict:
@@ -260,8 +465,9 @@ def _excerpt(rec: dict) -> dict:
 
 
 def _sig(rec: dict) -> tuple:
-    """Cheap change signature: (size, mtime). Any write updates mtime."""
-    return (rec.get("size"), rec.get("mtime"))
+    """Cheap change signature: (size, mtime, chash). Any write updates mtime;
+    chash catches same-size content changes for small files."""
+    return (rec.get("size"), rec.get("mtime"), rec.get("chash"))
 
 
 def diff_snapshots(pre: dict[str, dict] | None, post: dict[str, dict] | None) -> dict[str, list]:
@@ -280,7 +486,11 @@ def diff_snapshots(pre: dict[str, dict] | None, post: dict[str, dict] | None) ->
             modified.append(entry)
     for path in pre:
         if path not in post:
-            removed.append({"path": path})
+            entry = {"path": path}
+            excerpt = pre[path].get("text", "")  # full old content (render clips)
+            if excerpt:
+                entry["before_excerpt"] = excerpt
+            removed.append(entry)
     return {"added": added, "modified": modified, "removed": removed}
 
 
@@ -313,47 +523,88 @@ def _fs_diff_empty(diff: dict[str, list]) -> bool:
 
 
 def _sys_diff_empty(sd: dict[str, list]) -> bool:
-    return not any(sd.get(k) for k in ("installed_packages", "opened_ports", "started_procs"))
+    # Only installed packages count as a real, reportable system change now.
+    # Ports/processes are transient noise and are no longer rendered.
+    return not sd.get("installed_packages")
+
+
+def _clip(body: str) -> str:
+    """Per-file safety clip (content is otherwise listed in full)."""
+    if len(body) > _MAX_RENDER_CHARS:
+        return body[:_MAX_RENDER_CHARS] + " …[truncated]"
+    return body
+
+
+def _indent(body: str, prefix: str = "    ") -> str:
+    return "\n".join(prefix + ln for ln in body.splitlines())
 
 
 def _render_file(prefix: str, f: dict) -> str:
+    """Render one added file: header + FULL content (indented)."""
     head = f"{prefix} {f['path']} ({f.get('kind', '?')}, {f.get('size', 0)}B)"
     body = f.get("content_excerpt", "")
     if not body:
         return head
-    if len(body) > _MAX_RENDER_CHARS:
-        body = body[:_MAX_RENDER_CHARS] + " …[truncated]"
-    indented = "\n".join("    " + ln for ln in body.splitlines())
-    return f"{head}\n{indented}"
+    return f"{head}\n{_indent(_clip(body))}"
 
 
 def _format_changes(diff: dict[str, list], sys_diff: dict[str, list]) -> str:
-    """Render FS + SYS diff as the observer's ground-truth evidence (capped)."""
+    """Render the FS + SYS diff as the observer's ground-truth evidence.
+
+    Three clean sections — 新增 / 改变 / 删除 — each listing content in FULL:
+      - ADDED    → the new file's complete content
+      - MODIFIED → BEFORE and AFTER content (a real before/after diff)
+      - REMOVED  → the deleted file's old content
+    doc/PPT/PDF are already extracted to text (kind=binary→text) upstream.
+    System changes are reduced to installed packages only (ports/procs = noise).
+    """
     fs_empty, sys_empty = _fs_diff_empty(diff), _sys_diff_empty(sys_diff)
     if fs_empty and sys_empty:
         return "mode: before/after diff -- (no filesystem or system changes this turn)"
     out = ["mode: before/after diff (what THIS turn changed in the environment)"]
     shown = 0
-    for f in diff["added"]:
-        if shown >= _MAX_RENDER_FILES:
-            break
-        out.append(_render_file("+ ADDED", f)); shown += 1
-    for f in diff["modified"]:
-        if shown >= _MAX_RENDER_FILES:
-            break
-        out.append(_render_file("~ MODIFIED", f)); shown += 1
-    out += [f"- REMOVED {f['path']}" for f in diff["removed"]]
+
+    if diff["added"]:
+        out.append("## 新增文件 (ADDED)")
+        for f in diff["added"]:
+            if shown >= _MAX_RENDER_FILES:
+                break
+            out.append(_render_file("+ ADDED", f))
+            shown += 1
+
+    if diff["modified"]:
+        out.append("## 改变文件 (MODIFIED)")
+        for f in diff["modified"]:
+            if shown >= _MAX_RENDER_FILES:
+                break
+            head = f"~ MODIFIED {f['path']} ({f.get('kind', '?')}, {f.get('size', 0)}B)"
+            out.append(head)
+            before = f.get("before_excerpt", "")
+            after = f.get("content_excerpt", "")
+            if before:
+                out.append("    [BEFORE]")
+                out.append(_indent(_clip(before), "      "))
+            if after:
+                out.append("    [AFTER]")
+                out.append(_indent(_clip(after), "      "))
+            shown += 1
+
+    if diff["removed"]:
+        out.append("## 删除文件 (REMOVED)")
+        for f in diff["removed"]:
+            out.append(f"- REMOVED {f['path']}")
+            was = f.get("before_excerpt", "")
+            if was:
+                out.append(_indent(_clip(was)))
+
     total = len(diff["added"]) + len(diff["modified"])
     if total > _MAX_RENDER_FILES:
         out.append(f"… and {total - _MAX_RENDER_FILES} more changed files (truncated)")
+
     if not sys_empty:
-        out.append("## system state changes (non-filesystem)")
+        out.append("## 系统变更 (SYSTEM — installed packages only)")
         for pkg in sys_diff["installed_packages"]:
             out.append(f"+ INSTALLED {pkg}")
-        for port in sys_diff["opened_ports"]:
-            out.append(f"+ PORT LISTENING {port}")
-        for proc in sys_diff["started_procs"]:
-            out.append(f"+ PROCESS {proc}")
     return "\n".join(out)
 
 
@@ -383,17 +634,264 @@ def build_deterministic_report(
     not via this report.
     """
     final: list[dict] = []
+    intermediate: list[dict] = []
+    discrepancies_parts: list[str] = []
+
     if diff is not None:
-        for group in ("added", "modified"):
-            for f in diff[group]:
+        # Track paths that were added then modified within the same turn → intermediate
+        added_paths: dict[str, dict] = {}
+        modified_paths: set[str] = set()
+        for f in diff["added"]:
+            added_paths[f["path"]] = f
+        for f in diff["modified"]:
+            modified_paths.add(f["path"])
+
+        for f in diff["added"]:
+            path = f["path"]
+            entry = {
+                "path": path,
+                "kind": f.get("kind", "?"),
+                "content_excerpt": f.get("content_excerpt", ""),
+            }
+            # If this file was later modified in the same turn, it's intermediate
+            if path in modified_paths:
+                intermediate.append(
+                    {
+                        "desc": "intermediate file (modified later in same turn)",
+                        "source": path,
+                        "value_excerpt": f.get("content_excerpt", "")[:200],
+                    }
+                )
+            else:
+                final.append(entry)
+
+        for f in diff["modified"]:
+            path = f["path"]
+            if path not in added_paths:  # don't double-count
                 final.append(
                     {
-                        "path": f["path"],
+                        "path": path,
                         "kind": f.get("kind", "?"),
                         "content_excerpt": f.get("content_excerpt", ""),
                     }
                 )
-    return ObservationReport(final=final, file_tree=file_tree, state_diff=state_diff)
+
+        # Structural discrepancy checks (no LLM needed)
+        for f in diff["added"] + diff["modified"]:
+            path = f["path"]
+            kind = f.get("kind", "?")
+            size = f.get("size", 0)
+            content = f.get("content_excerpt", "")
+            # Derive ext from path (the diff entry may not carry 'ext')
+            ext = ""
+            if "." in path.rsplit("/", 1)[-1]:
+                ext = "." + path.rsplit(".", 1)[-1].lower()
+
+            # Empty deliverable: file with office/data extension but size=0 or empty content
+            if ext in (".xlsx", ".xlsm", ".docx", ".pptx", ".pdf", ".csv", ".json", ".xml"):
+                if size == 0:
+                    discrepancies_parts.append(f"{path}: empty file (size=0, ext={ext})")
+                elif kind == "text" and (not content or content.strip() == ""):
+                    discrepancies_parts.append(f"{path}: non-zero size but empty text content")
+            if kind == "binary→text" and (not content or content.strip() == ""):
+                discrepancies_parts.append(f"{path}: binary extracted but content is empty")
+
+    # Cross-file value consistency check (simple: look for same key name with different values)
+    # This is a best-effort heuristic — the LLM path does deeper semantic checks.
+    _check_value_consistency(diff, discrepancies_parts)
+
+    return ObservationReport(
+        intermediate=intermediate,
+        final=final,
+        discrepancies="; ".join(discrepancies_parts) if discrepancies_parts else "",
+        has_red_flag=bool(discrepancies_parts),  # structural checks only fire on real problems
+        file_tree=file_tree,
+        state_diff=state_diff,
+    )
+
+
+def _check_value_consistency(diff: dict[str, list] | None, discrepancies: list[str]) -> None:
+    """Heuristic cross-file value consistency check.
+
+    Scans added/modified CSV-like content for rows with the same key column
+    but different values across files. Very conservative — only flags when
+    the same header value appears in two files with a different second column.
+    """
+    if diff is None:
+        return
+    # Collect key→value pairs from CSV-like content across files
+    file_values: dict[str, dict[str, str]] = {}
+    for f in diff["added"] + diff["modified"]:
+        content = f.get("content_excerpt", "")
+        if not content or f.get("kind") == "binary":
+            continue
+        values: dict[str, str] = {}
+        for line in content.splitlines():
+            line = line.strip().lstrip(" ,")
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2 and parts[0] and parts[1]:
+                values[parts[0]] = parts[1]
+        if values:
+            file_values[f["path"]] = values
+    # Check for conflicts
+    all_keys: dict[str, list[tuple[str, str]]] = {}
+    for path, vals in file_values.items():
+        for k, v in vals.items():
+            all_keys.setdefault(k, []).append((path, v))
+    for k, entries in all_keys.items():
+        unique_vals = set(v for _, v in entries)
+        if len(unique_vals) > 1 and len(entries) > 1:
+            paths = ", ".join(f"{p}={v}" for p, v in entries)
+            discrepancies.append(f"conflicting value for '{k}': {paths}")
+
+
+# --------------------------------------------------------------------------- #
+# Observer tools (OpenAI function-calling schema) for multi-turn tool-use.      #
+# Each tool wraps a sandbox probe that is backend-agnostic (uses run_code only). #
+# --------------------------------------------------------------------------- #
+
+
+def _read_file_probe(path: str) -> str:
+    """Build a probe to read a single file's content (capped at 4 KB)."""
+    return (
+        "import json\n"
+        f"PATH={json.dumps(path)}\n"
+        "try:\n"
+        "    with open(PATH) as f:\n"
+        "        data=f.read(4096)\n"
+        "    print(json.dumps({'path': PATH, 'content': data, 'truncated': len(data)>=4096}))\n"
+        "except Exception as e:\n"
+        "    print(json.dumps({'path': PATH, 'error': str(e)}))\n"
+    )
+
+
+def _list_dir_probe(path: str) -> str:
+    """Build a probe to list a directory."""
+    return (
+        "import os, json\n"
+        f"PATH={json.dumps(path)}\n"
+        "try:\n"
+        "    entries=sorted(os.listdir(PATH))\n"
+        "    print(json.dumps({'path': PATH, 'entries': entries}))\n"
+        "except Exception as e:\n"
+        "    print(json.dumps({'path': PATH, 'error': str(e)}))\n"
+    )
+
+
+OBSERVER_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_diff",
+            "description": (
+                "Get the before/after environment diff that was auto-collected "
+                "for this turn. Includes files added/modified/removed (with content) "
+                "and system-state changes (packages, ports, processes)."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_file_tree",
+            "description": (
+                "Get the full workspace file list with content excerpts. "
+                "Use when you need to see ALL files (not just changed ones)."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": (
+                "Read a specific file's content (up to 4 KB). Use to inspect a "
+                "file in detail when the diff excerpt is truncated or suspicious."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path of the file to read (relative to workspace root, e.g. './report.txt').",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_dir",
+            "description": (
+                "List contents of a directory. Use to discover files not shown " "in the diff or file tree."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory path (e.g. './output'). Defaults to workspace root.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_system_state",
+            "description": (
+                "Get the current system state: installed pip packages, "
+                "listening TCP ports, running processes. Use when you suspect "
+                "system-level changes not visible in the file diff."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+]
+
+
+def _execute_observer_tool(
+    tool_name: str,
+    tool_args: dict,
+    sandbox: ReadOnlySandbox | None,
+    state_diff: str,
+    file_tree: str,
+    baseline: dict | None,
+    post: dict | None,
+) -> str:
+    """Execute a single observer tool call and return the result as a string."""
+    if sandbox is None:
+        return json.dumps({"error": "no sandbox available"})
+
+    if tool_name == "get_diff":
+        return state_diff or "(no diff available)"
+
+    if tool_name == "get_file_tree":
+        return file_tree or "(empty workspace)"
+
+    if tool_name == "read_file":
+        path = tool_args.get("path", ".")
+        result = _run_json_probe(sandbox, _read_file_probe(path))
+        return json.dumps(result, ensure_ascii=False) if result else json.dumps({"error": "read failed"})
+
+    if tool_name == "list_dir":
+        path = tool_args.get("path", ".")
+        result = _run_json_probe(sandbox, _list_dir_probe(path))
+        return json.dumps(result, ensure_ascii=False) if result else json.dumps({"error": "list failed"})
+
+    if tool_name == "get_system_state":
+        sys_state = snapshot_system(sandbox)
+        return json.dumps(sys_state, ensure_ascii=False, default=str)
+
+    return json.dumps({"error": f"unknown tool: {tool_name}"})
 
 
 class Observer:
@@ -403,14 +901,16 @@ class Observer:
         self,
         client: ChatClient | None = None,
         *,
-        use_llm: bool = False,
+        use_llm: bool = True,
         probe_system: bool = True,
         max_tokens: int = 1024,
+        max_tool_rounds: int = 5,
     ):
         self._client = client
         self._use_llm = use_llm
         self._probe_system = probe_system
         self._max_tokens = max_tokens
+        self._max_tool_rounds = max_tool_rounds
 
     @property
     def client(self) -> ChatClient:
@@ -444,21 +944,26 @@ class Observer:
         baseline: dict | None = None,
         post: dict | None = None,
     ) -> ObservationReport:
-        """Diff-driven objective report. The observer MODEL sees STATE only.
+        """Diff-driven objective report with optional multi-turn tool-use.
 
-        The observer's findings are grounded purely on the real environment diff;
-        the observer LLM NEVER sees the trajectory (no token waste). The
-        ``actor_trajectory`` is carried PASS-THROUGH on the report (``actor_trajectory``
-        field) for the reward judge -- it is not fed to the prompt here.
+        The observer MODEL sees STATE only; the trajectory is carried PASS-THROUGH.
+
+        Flow:
+          1. Deterministic forensics (always runs): snapshot → diff → extract → render.
+          2. If use_llm=False → build deterministic report (degraded mode).
+          3. If use_llm=True → LLM multi-turn tool-use loop:
+             - Send diff evidence as the first user message.
+             - LLM may call tools (read_file, list_dir, …) to investigate.
+             - Loop until LLM outputs final JSON or max rounds reached.
+             - On any failure → degrade to deterministic report.
 
         Args:
-            sandbox: live (winner) instance; used to extract changed binaries, and
-                snapshotted for ``post`` if ``post`` is not supplied.
+            sandbox: live (winner) instance; used for tool execution and binary
+                extraction, and snapshotted for ``post`` if not supplied.
             actor_trajectory: winner messages (or text) -- carried through to reward,
                 NOT given to the observer model.
             baseline: pre-turn {fs,sys} snapshot. With it -> before/after diff.
-            post: post-turn {fs,sys} snapshot (driver carries it forward -> one
-                snapshot per turn). Snapshotted here only if not supplied.
+            post: post-turn {fs,sys} snapshot. Snapshotted here only if not supplied.
         """
         traj_text = flatten_trajectory(actor_trajectory)
         if post is None:
@@ -471,42 +976,245 @@ class Observer:
             diff = diff_snapshots(self._fs(baseline), post_fs)
             sys_diff = diff_system(self._sys(baseline), self._sys(post))
             # (a) extract changed rich-binary files to text, fold into the diff.
-            changed = [f["path"] for f in diff["added"] + diff["modified"]
-                       if f.get("kind") == "binary"]
+            changed = [f["path"] for f in diff["added"] + diff["modified"] if f.get("kind") == "binary"]
             if changed:
                 _merge_extracted(diff, extract_binaries(sandbox, changed))
-            if _fs_diff_empty(diff) and _sys_diff_empty(sys_diff):
-                # nothing changed on disk OR in system state this turn -> gate
-                # downstream (skip reward judge / take failure path) via has_effect.
+            if _fs_diff_empty(diff):
+                # No FILE change this turn. Tasks deliver results as files; when
+                # nothing was written, either (a) the deliverable is the reply
+                # text itself (QA / reasoning / role-play), or (b) the turn only
+                # touched system state (installed a package, opened a port). A
+                # pure-diff observer is blind to (a), so fall back to the actor's
+                # last reply and let the questioner scrutinise the ANSWER. A
+                # sys-only diff (b) is kept as supplementary context but must NOT
+                # mask the answer text — the earlier bug was that a stray package
+                # install suppressed this fallback and the answer was lost.
+                sys_empty = _sys_diff_empty(sys_diff)
+                last_reply = _last_assistant_reply(actor_trajectory)
+                header = (
+                    "mode: no file change this turn; deliverable is the "
+                    "assistant's reply text (below)"
+                )
+                if not sys_empty:
+                    header += "\n\n" + _format_changes(diff, sys_diff)
+                body = ("\n\n" + last_reply) if last_reply else ""
+                if not last_reply and sys_empty:
+                    header = "mode: before/after diff -- (no filesystem or system changes this turn)"
                 return ObservationReport(
                     file_tree=file_tree,
                     actor_trajectory=traj_text,
-                    state_diff="mode: before/after diff -- (no filesystem or system changes this turn)",
-                    has_effect=False,
+                    # final must be list[dict{path,kind,content_excerpt}] (schema).
+                    # For a text-only deliverable there is no file, so use a synthetic
+                    # path and carry the answer in content_excerpt — never a bare str,
+                    # which breaks every downstream f["path"] consumer.
+                    final=(
+                        [{"path": "(assistant reply)", "kind": "text", "content_excerpt": last_reply}]
+                        if last_reply
+                        else []
+                    ),
+                    state_diff=header + body,
+                    has_effect=not sys_empty,  # sys-only change still counts as effect
                 )
             state_diff = _format_changes(diff, sys_diff)
         else:
             state_diff = _format_state(post_fs)
 
-        # Observer LLM is OPTIONAL: the forensics evidence above is already text,
-        # so by default we build the report deterministically (no model call).
+        # ------------------------------------------------------------------ #
+        # Deterministic report (degraded mode when LLM unavailable)          #
+        # ------------------------------------------------------------------ #
         if not self._use_llm:
-            report = build_deterministic_report(
-                diff=diff, file_tree=file_tree, state_diff=state_diff
-            )
-        else:
-            # The prompt carries the diff ONLY -- the trajectory is never sent.
-            messages = build_observer_prompt(state_diff=state_diff)
-            try:
-                raw = self.client.chat(messages, max_tokens=self._max_tokens)
-                report = parse_observation_report(
-                    raw, fallback_tree=file_tree, fallback_diff=state_diff
-                )
-            except Exception:  # noqa: BLE001 -- degrade to minimal report, never crash
-                report = ObservationReport(file_tree=file_tree, state_diff=state_diff)
+            report = build_deterministic_report(diff=diff, file_tree=file_tree, state_diff=state_diff)
+            report.actor_trajectory = traj_text
+            return report
 
-        report.actor_trajectory = traj_text  # pass-through (not seen by the model)
+        # ------------------------------------------------------------------ #
+        # LLM multi-turn tool-use loop                                       #
+        # ------------------------------------------------------------------ #
+        report = self._tool_use_loop(
+            sandbox=sandbox,
+            diff=diff,
+            state_diff=state_diff,
+            file_tree=file_tree,
+            baseline=baseline,
+            post=post,
+        )
+        report.actor_trajectory = traj_text
         return report
+
+    def _tool_use_loop(
+        self,
+        sandbox: ReadOnlySandbox | None,
+        diff: dict[str, list] | None,
+        state_diff: str,
+        file_tree: str,
+        baseline: dict | None,
+        post: dict | None,
+    ) -> ObservationReport:
+        """Run the LLM with tool-use until it outputs a final JSON report.
+
+        Falls back to the deterministic report on any failure (LLM error, parse
+        failure, max rounds exceeded). Never crashes the session.
+        """
+        try:
+            messages = build_observer_prompt(state_diff=state_diff, file_tree=file_tree)
+            # Check if the client supports tool-use
+            client = self.client
+            has_tool_support = hasattr(client, "chat_with_tools")
+
+            for _round in range(self._max_tool_rounds):
+                if has_tool_support:
+                    msg = client.chat_with_tools(messages, tools=OBSERVER_TOOLS, max_tokens=self._max_tokens)
+                else:
+                    # Fallback: single-shot without tools
+                    content = client.chat(messages, max_tokens=self._max_tokens)
+                    msg = {"role": "assistant", "content": content}
+
+                messages.append(msg)
+
+                # Check if the LLM wants to call tools
+                tool_calls = msg.get("tool_calls") or []
+                if not tool_calls:
+                    # No tool calls — this should be the final JSON output
+                    content = msg.get("content", "")
+                    report = parse_observation_report(
+                        content, fallback_tree=file_tree, fallback_diff=state_diff
+                    )
+                    report.file_tree = file_tree
+                    report.state_diff = state_diff
+                    # P0: if the LLM returned an empty final/intermediate, backfill
+                    # from the deterministic report (which always extracts them from
+                    # the diff). The LLM is an *enhancement*; deterministic is the
+                    # floor — never let the questioner see an empty deliverable list
+                    # when the diff actually contains realized artifacts.
+                    if not report.final and not report.intermediate and diff is not None:
+                        det = build_deterministic_report(
+                            diff=diff, file_tree=file_tree, state_diff=state_diff
+                        )
+                        report.final = det.final
+                        report.intermediate = det.intermediate
+                        if not report.discrepancies:
+                            report.discrepancies = det.discrepancies
+                        report.has_red_flag = report.has_red_flag or det.has_red_flag
+                    _finalize_red_flag(report)
+                    _strip_system_intermediate(report)
+                    return report
+
+                # Process tool calls
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    tool_name = fn.get("name", "")
+                    try:
+                        tool_args = json.loads(fn.get("arguments", "{}"))
+                    except (json.JSONDecodeError, TypeError):
+                        tool_args = {}
+                    tool_result = _execute_observer_tool(
+                        tool_name,
+                        tool_args,
+                        sandbox,
+                        state_diff,
+                        file_tree,
+                        baseline,
+                        post,
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.get("id", ""),
+                            "content": tool_result,
+                        }
+                    )
+
+            # Max rounds exceeded — ask for the final report without tools
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "You have used all available investigation rounds. "
+                    "Output the JSON observation report now based on the evidence gathered.",
+                }
+            )
+            if has_tool_support:
+                final_msg = client.chat_with_tools(
+                    messages, max_tokens=self._max_tokens
+                )  # no tools → plain completion
+            else:
+                content = client.chat(messages, max_tokens=self._max_tokens)
+                final_msg = {"role": "assistant", "content": content}
+            content = final_msg.get("content", "")
+            report = parse_observation_report(content, fallback_tree=file_tree, fallback_diff=state_diff)
+            report.file_tree = file_tree
+            report.state_diff = state_diff
+            # P0: backfill deterministic final/intermediate if LLM left them empty.
+            if not report.final and not report.intermediate and diff is not None:
+                det = build_deterministic_report(
+                    diff=diff, file_tree=file_tree, state_diff=state_diff
+                )
+                report.final = det.final
+                report.intermediate = det.intermediate
+                if not report.discrepancies:
+                    report.discrepancies = det.discrepancies
+                report.has_red_flag = report.has_red_flag or det.has_red_flag
+            _finalize_red_flag(report)
+            _strip_system_intermediate(report)
+            return report
+
+        except TruncatedOutputError:
+            # The model's reply was cut off (thinking models hitting max_tokens).
+            # Do NOT parse the half-JSON as the final report -- degrade to the
+            # deterministic forensics report (which is always correct/complete).
+            return build_deterministic_report(diff=diff, file_tree=file_tree, state_diff=state_diff)
+        except Exception:  # noqa: BLE001 — never crash the session
+            # Degrade to deterministic report on any LLM failure
+            return build_deterministic_report(diff=diff, file_tree=file_tree, state_diff=state_diff)
+
+
+def _derive_red_flag(disc: str) -> bool:
+    """Fallback verdict from free text when the model omits ``has_red_flag``.
+
+    Delegates to prompts._is_real_red_flag: positive phrases (a concrete problem is
+    stated) win over negative openers, so a boilerplate "No empty deliverables
+    detected. One discrepancy is present: ..." is correctly flagged.
+    """
+    return _is_real_red_flag(disc)
+
+
+def _finalize_red_flag(report: ObservationReport) -> None:
+    """Reconcile ``has_red_flag`` with the report's own ``discrepancies`` TEXT.
+
+    The model's explicit boolean is unreliable in BOTH directions (2026-07-10 iter4
+    data): it sometimes sets False while stating a real concern after a reassuring
+    opener, and sometimes sets True while its text is unambiguously "nothing found"
+    ("No concrete red flags detected... no empty deliverables or conflicting values
+    were observed" but has_red_flag=true). So the TEXT verdict (_is_real_red_flag,
+    positive-phrase-wins + negation-aware) is authoritative and overrides the boolean.
+
+    Exception: when ``discrepancies`` is EMPTY, there is no text to judge, so a True
+    boolean is left as-is (an empty-text True is a rare deterministic edge; keep it).
+    """
+    d = (report.discrepancies or "").strip()
+    if not d:
+        return
+    report.has_red_flag = _is_real_red_flag(d)
+
+
+# Markers of system-state noise the LLM sometimes drops into `intermediate`
+# (installed packages / running processes). These are not user deliverables and
+# are already covered (packages) or dropped (ports/procs) by the diff renderer.
+_SYS_INTERMEDIATE_MARKERS = ("system state", "process snapshot", "package", "installed", "port ")
+
+
+def _strip_system_intermediate(report: ObservationReport) -> None:
+    """Drop system-noise entries the LLM put into `intermediate` (source==system
+    or a system-state description). Keeps only genuine intermediate artifacts."""
+    kept = []
+    for it in report.intermediate or []:
+        if not isinstance(it, dict):
+            continue
+        src = str(it.get("source", "")).lower()
+        desc = str(it.get("desc", "")).lower()
+        if src == "system" or any(m in desc for m in _SYS_INTERMEDIATE_MARKERS):
+            continue
+        kept.append(it)
+    report.intermediate = kept
 
 
 def parse_observation_report(
@@ -538,10 +1246,22 @@ def parse_observation_report(
     def _as_list(v: Any) -> list[dict]:
         return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
 
+    disc = str(obj.get("discrepancies") or "")
+    # Prefer the model's explicit boolean; fall back to deriving it from the text
+    # (so older outputs / truncated JSON without the field still get a verdict).
+    raw_flag = obj.get("has_red_flag")
+    if isinstance(raw_flag, bool):
+        has_flag = raw_flag
+    elif isinstance(raw_flag, str):
+        has_flag = raw_flag.strip().lower() in ("true", "yes", "1")
+    else:
+        has_flag = _derive_red_flag(disc)
+
     return ObservationReport(
         intermediate=_as_list(obj.get("intermediate")),
         final=_as_list(obj.get("final")),
-        discrepancies=str(obj.get("discrepancies") or ""),
+        discrepancies=disc,
+        has_red_flag=has_flag,
         file_tree=str(obj.get("file_tree") or fallback_tree),
         state_diff=str(obj.get("state_diff") or fallback_diff),
     )

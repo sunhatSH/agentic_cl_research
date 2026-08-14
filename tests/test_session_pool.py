@@ -27,7 +27,9 @@ def _factory(backend, **kwargs):
 
 def _make_pool(**kw):
     return SessionSandboxPool(
-        slots=8, backend="mock", sandbox_factory=_factory,
+        slots=8,
+        backend="mock",
+        sandbox_factory=_factory,
         initial_state_factory=lambda: {"files": {"seed.txt": "x"}, "step": 0},
         **kw,
     )

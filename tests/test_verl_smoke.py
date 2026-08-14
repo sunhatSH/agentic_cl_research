@@ -97,7 +97,7 @@ def test_toy_cl_loss_forward_full_stack():
     Not runnable on a single GPU / without the real base model weights + dataset.
     Run manually on the cluster, e.g.::
 
-        bash scripts/train.sh configs/phase1/b1.yaml \
+        bash scripts/train.sh configs/run/b1_9b_16gpu.yaml \
             actor_rollout_ref.model.path=/mnt/afs/models/qwen3.6-27b \
             data.train_files=... data.val_files=... \
             trainer.total_training_steps=2 trainer.val_before_train=false

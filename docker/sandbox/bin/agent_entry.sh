@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run ONE agent turn inside the sandbox (see doc/Sandbox_Agent架构.md §3, W1).
+# Run ONE agent turn inside the sandbox (see doc/sandbox/Sandbox_Agent架构.md §3, W1).
 #
 # Responsibilities:
 #   1. Ensure the persona filesystem is materialized (seed_workspace.sh).
@@ -54,7 +54,7 @@ envsubst < "${TEMPLATE}" > "${CONFIG_OUT}"
 log "rendered config -> ${CONFIG_OUT} (endpoint=${OPENAI_API_BASE}, model=${OPENCLAW_MODEL})"
 
 # 3. Run one headless agent turn. Flags depend on the installed OpenClaw version;
-#    verify against `openclaw doctor` (see doc/Sandbox_Agent架构.md §8).
+#    verify against `openclaw doctor` (see doc/sandbox/Sandbox_Agent架构.md §8).
 log "running agent turn in ${WORKSPACE}"
 cd "${WORKSPACE}"
 openclaw agent --message "${query}"

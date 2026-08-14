@@ -1,0 +1,44 @@
+# 9B debug 配置 — 单机 8GPU 快速迭代。
+# 用法: bash scripts/train.sh configs/debug_8b.yaml
+#
+# 与 production_27b 共享 base.yaml 的算法默认值（train_batch=256, replay_batch=64,
+# 9桶 buffer, W0 flat weighting 等），仅在模型/硬件/并行度上分叉。
+
+defaults:
+  - _generated_ppo_trainer
+  - base
+
+# ── 模型（Qwen3.5-9B）────────────────────────────────────────────────
+actor_rollout_ref:
+  model:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    use_fused_kernels: true
+
+  # ── 训练引擎（8 GPU FSDP, micro_batch=4 ≈ 47 GB/卡）────────────────────────
+  actor:
+    ppo_mini_batch_size: 32
+    ppo_micro_batch_size_per_gpu: 4
+    ppo_max_token_len_per_gpu: 32768
+    ulysses_sequence_parallel_size: 1   # 8卡不用SP
+    strategy: fsdp
+    fsdp_config:
+      param_offload: false
+      optimizer_offload: false
+
+  # ── 推理（8 GPU, 2×TP4 vLLM）────────────────────────────────────────────────
+  rollout:
+    name: lightllm
+    mode: async
+    tensor_model_parallel_size: 2
+    gpu_memory_utilization: 0.85
+
+  ref:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    log_prob_micro_batch_size_per_gpu: 4
+    fsdp_config:
+      param_offload: false
+
+# ── trainer 覆盖 ──────────────────────────────────────────────────────────────
+trainer:
+  experiment_name: b1_9b_debug
+  project_name: agentic-cl

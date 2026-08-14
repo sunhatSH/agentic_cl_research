@@ -1,0 +1,128 @@
+% !TEX TS-program = xelatex
+% !TEX encoding = UTF-8 Unicode
+%
+% 中国人民大学专业硕士学位论文 —— 面向智能体大语言模型的持续强化学习
+% 模板：ructhesis（master-thesis/ructhesis.cls）
+% 编译（在 master-thesis/ 目录下执行）：
+%   latexmk -xelatex -interaction=nonstopmode -file-line-error \
+%     -output-directory=thesis/最终稿 thesis/main.tex
+% 或手动：xelatex thesis/main → biber main（在 最终稿/ 内）→ xelatex ×2
+
+\documentclass[promaster]{ructhesis}
+
+% ── 自添宏包（去掉模板示例里与本文无关的 skak 国际象棋、chemfig 化学式）──
+\usepackage{algorithm}
+\usepackage{algorithmicx}
+\usepackage{algpseudocode}
+\usepackage{float}
+\usepackage{makecell}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage[section]{placeins}
+\usepackage{url}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{cite}
+% \addbibresource{latex/ref.bib} (plain bibtex mode)
+\newcommand{\upcite}[1]{\textsuperscript{\textsuperscript{\cite{#1}}}}
+
+% ── 字体覆盖（模板 cls 硬编码了 Windows 字体 PostScript 名，Linux 上用后备字体兜底）──
+\IfFontExistsTF{CourierNewPSMT}{}{\setmonofont{DejaVu Sans Mono}}
+\IfFontExistsTF{TimesNewRomanPSMT}{}{\setmainfont{DejaVu Serif}}
+\IfFontExistsTF{ArialMT}{}{\setsansfont{DejaVu Sans}}
+
+% ── 图目录 / 表目录名 ──
+\renewcommand{\listfigurename}{图目录}
+\renewcommand{\listtablename}{表目录}
+
+% ── 算法环境汉化 ──
+\floatname{algorithm}{算法}
+\counterwithin{algorithm}{chapter}
+\renewcommand{\algorithmicrequire}{\textbf{输入：}}
+\renewcommand{\algorithmicensure}{\textbf{输出：}}
+\algnewcommand\algorithmicforeach{\textbf{for each}}
+\algdef{S}[FOR]{ForEach}[1]{\algorithmicforeach\ #1\ \algorithmicdo}
+
+% ── TODO 占位宏（依赖实验结果的数字一律用此标记，不编造）──
+\newcommand{\todo}[1]{{\color{red}[TODO: #1]}}
+% 配图占位框（图未绘制时用，不报错）
+\newcommand{\figplaceholder}[2][7cm]{%
+  \fbox{\parbox[c][#1][c]{0.85\textwidth}{\centering\itshape 图待绘制：#2}}%
+}
+
+% ── 论文元信息（题目/作者/导师/日期 等）单一信源：latex/thesis-info.tex ──
+\input{latex/thesis-info}
+
+% ── 封面信息 ──
+\sign{专业硕士学位论文}
+
+\title{\thesistitle}
+\author{\thesisauthor}
+\school{XXX学院}
+\field{XXXX}
+\studentid{XXXXXXXXXX}
+\advisor{\thesisadvisor}
+\date{\thesisdate}
+
+% 研究生填写
+\etitle{\thesisetitle}
+\keywords{持续学习；强化学习；大语言模型；智能体；经验回放}
+\keywordzh{持续学习；强化学习；大语言模型；智能体；经验回放；灾难性遗忘}
+\keyworden{Continual Learning;\qquad Reinforcement Learning;\qquad Large Language Model;\qquad Agent;\qquad Experience Replay}
+
+\begin{document}
+
+%扉页
+\maketitle
+
+%覆盖plain页眉格式，使chapter首页也有页眉
+\fancypagestyle{plain}{
+	\pagestyle{fancy}
+}
+
+%独创性声明
+\originality
+%授权书在这插入
+\authorization{figures/shouquan.png}
+%中文摘要
+\pagestyle{fancy}
+\input{latex/format/cabstractpage}
+%英文摘要
+\input{latex/format/eabstractpage}
+
+\frontmatter
+
+%正文目录
+\pagenumbering{arabic}
+\tableofcontents
+%插图目录
+{\renewcommand{\addvspace}[1]{} \listoffigures}
+%表格目录
+{\renewcommand{\addvspace}[1]{} \listoftables}
+
+\mainmatter\clearpage
+\pagestyle{newformat}
+
+%正文章节
+\input{latex/chap/chapter1_绪论}
+\input{latex/chap/chapter2_相关工作}
+\input{latex/chap/chapter3_问题定义}
+\input{latex/chap/chapter4_方法}
+\input{latex/chap/chapter5_系统实现}
+\input{latex/chap/chapter6_实验设计}
+\input{latex/chap/chapter7_总结展望}
+
+%参考文献
+\cleardoublepage
+\addcontentsline{toc}{chapter}{参考文献}
+\bibliographystyle{plain}
+\bibliography{latex/ref}
+
+%附录
+\appendix
+\input{latex/appendix/appendix_prompts}
+
+%致谢
+\input{latex/format/acknowledge}
+
+\end{document}

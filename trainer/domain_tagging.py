@@ -1,7 +1,7 @@
-"""LLM-emitted task domain (= 7-bucket label) for replay-buffer routing.
+"""LLM-emitted task domain (= 9-bucket label) for replay-buffer routing.
 
 The raw dataset carries no capability/domain label, but the buffer routes every
-trajectory into one of 7 capability buckets. Rather than a separate classifier
+trajectory into one of 9 capability buckets. Rather than a separate classifier
 pass, the agent emits the domain *while handling the task*: a prompt block
 (``build_domain_instruction``) is injected into the rollout system prompt asking
 the model to end its work with ``<task_domain>NAME</task_domain>``;
@@ -25,15 +25,18 @@ from __future__ import annotations
 import re
 
 # Canonical bucket names + short definitions (configs/base.yaml bucket_names,
-# doc/BucketDesign.md). Order is the canonical bucket order.
+# runs/_analysis/capability_buckets/buckets.json). Order is the canonical order.
+# 桶体系 = ClawEval 官方 category 合并(去多模态)，单层无子桶(2026-07-04)。
 DOMAIN_DEFINITIONS: list[tuple[str, str]] = [
-    ("Workflow", "多步骤任务的组织与编排（计划、串联多个动作完成一个目标）"),
-    ("SysOps", "工具使用与系统操作（读写文件、执行命令、调用外部工具/接口）"),
-    ("Dialogue", "多轮交互与状态跟踪（澄清、追问、依赖上下文的连续对话）"),
-    ("Finance", "结构化业务规则（金融/财务/交易等有明确规则的业务计算）"),
-    ("Communication", "表达与沟通（撰写、润色、翻译、面向人的表达）"),
-    ("Knowledge", "检索与推理（知识问答、分析、基于资料的推断）"),
-    ("OfficeQA", "办公语境问答（办公文档、表格、日常办公场景的问答）"),
+    ("workflow", "多步骤工作流编排（拆解目标、串联动作、条件分支与流程协调）"),
+    ("ops", "系统操作（文件读写、命令行/终端执行、系统运维、资源增删改查）"),
+    ("qa", "问答检索（查事实、答问题、阅读理解、记忆检索；即查即答，不产出长报告）"),
+    ("finance", "财务金融（贷款/税务/估值/ROI 计算、采购等按金融业务规则算账）"),
+    ("office", "办公文档（办公问答、表格/报表处理、办公数据分析）"),
+    ("communication", "沟通表达（邮件撰写/分类、内容创作、润色改写、翻译）"),
+    ("safety", "安全合规（拒绝不安全请求、漏洞/威胁评估、合规审查、敏感操作把关）"),
+    ("coding", "代码（编写、审查、调试、修复代码，代码正确性推理）"),
+    ("research", "研究综合（查多源信息并综合成报告/简报/摘要；区别于 qa 的即查即答）"),
 ]
 
 DEFAULT_BUCKETS: list[str] = [name for name, _ in DOMAIN_DEFINITIONS]
@@ -42,26 +45,42 @@ DOMAIN_TAG = "task_domain"
 
 # Common surface forms / aliases the model may emit -> canonical bucket.
 _ALIASES: dict[str, str] = {
-    "workflow": "Workflow",
-    "sysops": "SysOps",
-    "sys ops": "SysOps",
-    "system operations": "SysOps",
-    "system ops": "SysOps",
-    "tooluse": "SysOps",
-    "tool use": "SysOps",
-    "dialogue": "Dialogue",
-    "dialog": "Dialogue",
-    "conversation": "Dialogue",
-    "finance": "Finance",
-    "financial": "Finance",
-    "communication": "Communication",
-    "knowledge": "Knowledge",
-    "knowledge/analysis": "Knowledge",
-    "knowledge / analysis": "Knowledge",
-    "analysis": "Knowledge",
-    "officeqa": "OfficeQA",
-    "office qa": "OfficeQA",
-    "office": "OfficeQA",
+    "workflow": "workflow",
+    "productivity": "workflow",
+    "organization": "workflow",
+    "orchestration": "workflow",
+    "ops": "ops",
+    "sysops": "ops",
+    "operations": "ops",
+    "system operations": "ops",
+    "terminal": "ops",
+    "file_ops": "ops",
+    "tooluse": "ops",
+    "tool use": "ops",
+    "qa": "qa",
+    "what": "qa",
+    "knowledge": "qa",
+    "comprehension": "qa",
+    "memory": "qa",
+    "question answering": "qa",
+    "finance": "finance",
+    "financial": "finance",
+    "procurement": "finance",
+    "office": "office",
+    "officeqa": "office",
+    "office_qa": "office",
+    "office qa": "office",
+    "data_analysis": "office",
+    "communication": "communication",
+    "content": "communication",
+    "rewriting": "communication",
+    "safety": "safety",
+    "security": "safety",
+    "compliance": "safety",
+    "coding": "coding",
+    "code": "coding",
+    "research": "research",
+    "synthesis": "research",
 }
 
 _TAG_RE = re.compile(rf"<{DOMAIN_TAG}>\s*(.*?)\s*</{DOMAIN_TAG}>", re.IGNORECASE | re.DOTALL)
@@ -96,7 +115,7 @@ def parse_domain(text: str, valid: list[str] | None = None) -> str | None:
 
     - Reads the LAST ``<task_domain>...</task_domain>`` tag (the model may
       restate; the final emission is authoritative).
-    - Normalizes case/aliases and validates against ``valid`` (default the 7
+    - Normalizes case/aliases and validates against ``valid`` (default the 9
       canonical buckets). Returns None when no valid tag is found so callers can
       SKIP the trajectory rather than mislabel it (bug B12 discipline).
     """

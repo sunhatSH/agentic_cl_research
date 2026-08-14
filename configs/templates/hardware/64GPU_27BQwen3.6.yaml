@@ -1,0 +1,88 @@
+# 【模板·压力层】64 GPU × Qwen3.6-27B —— 正式生产规格,待压测
+#
+# ⚠️ 未实测。27B 是正式训练基座(CL_Design 定案)。上集群按
+# doc/ops/Concurrency_Policy_by_GPU.md checklist 压测后回填。所有显存数字待按 27B 重算
+# (CL_Design 里旧的按 70B 估算的数字已作废)。
+# 硬件:H100/H800 80GB × 64(8 节点 × 8)。
+# 布局二选一(CL_Design §GPU):
+#   (A) Fully-Async 分离 40+24:推理 40 卡(5×TP8 vLLM/lightllm)+ 训练 24 卡 FSDP,
+#       staleness_threshold=0.3。吞吐最高,是首选。
+#   (B) Colocate 64:训练/推理同卡分时(torch_memory_saver),为后备。
+# 本模板给 (B) Colocate 骨架(与 16/32GPU 同构,最易对齐验证);采 (A) 需另加 async 分离字段。
+
+actor_rollout_ref:
+  model:
+    path: /mnt/afs_agents/share_models/Qwen/Qwen3.6-27B   # π₀;cluster 或覆盖为本地缓存
+    use_fused_kernels: false
+    override_config:
+      attn_implementation: sdpa
+
+  actor:
+    strategy: fsdp
+    ulysses_sequence_parallel_size: 4     # 27B 长序列:SP=4(待压测,或 8)。DP=64÷SP
+    ppo_mini_batch_size: 128              # 须 % DP==0(SP4→DP16)
+    ppo_micro_batch_size_per_gpu: 1       # 27B 激活更大,先 1
+    ppo_max_token_len_per_gpu: 16384      # 27B 单卡前向上限更保守(待压测)
+    optim:
+      lr: 2.0e-6                          # 统一 lr(2026-08 用户定全系列 2e-6)
+      lr_warmup_steps_ratio: 0.03
+      lr_scheduler_type: constant
+    fsdp_config:
+      param_offload: true
+      optimizer_offload: true
+
+  rollout:
+    name: lightllm
+    mode: async
+    tensor_model_parallel_size: 8         # 27B 推理 TP=8(单卡放不下全权重)
+    gpu_memory_utilization: 0.6           # 27B 权重占比高,KV 池上限更保守(待压测)
+    n: 8
+    load_format: auto
+    max_model_len: 65536
+    max_num_batched_tokens: 8192
+    enable_chunked_prefill: false
+    calculate_log_probs: true
+    log_prob_micro_batch_size_per_gpu: 1
+    agent:
+      agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
+    multi_turn:
+      enable: false
+      format: qwen3_coder
+      reasoning_format: qwen3
+      max_assistant_turns: 20
+    checkpoint_engine:
+      update_weights_bucket_megabytes: 2048
+    engine_kwargs:
+      lightllm:
+        batch_max_tokens: 8192
+        enable_multimodal: false
+        enable_torch_memory_saver: true
+        graph_max_batch_size: 1024        # 待压测
+        running_max_req_size: 1024
+        sampling_backend: triton
+        disable_vision: true
+        disable_audio: true
+
+  ref:
+    log_prob_micro_batch_size_per_gpu: 1
+    fsdp_config:
+      param_offload: true
+
+data:
+  train_batch_size: 128                   # 待压测(受 27B 训练吞吐 + sandbox 采样吞吐约束)
+  gen_batch_size: 128
+  max_prompt_length: 2048
+  max_response_length: 53886
+
+cl:
+  rollout:
+    sessions_per_step: 1024               # 待压测:sandbox e2b 吞吐 + judge QPS 是真上限
+
+trainer:
+  nnodes: 8
+  n_gpus_per_node: 8
+
+ray_kwargs:
+  ray_init:
+    address: auto
+    num_cpus: null

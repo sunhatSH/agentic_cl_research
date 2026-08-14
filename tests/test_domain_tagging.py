@@ -16,20 +16,20 @@ class FakeBatch:
 
 
 def test_parse_domain_basic_and_canonical():
-    assert parse_domain("...work done\n<task_domain>Finance</task_domain>") == "Finance"
+    assert parse_domain("...work done\n<task_domain>finance</task_domain>") == "finance"
     # case-insensitive tag + value
-    assert parse_domain("<TASK_DOMAIN>finance</TASK_DOMAIN>") == "Finance"
+    assert parse_domain("<TASK_DOMAIN>Finance</TASK_DOMAIN>") == "finance"
 
 
 def test_parse_domain_aliases():
-    assert parse_domain("<task_domain>Knowledge/Analysis</task_domain>") == "Knowledge"
-    assert parse_domain("<task_domain>system operations</task_domain>") == "SysOps"
-    assert parse_domain("<task_domain>office qa</task_domain>") == "OfficeQA"
+    assert parse_domain("<task_domain>knowledge</task_domain>") == "qa"
+    assert parse_domain("<task_domain>system operations</task_domain>") == "ops"
+    assert parse_domain("<task_domain>office qa</task_domain>") == "office"
 
 
 def test_parse_domain_last_tag_wins():
-    text = "<task_domain>Workflow</task_domain> ... revised <task_domain>SysOps</task_domain>"
-    assert parse_domain(text) == "SysOps"
+    text = "<task_domain>workflow</task_domain> ... revised <task_domain>ops</task_domain>"
+    assert parse_domain(text) == "ops"
 
 
 def test_parse_domain_unknown_or_absent_returns_none():
@@ -39,8 +39,8 @@ def test_parse_domain_unknown_or_absent_returns_none():
 
 
 def test_parse_domain_respects_valid_subset():
-    # If the configured buckets exclude Finance, an emitted Finance is rejected.
-    assert parse_domain("<task_domain>Finance</task_domain>", valid=["Workflow", "SysOps"]) is None
+    # If the configured buckets exclude finance, an emitted finance is rejected.
+    assert parse_domain("<task_domain>finance</task_domain>", valid=["workflow", "ops"]) is None
 
 
 def test_build_instruction_lists_all_buckets():
@@ -55,24 +55,24 @@ def test_adapter_recovers_domain_when_no_bucket_field():
     msgs = [
         [
             {"role": "user", "content": "帮我算下利润"},
-            {"role": "assistant", "content": "结果是...\n<task_domain>Finance</task_domain>"},
+            {"role": "assistant", "content": "结果是...\n<task_domain>finance</task_domain>"},
         ]
     ]
     out = extract_trajectories_from_batch(FakeBatch({"messages": msgs}))
     assert len(out) == 1
     _traj, bucket, meta = out[0]
-    assert bucket == "Finance"
-    assert meta["bucket"] == "Finance"
+    assert bucket == "finance"
+    assert meta["bucket"] == "finance"
 
 
 def test_adapter_explicit_bucket_overrides_tag():
     msgs = [
         [
-            {"role": "assistant", "content": "x\n<task_domain>Finance</task_domain>"},
+            {"role": "assistant", "content": "x\n<task_domain>finance</task_domain>"},
         ]
     ]
-    out = extract_trajectories_from_batch(FakeBatch({"messages": msgs, "bucket": ["SysOps"]}))
-    assert out[0][1] == "SysOps"  # explicit field wins over the emitted tag
+    out = extract_trajectories_from_batch(FakeBatch({"messages": msgs, "bucket": ["ops"]}))
+    assert out[0][1] == "ops"  # explicit field wins over the emitted tag
 
 
 def test_adapter_skips_when_no_bucket_and_no_tag():
@@ -81,9 +81,7 @@ def test_adapter_skips_when_no_bucket_and_no_tag():
 
 
 def test_adapter_respects_valid_buckets():
-    msgs = [[{"role": "assistant", "content": "<task_domain>Finance</task_domain>"}]]
-    # Finance not in the configured set -> unresolved -> skipped.
-    out = extract_trajectories_from_batch(
-        FakeBatch({"messages": msgs}), valid_buckets=["Workflow", "SysOps"]
-    )
+    msgs = [[{"role": "assistant", "content": "<task_domain>finance</task_domain>"}]]
+    # finance not in the configured set -> unresolved -> skipped.
+    out = extract_trajectories_from_batch(FakeBatch({"messages": msgs}), valid_buckets=["workflow", "ops"])
     assert out == []

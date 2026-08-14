@@ -1,0 +1,130 @@
+# Phase 1 / B1 — 4-GPU 1-step SMOKE (验证 FSDP + vllm rollout 完整循环跑通)
+#
+# 不是正式实验配置。目标：4 卡跑 1 step 不报错。与 b1.yaml 同语义（纯 RL，
+# 无 KL、无 replay），但补齐了 cl_main 不会自动加载的 verl 引擎字段，并把
+# 规模压到最小。
+#
+# cl_main.load_config 按 defaults 顺序 merge：先 verl 完整展开配置（提供 fsdp/
+# optim/rollout 引擎全字段），再叠加我们的 ../base overlay，最后本文件覆盖。
+#
+# reward judge 用本地 mock（scripts/mock_judge.py，固定满分）——启动前需:
+#   export REWARD_API_BASE=http://127.0.0.1:8100/v1 REWARD_MODEL=mock-judge
+#
+# 启动: bash scripts/phase1/run_smoke.sh   (或直接 python -m trainer.cl_main --config 本文件)
+
+defaults:
+  - /mnt/afs_toolcall/sunhao4/workspace/verl/verl/trainer/config/_generated_ppo_trainer.yaml
+  - ../../base
+
+# ---- B1 语义（与 b1.yaml 一致）-------------------------------------------------
+algorithm:
+  adv_estimator: grpo            # GRPO：无需 critic worker（省一份显存，4 卡更可行）
+
+# verl reward_model worker 不启用（judge 走外部 mock）。base.yaml 把它嵌在
+# reward.reward_model 下，其 rollout.name 仍是 ??? ；显式填合法值避免构造期
+# MissingMandatoryValue。
+reward:
+  reward_model:
+    enable: false
+    rollout:
+      name: vllm
+
+cl:
+  lambda_replay: 0.0
+  buffer:
+    enabled: false
+
+# ---- 模型 / 参考策略（覆盖 base.yaml 的 ???）----------------------------------
+actor_rollout_ref:
+  model:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    use_fused_kernels: false
+    override_config:
+      attn_implementation: sdpa   # 绕过 veomni flash_attn patch 的并行状态校验
+                                  # (compute_log_prob 时 FSDP world_size=4 与
+                                  #  veomni 默认 sp=1 不兼容) — 与 b1_8b.yaml 对齐
+  ref:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    fsdp_config:
+      param_offload: true
+
+  actor:
+    strategy: fsdp
+    use_kl_loss: false           # B1：无 KL
+    kl_loss_coef: 0.0
+    entropy_coeff: 0.001
+    optim:
+      lr: 2.0e-6
+    ppo_mini_batch_size: 4       # 必须 <= train_batch_size
+    ppo_micro_batch_size_per_gpu: 1
+    fsdp_config:
+      param_offload: false        # 9B 模型分片仅 4.5G/卡，不卸载
+      optimizer_offload: true     # Adam state 9G/卡搬到 CPU，给训练腾空间
+
+  rollout:
+    name: lightllm               # 推理引擎
+    mode: async
+    tensor_model_parallel_size: 2  # TP=2：lightllm 只占 GPU0-1，GPU2-3 纯训练
+    gpu_memory_utilization: 0.20   # TP=2 时 GPU0-1 上 lightllm 模型 9G + KV~7G=16G
+                                   # FSDP backward 峰值 ~48G，合计 ~64G < 80G
+    load_format: auto            # 加载真权重（dummy=随机权重）
+    max_model_len: 2048
+    max_num_batched_tokens: 8192
+    enable_chunked_prefill: false
+    calculate_log_probs: true
+    n: 2                         # GRPO 组大小（base 是 8，smoke 压到 2）
+    log_prob_micro_batch_size_per_gpu: 1  # rollout log_prob 重算 micro-batch（verl 必填）
+    # smoke 不验沙箱多轮：不设 multi_turn（verl 默认 enable=False，走单轮 single_turn_agent），
+    # 只验引擎链路。cluster.yaml 的 multi_turn(qwen3_coder + max_turns) 是集群多轮沙箱用的。
+    checkpoint_engine:
+      # 8B 不存在 27B 的 colocate OOM 问题，naive backend 即可。
+      # nccl backend 与 lightllm_rollout 不兼容（rollout worker 无 execute_checkpoint_engine），勿用。
+      update_weights_bucket_megabytes: 3072
+    # lightllm 引擎参数（对齐 cluster.yaml engine_kwargs.lightllm.*，透传给 StartArgs）
+    engine_kwargs:
+      lightllm:
+        batch_max_tokens: 8192
+        enable_torch_memory_saver: false  # 关：colocate 权重同步 resume 阶段 OOM（cu_mem_create）
+        graph_max_batch_size: 8
+        running_max_req_size: 8
+        sampling_backend: sglang_kernel
+        # Qwen3.6 纯文本 smoke：关视觉+音频（两者都关 → enable_multimodal=False），
+        # 绕开加载 visualserver 时触发的 sgl_kernel/cutlass 版本错配崩溃
+        # (AttributeError: nvvm has no 'RoundingModeKind')。多模态本就不在训练目标内。
+        disable_vision: true
+        disable_audio: true
+
+# ---- 数据（覆盖 base.yaml 的 ???，用最小 parquet）----------------------------
+data:
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
+  val_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet
+  train_batch_size: 4
+  gen_batch_size: 4
+  max_prompt_length: 1024
+  max_response_length: 512
+  return_raw_chat: true          # convert_dataset 产出的 prompt 是 raw chat list
+  dataloader_num_workers: 1
+  cache_dir: /tmp/verl_rlhf_cache
+
+# ---- trainer：20 steps，5步存checkpoint，10步val ------------------------
+trainer:
+  nnodes: 1
+  n_gpus_per_node: 4
+  total_epochs: 1
+  total_training_steps: 20
+  save_freq: 20                 # 只在最后一步存 checkpoint
+  test_freq: 10                 # 每 10 step 跑 val
+  val_before_train: false        # 跳过训练前 val（也需 judge/rollout）
+  logger: ['console']            # 不用 wandb
+  critic_warmup: 0
+  project_name: cl_smoke
+  experiment_name: smoke_20step_b1
+
+# ---- Ray：强制本机新起 local 集群，不去探测/连接残留的旧集群 -----------------
+# 不传 address 时 ray.init() 会读 /tmp/ray/ray_current_cluster 自动连旧集群；
+# 该文件可能是别的节点遗留的死地址（本次踩坑：连 10.120.1.56:6379 GCS timeout）。
+# address=local 强制本地全新起 Ray，单机 smoke 正确做法。
+ray_kwargs:
+  ray_init:
+    address: local
+    num_cpus: null

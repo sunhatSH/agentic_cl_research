@@ -144,7 +144,7 @@ def _resolve_ppo_loss(actor_cfg):
 def make_cl_loss(
     replay_enabled: bool = False,
     lambda_replay: float = 0.5,
-    replay_batch_size: int = 32,
+    replay_batch_size: int = 512,
     use_token_weighting: bool = True,
     weighting_scheme: str = "W2",
     actor_cfg: Any = None,
@@ -181,8 +181,9 @@ def make_cl_loss(
             _rl_cell["fn"] = _resolve_ppo_loss(actor_cfg)
         fn = _rl_cell["fn"]
         if fn is None:  # verl absent (mock test path)
-
-            lp = model_output["log_probs"] if isinstance(model_output, dict) else model_output.get("log_probs")
+            lp = (
+                model_output["log_probs"] if isinstance(model_output, dict) else model_output.get("log_probs")
+            )
             return lp.sum() * 0.0, {}
         return fn(model_output=model_output, data=data, dp_group=dp_group)
 

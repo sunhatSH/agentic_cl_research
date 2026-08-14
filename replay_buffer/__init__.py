@@ -1,6 +1,6 @@
 """Replay Buffer for Continual Learning.
 
-7-bucket experience replay buffer, decoupled from verl. See
+9-bucket experience replay buffer, decoupled from verl. See
 ``doc/BucketDesign.md`` for the design rationale and ``doc/CL_Update_Sunhao.md``
 for the loss-side integration.
 

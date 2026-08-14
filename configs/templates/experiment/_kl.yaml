@@ -1,0 +1,50 @@
+# 【模板·实验语义层】KL 扫描(K1/K2/K3)—— 开 KL,无 replay/buffer
+#
+# 只改 kl_loss_coef(λ2)区分强弱:K1=0.01 弱 / K2=0.05 中 / K3=0.10 强。
+# 注:开 KL 会构建 ref policy,ref 权重取共享 model.path(不要加 ref.path,见 base.yaml 说明)。
+
+defaults:
+  - ../../_generated_ppo_trainer
+  - ../../base
+  - ../hardware/16GPU_9BQwen3.5           # 换规格改这一行
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: true                     # ← baseline 为 false
+    kl_loss_coef: 0.05                    # λ2:K1=0.01 / K2=0.05 / K3=0.10
+    kl_loss_type: low_var_kl              # reverse-KL 家族
+    entropy_coeff: 0.001
+
+reward:
+  reward_model:
+    enable: false
+    rollout:
+      name: vllm
+
+data:
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet
+  val_files: null
+  shuffle: false
+  return_raw_chat: true
+  filter_overlong_prompts: true
+  trust_remote_code: true
+  dataloader_num_workers: 4
+  cache_dir: /tmp/verl_rlhf_cache
+
+cl:
+  lambda_replay: 0.0                      # KL 阶段不开 replay
+  buffer:
+    enabled: false
+
+trainer:
+  total_epochs: 1
+  total_training_steps: 500
+  save_freq: 100
+  test_freq: -1
+  val_before_train: false
+  critic_warmup: 0
+  logger: [console]
+  log_val_generations: 50
+  project_name: agentic-cl
+  experiment_name: qwen35_9b_k2_16gpu     # K1/K2/K3 各自改名
+  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_k2_16gpu}

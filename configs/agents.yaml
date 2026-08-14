@@ -1,0 +1,55 @@
+# Agent 模型选型配置 — 单一信源
+#
+# 代码（agents/clients, agents/config.py, trainer/model_reward.py）+ 测试 + 启动脚本统一读取本文件。
+#
+# API key 不写进本文件，从 .env 或环境变量读取（key_env 指示对应的 env var）。
+# 所有模型共用同一个 sufy key：SUFY_API_KEY（endpoint openai.sufy.com/v1）。
+#
+# ── 两层容错结构（2026-07-08）──────────────────────────────────────────
+# 每个角色配一个 providers 列表 = 两层循环容错的候选池：
+#   外层：providers（厂商）——第一个厂商全挂才切下一个厂商
+#   内层：每个 provider 的 models（同厂商模型）——某模型 502/401/超时→切同厂商下一个
+# FailoverChatClient 发现某模型不可用时自动顺延，并记住首个可用的当默认
+# （current provider/model 存内存；传 state_path 可落盘，跨并发短命进程复用）。
+# 抗坍缩轮换（questioner 的 rotate_every）与容错正交：在**可用**模型间主动轮换。
+#
+# 向后兼容：旧的 observer.api_base / questioner.rotation 结构仍可解析。
+
+observer:
+  temperature: 0.0                   # 客观取证，确定性
+  providers:
+    - name: sufy
+      api_base: "https://openai.sufy.com/v1"
+      key_env: "SUFY_API_KEY"
+      models:
+        - "openai/gpt-5.4-mini"      # 轻量取证角色，采集量最大→选省的
+        - "openai/gpt-5-mini"        # 同厂商备用
+
+questioner:
+  temperature: 0.9                   # 抗坍缩
+  rotate_every: 5                    # 每 5 次提问主动轮换（在可用模型间）
+  providers:
+    - name: sufy                     # 主厂商：3 个可靠非 thinking 模型
+      api_base: "https://openai.sufy.com/v1"
+      key_env: "SUFY_API_KEY"
+      # 顺序 = failover 优先级。全部为**非 thinking** 可靠模型——2026-07-10 iter9
+      # 实测 thinking 模型（deepseek-v4-pro/kimi-k2.6）在加长 prompt 下截断激增
+      # （kimi 15 次 + deepseek 7 次 / 一批 32 query），且 questioner 不做截断退避
+      # （退避只给 reward judge），一轮内多模型连环截断 → AllEndpointsFailed →
+      # questioner_error。questioner 的活（读报告 + 人设口吻问一句）不需要深推理，
+      # 故彻底移除两个 thinking 模型；跨风格多样性靠 sonnet/qwen/gpt-mini 三家 +
+      # rotate_every 轮换 + 人设 + 每轮报告变化保证，不依赖 thinking 模型。
+      models:
+        - "qwen/qwen3.7-max"
+        - "qwen/qwen3.6-plus"
+        - "openai/gpt-5.4-mini"
+
+reward:
+  temperature: 0.0                   # 冻结 reward，一致性
+  providers:
+    - name: sufy
+      api_base: "https://openai.sufy.com/v1"
+      key_env: "SUFY_API_KEY"
+      models:
+        - "openai/gpt-5.6-luna"  # 主 judge(2026-08-06 切换:扣分prompt下 reward 0.607 vs gemini 0.889,分布更均匀)
+        - "deepseek/deepseek-v4-flash-20260731"  # 备用

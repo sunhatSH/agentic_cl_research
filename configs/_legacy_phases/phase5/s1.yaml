@@ -1,0 +1,21 @@
+# Phase 5 / S1 — Rollout 规模扩展 (小规模 1024×8)
+# 继承 configs/base.yaml
+# 验证目标：扩大 query 数是否进一步减缓遗忘（traj/query=8 见 base rollout.n）
+
+defaults:
+  - ../../base
+
+actor_rollout_ref:
+  # 其余 CL 参数待 Phase 4 最优配置确定后填入
+  actor:
+    use_kl_loss: ???
+    kl_loss_coef: ???
+
+data:
+  train_batch_size: 1024         # S1：1024 queries × 8 traj = 8192 轨迹
+  gen_batch_size: 1024
+
+cl:
+  lambda_replay: ???
+  buffer:
+    enabled: ???

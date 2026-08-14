@@ -1,0 +1,137 @@
+# Phase 1 / B1 baseline — Qwen3.5-9B 单机 4GPU（无 CL 防遗忘对照）。
+# = verl 引擎默认 + base overlay + B1 语义（无 KL、无 replay/buffer）+ 沙箱 Hermes rollout。
+# baseline：按桶顺序训（train.sh --buckets），但 buffer/replay 全关 → 量化灾难性遗忘下界。
+# CL 版（r4）跑同样桶顺序 + buffer 防遗忘，两者对比遗忘程度。
+#
+# 规模（用户 2026-07-22 逐项确认）：
+#   4 卡 DP4；train_batch=16（256×1/16）；ppo_mini=8；micro=1（OOM 退路见下）；
+#   max_prompt=2048（数据实测 max 708）；max_response=53886（冷采集 claude opus 轨迹 p90）。
+#   数据：各桶 1/16 缩放（communication/qa 全量），合计 2839，见 datasets/baseline_9b/。
+#   每桶 steps = 该桶条数/16（train.sh _run_buckets 覆盖）；save_freq=20。
+#   rollout 走沙箱 Hermes（agent_loop_manager），16 并发（与冷采集共用腾讯 e2b）。
+# OOM 退路：micro=1 仍 OOM → max_response_length 53886 → 10399（数据 p50），见 data 段注释。
+#
+# 启动: bash scripts/train_4gpu.sh --buckets --config configs/run/b1_9b.yaml
+
+defaults:
+  - ../_generated_ppo_trainer
+  - ../base
+
+# ── 模型（Qwen3.5-9B）──────────────────────────────────────────────────────────
+actor_rollout_ref:
+  model:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    use_fused_kernels: false
+    override_config:
+      attn_implementation: sdpa   # avoid flash_attn dep (not installed)
+
+  # ── 训练引擎（4 GPU FSDP, micro=1）──────────────────────────────────────────
+  actor:
+    strategy: fsdp
+    use_kl_loss: false           # B1：无 KL
+    kl_loss_coef: 0.0
+    entropy_coeff: 0.001         # lambda_4, FIXED (anti Echo Trap)
+    optim:
+      lr: 2.0e-6
+    ppo_mini_batch_size: 32             # 对齐 train_batch=32（一次更新用满 256 轨迹）
+    ppo_micro_batch_size_per_gpu: 1     # 4卡+9B+56k序列：试 micro=2（OOM 风险，OOM 退回 1）
+    ppo_max_token_len_per_gpu: 65536    # 覆盖 prompt2048+response53886≈56k
+    ulysses_sequence_parallel_size: 1
+    fsdp_config:
+      param_offload: true               # 4 卡长序列省显存
+      optimizer_offload: true
+
+  # ── 推理（lightllm async, TP2）─ 但 rollout 实际走沙箱 Hermes（见 rollout.agent）──
+  rollout:
+    name: lightllm
+    mode: async
+    tensor_model_parallel_size: 2
+    gpu_memory_utilization: 0.75
+    n: 8                         # GRPO group size (traj/query)
+    load_format: auto
+    max_model_len: 65536
+    max_num_batched_tokens: 6144
+    enable_chunked_prefill: false
+    calculate_log_probs: true
+    log_prob_micro_batch_size_per_gpu: 1
+    # 沙箱 Hermes rollout：verl 用我们的 AgentLoopManager 替换默认 batch rollout。
+    # 注意：verl 的 AgentLoopConfig 只认 agent_loop_manager_class；sessions_per_step/
+    # sandbox_backend 由 cl_rollout_manager 用 .get() 读默认（16 / e2b），不能写进这里
+    # （写了会 TypeError: unexpected keyword argument）。
+    agent:
+      agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
+    multi_turn:
+      enable: false
+      format: qwen3_coder
+      reasoning_format: qwen3
+      max_assistant_turns: 20
+    checkpoint_engine:
+      update_weights_bucket_megabytes: 2048
+    engine_kwargs:
+      lightllm:
+        batch_max_tokens: 6144
+        enable_multimodal: false
+        enable_torch_memory_saver: true
+        graph_max_batch_size: 128
+        running_max_req_size: 64
+        sampling_backend: triton
+        disable_vision: true
+        disable_audio: true
+
+  ref:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    log_prob_micro_batch_size_per_gpu: 1
+    fsdp_config:
+      param_offload: true
+
+# verl reward_model worker 不启用（judge 走外部 sufy 服务）
+reward:
+  reward_model:
+    enable: false
+    rollout:
+      name: vllm
+
+# ── 数据：能力桶打标产物（无 system，走沙箱 Hermes）──────────────────────────────
+# 单轮化（2026-07-23）：训练数据 = queries_train.jsonl 转的 parquet（scripts/queries_to_parquet.py）。
+# 每个 query 一条轨迹（单轮），全量不截断（测不均分布防遗忘）。shuffle=false 按桶序训。
+data:
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_aligned.parquet
+  val_files: null
+  train_batch_size: 32               # 32 query × rollout.n8 = 256 轨迹/step（GRPO 统计量下限）
+  gen_batch_size: 32
+  max_prompt_length: 4096            # 对齐参考脚本
+  max_response_length: 53886         # 冷采集 claude opus 轨迹 p90；OOM 退路 → 10399（p50）
+  shuffle: false                     # 按文件序（桶序排列）训，保证按桶顺序 → 可测遗忘
+  return_raw_chat: true
+  filter_overlong_prompts: true
+  trust_remote_code: true
+  dataloader_num_workers: 4
+  cache_dir: /tmp/verl_rlhf_cache
+
+# ── B1 baseline 语义（无 KL、无 replay/buffer 防遗忘）──────────────────────────────
+cl:
+  lambda_replay: 0.0
+  buffer:
+    enabled: false
+
+# ── trainer：4 GPU 单机 ───────────────────────────────────────────────────────
+trainer:
+  nnodes: 1
+  n_gpus_per_node: 4
+  total_epochs: 1
+  total_training_steps: 50           # 由 train.sh _run_buckets 按每桶条数/16 覆盖
+  save_freq: 20
+  test_freq: -1                      # 关 in-loop 验证(评测走训完离线;避免跑无用验证 rollout)
+  val_before_train: false            # 不训练前跑验证(与 16gpu 对齐;之前继承默认 true 会跑)
+  critic_warmup: 0
+  logger: [console]                  # 只 console（swanlab api 422，去掉）；指标/rollout/val 全落本地文件
+  log_val_generations: 50
+  project_name: agentic-cl
+  experiment_name: qwen35_9b_b1
+  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_b1}
+
+# ── Ray：单机本地集群 ─────────────────────────────────────────────────────────
+ray_kwargs:
+  ray_init:
+    address: local
+    num_cpus: null

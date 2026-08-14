@@ -1,0 +1,21 @@
+# Phase 5 / S2 — Rollout 规模扩展 (大规模 4096×8)
+# 继承 configs/base.yaml
+# 验证目标：更大的 query 数 vs S1（traj/query=8 见 base rollout.n）
+
+defaults:
+  - ../../base
+
+actor_rollout_ref:
+  # 其余 CL 参数待 Phase 4 最优配置确定后填入
+  actor:
+    use_kl_loss: ???
+    kl_loss_coef: ???
+
+data:
+  train_batch_size: 4096         # S2：4096 queries × 8 traj = 32768 轨迹
+  gen_batch_size: 4096
+
+cl:
+  lambda_replay: ???
+  buffer:
+    enabled: ???

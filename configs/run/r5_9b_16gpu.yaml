@@ -1,0 +1,182 @@
+# Phase 3 / R5 — reward-based priority 对照
+# 9B 16GPU（2节点×8卡）——verl 原生 agent_loop 新路线（2026-07-30 对齐 b1_9b_16gpu）。
+# 机制层（trainer/rollout/引擎）与 b1_9b_16gpu 逐字一致：custom_sync + RemoteAgentLoopManager
+# + fsdp2 + remove_padding + fused triton + custom_language_model(顶层)。只 CL/KL 语义不同。
+#
+# 启动: bash scripts/train.sh 16gpu --config configs/run/r5_9b_16gpu.yaml
+
+defaults:
+  - ../_generated_ppo_trainer
+  - ../base
+
+# ── 模型（Qwen3.5-9B，开 remove_padding + flash_attn3 变长打包）──────────────────
+actor_rollout_ref:
+  model:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    model_type: custom_language_model   # ★ 必须放顶层(引擎选择键 engine_workers.py:128 EngineRegistry.new)。
+                                       #   选中 CustomFSDPEngineWithLMHead(GDN 变长+路由重放);其 __init__ 再把
+                                       #   hf_config.model_type 复位回 language_model → apply_monkey_patch 读到
+                                       #   真实 qwen3_5 走 SP-aware triton forward。✗ 放 override_config 会改 HF
+                                       #   config.model_type → 落 dense_common 通用分支 → compute_log_prob assert 崩。
+    use_remove_padding: true            # 变长打包:GDN 层走 packed forward(cu_seqlens),full-attn 走 FA3 varlen
+    use_fused_kernels: true             # fused CE loss 等 kernel(配合 remove_padding)
+    enable_gradient_checkpointing: true # 对齐参考脚本,省激活显存
+    fused_kernel_options:
+      impl_backend: triton            # torch backend 的 FusedLinearForPPO chunk_size=512 硬编码 bug;triton 走
+                                       #   linear_cross_entropy(不 chunk/不预分配),绕开。
+    override_config:
+      attn_implementation: flash_attention_3
+
+  # ── 训练引擎（16 GPU FSDP2, SP=4 → DP=4）─────────────────────────────────────
+  actor:
+    strategy: fsdp2
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+    entropy_coeff: 0.001
+    use_torch_compile: false
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.28
+    clip_ratio_c: 10.0
+    optim:
+      lr: 2.0e-6
+      lr_warmup_steps_ratio: 0.03
+      lr_scheduler_type: constant
+    ppo_mini_batch_size: 32             # =train_batch(全 batch 单更);×n8=256 轨迹 % DP4=0
+    use_dynamic_bsz: true
+    ppo_max_token_len_per_gpu: 32768    # = max_token_length(131072)/SP(4)
+    ulysses_sequence_parallel_size: 4   # SP=4 → DP=16÷4=4。16头%4=0
+    fsdp_config:
+      param_offload: true
+      optimizer_offload: true
+      reshard_after_forward: true
+      model_dtype: bfloat16
+
+  # ── rollout：verl 原生 v1 agent_loop（RemoteAgentLoopManager + 沙箱 harness）──────
+  rollout:
+    name: lightllm
+    mode: async
+    tensor_model_parallel_size: 2
+    gpu_memory_utilization: 0.65
+    n: 8
+    load_format: auto
+    max_model_len: 131072              # = 参考 max_token_length
+    max_num_batched_tokens: 6144
+    enable_chunked_prefill: false
+    calculate_log_probs: true
+    log_prob_micro_batch_size_per_gpu: 1
+    log_prob_max_token_len_per_gpu: 32768  # = max_token_length(131072)/SP(4)
+    response_length: 65536             # = data.max_response_length
+    agent:
+      agent_loop_manager_class: recipe_custom.agent.agent_loop_manager.RemoteAgentLoopManager
+      agent_loop_config_path: exps/agent_loop_config.yaml
+      default_agent_loop: hermes_agent
+    custom:
+      remote_agent:
+        gateway_count: 8
+        num_session_workers: 8
+        session_timeout: 1000
+        harness_log_dir: ${oc.env:HARNESS_LOG_DIR,logs/harness}
+        harness_log_save_mode: all
+        all_failed_policy: skip   # 整 step 全部 rollout 失败(如都因含图被废,见 gateway_image_drop_patch/§57)时 skip 该 step 而非 raise 崩训练。默认 raise。
+    multi_turn:
+      format: qwen3_coder
+      reasoning_format: qwen3
+      max_assistant_turns: 6            # 8→6:减少长轨迹超时(§reward四维改版)
+      max_tool_response_length: 16384
+    checkpoint_engine:
+      update_weights_bucket_megabytes: 3072  # 照搬参考(6144→3072)
+    engine_kwargs:
+      lightllm:
+        batch_max_tokens: 6144
+        enable_multimodal: false
+        enable_torch_memory_saver: true
+        graph_max_batch_size: 64
+        running_max_req_size: 64
+        sampling_backend: flashinfer       # 照搬参考(triton→flashinfer)
+        disable_vision: true
+        disable_audio: true
+        disable_symm_mem_allreduce: true   # ★关SymmMem(cuMem对称堆):与 NCCL_CUMEM_ENABLE=0 冲突致 TP rendezvous broadcast 死锁(§49)。all_reduce fallback 到标准 NCCL(communication_op.py:100),不依赖 cuMem
+
+  ref:
+    log_prob_micro_batch_size_per_gpu: 1
+    fsdp_config:
+      param_offload: true
+
+  # nccl_timeout 在 actor_rollout_ref 同级(不在 actor.fsdp_config 下,否则 FSDPActorConfig 报未知 kw)
+  nccl_timeout: 3600                 # 多卡同步超时阈值:多机跨节点+131072长序列 all-gather 慢,3600
+
+reward:
+  reward_manager:
+    name: omni
+  reward_model:
+    enable: false
+    rollout:
+      name: vllm
+
+# ── 数据（CLAgentDataset fs-seed 注入；长度对齐 b1_9b_16gpu）─────────────────────
+data:
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_aligned.parquet
+  val_files: null
+  custom_cls:
+    path: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/trainer/cl_agent_dataset.py
+    name: CLAgentDataset
+  train_batch_size: 32
+  gen_batch_size: 32
+  max_prompt_length: 8196            # 照搬参考 debug_rl_qwen35_9b.sh(wuzehuan)
+  max_response_length: 65536         # 照搬参考(与卡数无关);remove_padding 变长打包可扛,§31 修复后原崩溃真因(model_type)已消除
+  shuffle: false
+  return_raw_chat: true
+  filter_overlong_prompts: true
+  trust_remote_code: true
+  dataloader_num_workers: 4
+  cache_dir: /tmp/verl_rlhf_cache
+
+algorithm:
+  adv_estimator: grpo
+  rollout_correction:
+    rollout_is: token
+    rollout_is_threshold: 2.0
+
+# ── CL 语义（本实验唯一差异区）──────────────────────────────────────────────────
+cl:
+  lambda_replay: 0.5
+  replay_batch_size: 64
+  buffer:
+    enabled: true
+    num_buckets: 9
+    warmup_path: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/cold_start/warmup_1429.sqlite
+    priority_type: reward
+  weighting:
+    scheme: W0
+
+trainer:
+  nnodes: 2
+  n_gpus_per_node: 8
+  total_epochs: 1
+  total_training_steps: 420
+  save_freq: 25                     # 100->25:更频繁存档(debug 阶段)
+  max_actor_ckpt_to_keep: 2       # 只保留最近 2 个 actor ckpt(verl 原生 rotate,超出 shutil.rmtree 最旧)
+  max_critic_ckpt_to_keep: 2      # critic 同理(本项目 GRPO 无 critic,留着无害)
+  test_freq: -1
+  val_before_train: false
+  critic_warmup: 0
+  logger: [console, file]
+  log_val_generations: 50
+  project_name: agentic-cl
+  experiment_name: qwen35_9b_r5_16gpu
+  default_local_dir: ${oc.env:CKPT_DIR,ckpts/qwen35_9b_r5_16gpu}
+  use_v1: true
+  v1:
+    trainer_mode: custom_sync
+    sampler:
+      custom_sampler:
+        path: null
+        name: null
+
+transfer_queue:
+  enable: true
+
+ray_kwargs:
+  ray_init:
+    address: auto
+    num_cpus: null

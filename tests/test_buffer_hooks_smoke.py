@@ -44,9 +44,9 @@ def _make_cfg():
                 "forgetting_update_freq": 1,
                 "buffer": {
                     "enabled": True,
-                    "num_buckets": 7,
+                    "num_buckets": 9,
                     "total_capacity": 1000,
-                    "q_min": 50,
+                    
                     "priority_type": "anti_forgetting",
                 },
                 "weighting": {"scheme": "W2", "gamma": 0.88, "delta": 0.88},

@@ -1,4 +1,4 @@
-"""Tests for stage ② query extraction (scripts/prepare_queries.py)."""
+"""Tests for stage ② query extraction (scripts/data/prepare_queries.py)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
     "prepare_queries",
-    Path(__file__).resolve().parent.parent / "scripts" / "prepare_queries.py",
+    Path(__file__).resolve().parent.parent / "scripts" / "data" / "prepare_queries.py",
 )
 pq = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(pq)
@@ -59,8 +59,6 @@ def test_build_query_records_shape_and_limit(tmp_path):
         {"record_id": "r2", "queries": []},  # only-summary session -> empty queries
     ]
     # skip_empty removes the all-summary session.
-    assert list(pq.build_query_records(src, skip_empty=True)) == [
-        {"record_id": "r1", "queries": ["q1"]}
-    ]
+    assert list(pq.build_query_records(src, skip_empty=True)) == [{"record_id": "r1", "queries": ["q1"]}]
     # limit caps the number of emitted sessions.
     assert len(list(pq.build_query_records(src, limit=1))) == 1

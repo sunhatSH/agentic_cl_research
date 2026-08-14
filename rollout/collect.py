@@ -1,6 +1,6 @@
 """Trajectory collection: native fields from the framework, not a proxy (Gap D).
 
-Decision (doc/Sandbox_Agent架构.md §3): we orchestrate the 16×8 + winner-sync
+Decision (doc/sandbox/Sandbox_Agent架构.md §3): we orchestrate the 16×8 + winner-sync
 session loop, but every single generation step is produced by the RL framework's
 native generate (verl AgentLoopOutput: prompt_ids / response_ids / response_mask /
 rollout_log_probs). This module models that boundary with a ``GenerateFn`` and
@@ -81,7 +81,7 @@ _REACT_SYSTEM_PROMPT = (
     "The sandbox will run the code and return the output as a user message "
     "prefixed with '[Sandbox Output]'. You can make multiple tool calls "
     "across turns. When done, provide your final answer without <toolcall> tags."
-    # The buffer routes every trajectory into one of 7 capability buckets via a
+    # The buffer routes every trajectory into one of 9 capability buckets via a
     # <task_domain> tag parsed from the trajectory text (trainer.domain_tagging).
     # Without this instruction the model never emits the tag, so parse_domain
     # returns None and ingest_trajectories SKIPS every trajectory (B12). Append
@@ -97,6 +97,8 @@ def make_react_agent_fn(
     max_turns: int = 6,
     default_bucket: str | None = None,
     system_prompt: str | None = _REACT_SYSTEM_PROMPT,
+    max_total_response_tokens: int | None = None,
+    max_obs_tokens: int | None = 4096,
 ):
     """Build an AgentFn for SessionSandboxPool that runs a native-collection ReAct loop.
 
@@ -110,6 +112,16 @@ def make_react_agent_fn(
             the <toolcall> format. Default: a minimal ReAct instruction. Set to
             None to disable (for verl training where the model already knows the
             format, or when the model's own system prompt covers tool use).
+        max_total_response_tokens: Hard ceiling on the WHOLE trajectory's
+            response length (generated + observation tokens, summed across all
+            turns). None = no limit. This is DISTINCT from the per-call
+            ``max_tokens`` sampling param (which only caps ONE generation): a
+            multi-turn ReAct loop concatenates every turn into one response, so
+            without this ceiling a 16-turn session can balloon to tens of
+            thousands of tokens (observed 52758) and blow up training activation
+            / dynamic_bsz token budget (debug §24). When the running total
+            reaches this ceiling, the loop stops after the CURRENT turn completes
+            (no mid-turn split -- keeps token/logprob/mask alignment intact).
     """
 
     def agent_fn(
@@ -132,6 +144,7 @@ def make_react_agent_fn(
         full_text_parts: list[str] = []
         prompt_tokens_total = 0
         completion_tokens_total = 0
+        _truncated_total = False
 
         for _turn in range(max_turns):
             step = generate_fn(prefix + turns)
@@ -143,11 +156,24 @@ def make_react_agent_fn(
             prompt_tokens_total += step.prompt_tokens
             completion_tokens_total += step.completion_tokens
 
+            # Whole-trajectory token ceiling: stop after this (complete) turn once
+            # the accumulated response length hits the budget. Prevents multi-turn
+            # runaway that blows training activation / dynamic_bsz assert (§24).
+            if max_total_response_tokens is not None and len(all_resp_ids) >= max_total_response_tokens:
+                _truncated_total = True
+                break
+
             call = parse_tool_call(step.text)
             if call is None:
                 break  # no tool call -> final answer
             tool, code = call
             obs, obs_ids = tool_exec(client, tool, code)
+            # Sandbox observation 单次截断(§28):一次 tool 输出可能是巨量 stdout(cat 大文件 /
+            # ls -R / 循环打印),无限 extend 会让整条 response 冲到几十万 token(实测 319663),
+            # 撞 verl rearrange_micro_batches 的 assert 崩整个训练。截到 max_obs_tokens。
+            if max_obs_tokens is not None and len(obs_ids) > max_obs_tokens:
+                obs_ids = obs_ids[:max_obs_tokens]
+                obs = obs[: max_obs_tokens * 4]  # 文本按 ~4 char/token 粗截,仅供 transcript
             # Use role='user' for sandbox observations (not role='tool').
             # OpenAI-compatible APIs require that 'tool' role messages follow
             # assistant messages with structured 'tool_calls'; our <toolcall>
@@ -155,11 +181,29 @@ def make_react_agent_fn(
             turns.append({"role": "user", "content": f"[Sandbox Output]\n{obs}"})
             all_resp_ids.extend(obs_ids)
             all_logprobs.extend([0.0] * len(obs_ids))  # not policy tokens
-            response_mask.extend([0] * len(obs_ids))    # masked out of loss
+            response_mask.extend([0] * len(obs_ids))  # masked out of loss
             full_text_parts.append(obs)
+
+            # Also check after appending observation (a huge tool output can
+            # single-handedly blow the budget).
+            if max_total_response_tokens is not None and len(all_resp_ids) >= max_total_response_tokens:
+                _truncated_total = True
+                break
 
         full_text = "\n".join(full_text_parts)
         bucket = parse_domain(full_text) or default_bucket
+
+        # 最终硬截断兜底(§28):即使上面逐轮检查,最后一轮的生成/observation 完整保留仍可能
+        # 略超预算;而 verl 的 assert 是"整条序列必须 <= max_token_len",超一点就崩。这里
+        # 无条件把整条 response 截到 max_total_response_tokens,保证交给 verl 的序列【绝不超标】,
+        # 那个 assert 结构上永不触发 —— 用【丢弃超长尾部】替代【assert 崩训练】(用户要求:
+        # 正式训练不该被调试断言崩掉,超过就丢弃)。三个并行数组同步截断以保持对齐。
+        if max_total_response_tokens is not None and len(all_resp_ids) > max_total_response_tokens:
+            _cut = max_total_response_tokens
+            all_resp_ids = all_resp_ids[:_cut]
+            all_logprobs = all_logprobs[:_cut]
+            response_mask = response_mask[:_cut]
+            _truncated_total = True
 
         # advance logical disk state (mock: agent may have written files)
         new_state = dict(state) if isinstance(state, dict) else {}
@@ -173,8 +217,109 @@ def make_react_agent_fn(
             logprobs=all_logprobs,
             bucket=bucket,
             next_state=new_state,
-            meta={"response_mask": response_mask, "num_turns": len(full_text_parts),
-                  "prompt_tokens": prompt_tokens_total, "completion_tokens": completion_tokens_total},
+            meta={
+                "response_mask": response_mask,
+                "num_turns": len(full_text_parts),
+                "prompt_tokens": prompt_tokens_total,
+                "completion_tokens": completion_tokens_total,
+            },
+        )
+
+    return agent_fn
+
+
+def make_hermes_agent_fn(
+    model: str,
+    model_base: str = "",
+    max_turns: int = 16,
+    timeout: int = 600,
+) -> AgentFn:
+    """Build an AgentFn that delegates to ``hermes chat -q --yolo`` inside the sandbox.
+
+    Unlike ``make_react_agent_fn`` which hand-rolls a ReAct loop, this runs the full
+    Hermes agent (tool routing, skills, session memory) with --yolo so every
+    permission / approval prompt is auto-bypassed.
+
+    Before the first call, writes ``~/.hermes/config.yaml`` inside the sandbox,
+    pointing the ``agent`` provider at *model_base* (falls back to
+    ``AGENT_MODEL_BASE`` from sandbox env). The model key is read from
+    ``AGENT_MODEL_KEY`` inside the sandbox so it never travels through the host.
+    """
+    from rollout.actor import CliStdoutActor
+
+    _HERMES_CONFIG = (
+        "import os, yaml\n"
+        "m = os.environ.get('AGENT_MODEL_NAME', {model!r})\n"
+        "b = os.environ.get('AGENT_MODEL_BASE', {base!r})\n"
+        "k = os.environ['AGENT_MODEL_KEY']\n"
+        "h = os.path.expanduser('~/.hermes')\n"
+        "os.makedirs(h, exist_ok=True)\n"
+        "cfg = {{'model': m, 'providers': {{'agent': "
+        "{{'base_url': b, 'api_key': k, 'kind': 'openai'}}}}}}\n"
+        "open(h + '/config.yaml', 'w').write(yaml.safe_dump(cfg, sort_keys=False))\n"
+        "open(h + '/.env', 'w').write('OPENAI_API_KEY=' + k + chr(10))\n"
+    )
+
+    # Build once then reuse; model/model_base never change within a run.
+    _config_code = _HERMES_CONFIG.format(model=model, base=model_base)
+
+    def _hermes_chat(sb, query, _model, _max_turns, _timeout, *, resume_sid=None):
+        import shlex, re
+
+        # Write hermes config on first call (idempotent — config is identical).
+        if not getattr(sb, "_hermes_configured", False):
+            sb.run_code(_config_code)
+            try:
+                setattr(sb, "_hermes_configured", True)
+            except TypeError:
+                pass
+
+        cmd = (
+            f"hermes chat -q {shlex.quote(query)} -m {shlex.quote(_model)} "
+            f"--provider agent -Q --max-turns {_max_turns} --yolo"
+        )
+        if resume_sid:
+            cmd += f" --resume {shlex.quote(resume_sid)}"
+        try:
+            out = sb._sb.commands.run(cmd, timeout=_timeout)
+            stdout = (out.stdout or "").strip()
+            stderr = (out.stderr or "").strip()
+            m = re.search(r"session[= ][\"']?([a-zA-Z0-9_-]+)", stderr)
+            sid = m.group(1) if m else None
+            return stdout, stderr, out.exit_code == 0, sid
+        except Exception as exc:
+            return "", f"{type(exc).__name__}: {exc}", False, None
+
+    actor = CliStdoutActor(chat_fn=_hermes_chat)
+
+    def agent_fn(client, query, state, slot_idx, history=None):
+        turn = actor.run_turn(
+            client,
+            query,
+            model=model,
+            base=model_base,
+            max_turns=max_turns,
+            timeout=timeout,
+            resume_sid=None,
+        )
+        bucket = parse_domain("\n".join(m.get("content", "") for m in turn.messages)) or None
+        return Trajectory(
+            slot_idx=slot_idx,
+            trajectory_id=turn.session_id or "",
+            messages=turn.messages,
+            reward=None,
+            response_token_ids=[],
+            logprobs=[],
+            bucket=bucket,
+            next_state={},
+            meta={
+                "response_mask": [1] * len(turn.messages),
+                "num_turns": 1,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "ok": turn.ok,
+                "error": turn.error,
+            },
         )
 
     return agent_fn
@@ -209,7 +354,7 @@ def ingest_trajectories(
     *,
     valid_buckets: Sequence[str] | None = None,
 ) -> dict[str, int]:
-    """Route collected trajectories into the 7-bucket buffer.
+    """Route collected trajectories into the 9-bucket buffer.
 
     Trajectories whose bucket is unresolved / not valid are SKIPPED (B12), never
     dumped into a default bucket. Returns counts {added, skipped}.

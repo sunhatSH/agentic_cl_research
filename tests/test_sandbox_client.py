@@ -103,46 +103,44 @@ def test_register_backend_is_open_for_extension():
     assert sb.run_code("anything").stdout == "custom-ok"
 
 
-def test_e2b_kill_deletes_bare_sandbox_id(monkeypatch):
-    """Regression: kill() must DELETE /sandboxes/<sandboxID>, NOT <sandboxID-clientID>.
+def test_e2b_kill_delegates_to_sdk(monkeypatch):
+    """E2BSandbox.kill() delegates to the SDK's kill() and never raises.
 
-    Verified live 2026-06-12 on ap-beijing: the ``sandboxID-clientID`` form
-    returns 404 and the instance LEAKS; the bare ``sandboxID`` returns 204.
+    The historical regression (kill DELETE-ing sandboxID-clientID instead of
+    the bare sandboxID, leaking instances) is now handled inside the e2b SDK's
+    own Sandbox.kill(); our wrapper just calls it best-effort. This test pins
+    that contract: kill() calls the SDK kill once and swallows any error.
     """
-    import httpx
-
     from rollout.sandbox_client import E2BSandbox
 
-    monkeypatch.setenv("E2B_API_KEY", "k")
-    monkeypatch.setenv("E2B_DOMAIN", "ap-beijing.tencentags.com")
+    # Bypass __init__ (which would hit the network) -- we only test kill().
+    sb = E2BSandbox.__new__(E2BSandbox)
+    sb._timeout = 300
 
-    captured: dict = {}
+    calls: list[str] = []
 
-    class _FakeResp:
-        status_code = 200
+    class _FakeSDKSandbox:
+        def kill(self):
+            calls.append("kill")
 
-        def json(self):
-            return {
-                "sandboxID": "sbx123",
-                "clientID": "1",
-                "envdAccessToken": "tok",
-            }
-
-    class _FakeClient:
-        def post(self, *a, **k):
-            return _FakeResp()
-
-        def delete(self, url, **k):
-            captured["delete_url"] = url
-
-        def close(self):
-            captured["closed"] = True
-
-    monkeypatch.setattr(httpx, "Client", lambda *a, **k: _FakeClient())
-    sb = E2BSandbox(timeout=300)
-    assert sb._sandbox_id == "sbx123"
+    sb._sb = _FakeSDKSandbox()
+    sb._sandbox_id = "sbx123"
+    # Must not raise.
     sb.kill()
-    # must delete the bare sandboxID, not the sandboxID-clientID form
-    assert captured["delete_url"].endswith("/sandboxes/sbx123")
-    assert not captured["delete_url"].endswith("sbx123-1")
-    assert captured.get("closed") is True
+    assert calls == ["kill"]
+
+
+def test_e2b_kill_swallows_sdk_error(monkeypatch):
+    """kill() must never raise even if the SDK kill() throws."""
+    from rollout.sandbox_client import E2BSandbox
+
+    sb = E2BSandbox.__new__(E2BSandbox)
+    sb._timeout = 300
+
+    class _FakeSDKSandbox:
+        def kill(self):
+            raise RuntimeError("network down")
+
+    sb._sb = _FakeSDKSandbox()
+    sb._sandbox_id = "sbx123"
+    sb.kill()  # must not raise

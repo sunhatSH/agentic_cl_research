@@ -1,0 +1,20 @@
+# Phase 3 / R5 — reward-based priority 对照 (vs R4 抗遗忘 priority)
+# 继承 configs/base.yaml
+# 对照轴：priority 类型 (R4 → R5)，验证 BucketDesign 核心主张
+
+defaults:
+  - ../../base
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+
+cl:
+  lambda_replay: 0.5
+  buffer:
+    enabled: true
+    num_buckets: 9
+    priority_type: reward        # 对照：用 reward 绝对值做 priority
+  weighting:
+    scheme: W0

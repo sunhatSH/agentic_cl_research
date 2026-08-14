@@ -16,7 +16,7 @@ from rollout.collect import GenStep
 class VerlRolloutGenerateFn:
     """Single-step generate backed by verl's native rollout LLM server.
 
-    The cluster wiring (doc/Sandbox_Agent架构.md §3.2): we own the 16×8 +
+    The cluster wiring (doc/sandbox/Sandbox_Agent架构.md §3.2): we own the 16×8 +
     winner-sync orchestration, but call verl's rollout LLM server for each step
     so token + logprob are produced natively (no proxy). The connection point is
     ``LLMServerClient.generate(request_id, *, prompt_ids, sampling_params)
@@ -38,29 +38,76 @@ class VerlRolloutGenerateFn:
         import asyncio
         from uuid import uuid4
 
-        prompt_ids = self.tokenizer.apply_chat_template(
-            messages, tokenize=True, add_generation_prompt=True
-        )
-        if isinstance(prompt_ids, dict):
+        prompt_ids = self.tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+        # apply_chat_template 可能返回 BatchEncoding / dict（含 input_ids）而非纯 int list。
+        # BatchEncoding 不是 dict 子类，isinstance(_, dict) 判 False，直接 list() 会拿到
+        # key 字符串 ['input_ids','attention_mask'] → lightllm "prompt format error"。
+        if hasattr(prompt_ids, "get") and "input_ids" in prompt_ids:
             prompt_ids = prompt_ids["input_ids"]
+        elif isinstance(prompt_ids, dict):
+            prompt_ids = prompt_ids["input_ids"]
+        # 若 chat_template 误返回文本（tokenize=True 被忽略），list(str) 会得到
+        # 单字符 list → 下游 torch.tensor 崩 "too many dimensions 'str'"。重编码。
+        if isinstance(prompt_ids, str):
+            prompt_ids = self.tokenizer.encode(prompt_ids, add_special_tokens=False)
         prompt_ids = list(prompt_ids)
+        # 若仍是嵌套（batch 维 [[...]]），取第一条。
+        if prompt_ids and isinstance(prompt_ids[0], (list, tuple)):
+            prompt_ids = list(prompt_ids[0])
 
         async def _gen():
             return await self.llm_client.generate(
                 uuid4().hex, prompt_ids=prompt_ids, sampling_params=self.sampling_params
             )
 
-        # Each scheduler thread runs its own loop; reuse if one is set, else create.
+        # The scheduler runs each session on its own thread, which has no default
+        # event loop. Detect the illegal "called from inside a running loop" case;
+        # otherwise create a dedicated loop and ALWAYS close it (the old code
+        # leaked one loop per call across thousands of steps -> fd exhaustion).
+        # Errors raised INSIDE _gen() must propagate -- the previous
+        # ``except RuntimeError`` swallowed genuine generate failures and silently
+        # retried on a fresh loop, masking the real cause and doubling load.
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():  # pragma: no cover - nested-loop guard
-                raise RuntimeError("nested loop")
-            out = loop.run_until_complete(_gen())
+            running = asyncio.get_running_loop()
         except RuntimeError:
-            out = asyncio.new_event_loop().run_until_complete(_gen())
+            running = None
+        if running is not None:  # pragma: no cover - nested-loop guard
+            raise RuntimeError(
+                "VerlRolloutGenerateFn called from inside a running event loop; "
+                "run it on a worker thread (the scheduler already does this)."
+            )
+        loop = asyncio.new_event_loop()
+        try:
+            out = loop.run_until_complete(_gen())
+        finally:
+            loop.close()
 
         token_ids = list(getattr(out, "token_ids", []) or [])
         logprobs = list(getattr(out, "log_probs", None) or [])
+        # Guard the GRPO importance ratio: a backend that returns token_ids but
+        # ragged/absent logprobs would silently misalign (chains into the
+        # batch-wide logprob drop in cl_rollout_manager). Drop logprobs for THIS
+        # step and warn rather than emit a length-mismatched vector.
+        if logprobs and len(logprobs) != len(token_ids):
+            print(
+                f"[generate] WARNING: logprob len {len(logprobs)} != token len "
+                f"{len(token_ids)}; dropping logprobs for this step.",
+                flush=True,
+            )
+            logprobs = []
+        # NaN/inf logprob from the backend would feed verl's importance ratio and
+        # NaN the loss for the whole batch. Drop the whole step's logprobs if any
+        # is non-finite (verl then recomputes old_log_probs -- safe, just slower).
+        if logprobs:
+            import math
+
+            if not all(math.isfinite(lp) for lp in logprobs):
+                print(
+                    "[generate] WARNING: non-finite logprob in this step; dropping "
+                    "logprobs (verl will recompute old_log_probs).",
+                    flush=True,
+                )
+                logprobs = []
         text = self.tokenizer.decode(token_ids) if token_ids else ""
         return GenStep(text=text, response_ids=token_ids, logprobs=logprobs)
 

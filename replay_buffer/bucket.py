@@ -1,16 +1,16 @@
-"""Top-level replay buffer with 7 capability buckets.
+"""Top-level replay buffer with 9 capability buckets.
 
 Implements the design from ``doc/BucketDesign.md``:
-- 7 buckets by capability (Workflow / SysOps / Dialogue / Finance /
-  Communication / Knowledge / OfficeQA), not by difficulty.
-- Quota allocation: q_min hard floor + sqrt-weighted soft target.
+- 9 buckets (workflow / ops / qa / finance / office /
+  communication / safety / coding / research), not by difficulty.
+- Quota allocation: sqrt-weighted proportional (α=0.5).
 - In-bucket eviction only -- no cross-bucket displacement.
 - Trajectory metadata: trajectory_id, bucket, priority, insert_step,
   last_replay_step, replay_count, token_length, pattern_id, etc.
 
 Quota formula (sub-linear weighting):
-    soft_target_i = q_min + (C - K * q_min) * n_i^alpha / sum_j(n_j^alpha)
-    where n_i = bucket_task_counts[i], C = total_capacity, K = num_buckets,
+    soft_target_i = C * n_i^alpha / sum_j(n_j^alpha)
+    where n_i = bucket_task_counts[i], C = total_capacity,
     alpha < 1 dampens the dominance of large buckets.
 """
 
@@ -31,18 +31,15 @@ from replay_buffer.store import TrajectoryStore
 
 def allocate_quota(
     total_capacity: int,
-    q_min: int,
     bucket_task_counts: Sequence[int],
     alpha: float = 0.5,
 ) -> list[int]:
     """Compute soft_target per bucket.
 
-    soft_target_i = q_min + remaining * n_i^alpha / sum_j(n_j^alpha)
-    where remaining = total_capacity - K * q_min.
+    soft_target_i = C * n_i^alpha / sum_j(n_j^alpha)
 
     Args:
         total_capacity: C, total trajectory slots across all buckets.
-        q_min: hard floor reserved per bucket.
         bucket_task_counts: n_i for each bucket; relative size weights.
         alpha: sub-linear exponent. alpha=1.0 = proportional; alpha=0.5
                (default) = square-root weighting; alpha=0.0 = uniform.
@@ -52,106 +49,140 @@ def allocate_quota(
         Sums to total_capacity (modulo integer rounding -- the largest
         bucket absorbs the rounding residue).
     """
-    k = len(bucket_task_counts)
-    if total_capacity < k * q_min:
-        raise ValueError(
-            f"total_capacity ({total_capacity}) must be >= K * q_min ({k * q_min})"
-        )
-    weights = [n ** alpha for n in bucket_task_counts]
+    # Empty counts -> nothing to allocate (avoids max() on empty range below).
+    if not bucket_task_counts:
+        return []
+    # n**alpha: guard 0**negative (ZeroDivisionError) by flooring counts to >=0 and
+    # treating the exponent per-element; a 0 count with alpha<=0 would raise, so
+    # clamp such contributions to 0 weight instead.
+    weights = [(float(n) ** alpha if (n > 0 or alpha > 0) else 0.0) for n in bucket_task_counts]
     s = sum(weights)
-    remaining = total_capacity - k * q_min
-    targets = [q_min + int(remaining * w / s) for w in weights]
+    if s <= 0:
+        # All counts zero (or all weights collapsed) -> no size signal; fall back
+        # to uniform split so we never divide by zero (was: ZeroDivisionError).
+        k = len(bucket_task_counts)
+        base = total_capacity // k
+        targets = [base] * k
+        targets[0] += total_capacity - base * k
+        return targets
+    targets = [int(total_capacity * w / s) for w in weights]
     residue = total_capacity - sum(targets)
     if residue != 0:
-        idx = max(range(k), key=lambda i: weights[i])
+        idx = max(range(len(bucket_task_counts)), key=lambda i: weights[i])
         targets[idx] += residue
     return targets
 
 
 class BucketReplayBuffer:
-    """7-bucket replay buffer.
+    """9-bucket replay buffer.
 
     Args:
-        num_buckets: number of buckets, fixed at 7 (overridable for R0 single-buffer ablation).
+        num_buckets: number of buckets, default 9 (overridable for R0 single-buffer ablation).
         total_capacity: C, total trajectory slots (10k-50k).
-        q_min: hard floor per bucket.
         bucket_names: list of K capability names.
         bucket_task_counts: list of n_i, used for quota allocation.
+        bucket_floors: per-bucket hard floor (eviction protection). Required.
         alpha: sub-linear weighting exponent in quota formula (default 0.5).
         priority: Priority instance (anti-forgetting); pass RewardPriority for R5.
-        eviction_type: 'priority' (default) or 'reservoir' (R0 CLEAR baseline).
-        within_bucket_sampling: 'priority' (default) or 'uniform' (R0 / R3).
+        eviction_type: 'fifo' (default) evicts earliest-inserted; 'priority'
+                       evicts lowest-priority; 'reservoir' = R0 CLEAR baseline.
+        within_bucket_sampling: 'uniform' (default) or 'priority'.
         seed: optional RNG seed for reproducible reservoir / sampling.
 
-    Single-bucket mode (R0 CLEAR baseline): pass ``num_buckets=1``. When the
-    default 7 ``bucket_names`` / ``bucket_task_counts`` are inherited from a
-    multi-bucket config, they are automatically collapsed to one ``"All"``
-    bucket whose task count is the sum -- so ``configs/phase3/r0.yaml`` can set
-    only ``num_buckets: 1`` without redefining the name/count lists (bug A2).
+    In-bucket eviction only, no cross-bucket displacement.  bucket_floors
+    provide the per-bucket hard floor; eviction never drops a bucket below
+    its floor regardless of priority.
     """
 
     def __init__(
         self,
-        num_buckets: int = 7,
+        num_buckets: int = 9,
         total_capacity: int = 25000,
-        q_min: int = 2000,
         bucket_names: Sequence[str] | None = None,
         bucket_task_counts: Sequence[int] | None = None,
         alpha: float = 0.5,
         priority: Priority | None = None,
-        eviction_type: str = "priority",
-        within_bucket_sampling: str = "priority",
+        eviction_type: str = "fifo",
+        bucket_floors: Sequence[int] | None = None,
+        within_bucket_sampling: str = "uniform",
+        bucket_strategy: str = "distance",
+        distance_metric: str = "euclidean",
         seed: int | None = None,
     ):
         if bucket_names is None:
             bucket_names = [
-                "Workflow", "SysOps", "Dialogue", "Finance",
-                "Communication", "Knowledge", "OfficeQA",
+                "workflow",
+                "ops",
+                "qa",
+                "finance",
+                "office",
+                "communication",
+                "safety",
+                "coding",
+                "research",
             ]
         if bucket_task_counts is None:
-            bucket_task_counts = [54, 52, 38, 18, 12, 11, 10]
+            bucket_task_counts = [56, 44, 36, 20, 11, 11, 9, 2, 6]
 
         # Single-bucket collapse: tolerate inheriting multi-bucket name/count
         # lists when num_buckets == 1 (R0 CLEAR baseline).
         if num_buckets == 1 and (len(bucket_names) != 1 or len(bucket_task_counts) != 1):
             bucket_names = ["All"]
             bucket_task_counts = [sum(bucket_task_counts)]
+            # Collapse inherited per-bucket floors too (sum -> one floor for "All").
+            if bucket_floors is not None and len(bucket_floors) != 1:
+                bucket_floors = [sum(bucket_floors)]
 
         if len(bucket_names) != num_buckets or len(bucket_task_counts) != num_buckets:
-            raise ValueError(
-                "bucket_names and bucket_task_counts must each have length num_buckets"
-            )
+            raise ValueError("bucket_names and bucket_task_counts must each have length num_buckets")
 
         self.num_buckets = num_buckets
         self.total_capacity = total_capacity
-        self.q_min = q_min
         self.bucket_names = list(bucket_names)
         self.bucket_task_counts = list(bucket_task_counts)
         self.alpha = alpha
         self.eviction_type = eviction_type
         self.within_bucket_sampling = within_bucket_sampling
+        self._bucket_strategy_name = bucket_strategy
 
-        targets = allocate_quota(total_capacity, q_min, bucket_task_counts, alpha)
-        self.soft_target = dict(zip(self.bucket_names, targets))
+        targets = allocate_quota(total_capacity, bucket_task_counts, alpha)
+        self.soft_target = dict(zip(self.bucket_names, targets, strict=True))
+        # Per-bucket hard floors.  Required for eviction protection.
+        if bucket_floors is None:
+            raise ValueError("bucket_floors is required")
+        if len(bucket_floors) != num_buckets:
+            raise ValueError("bucket_floors must have length num_buckets")
+        self.bucket_floors = dict(zip(self.bucket_names, bucket_floors, strict=True))
 
         self._rng = random.Random(seed)
         self.store = TrajectoryStore(backend="memory")
         self.priority_fn = priority or Priority()
         self.eviction = Eviction(
-            q_min=q_min,
             soft_target=self.soft_target,
             eviction_type=eviction_type,
             rng=self._rng,
+            floors=self.bucket_floors,
         )
-        # Persistent sampler so starvation / last-sample state survives across
-        # sample() calls (bug A4 -- previously a fresh sampler was built each call).
-        from replay_buffer.sampler import TwoLevelSampler
+        # Persistent sampler so last-sample state survives across sample() calls.
+        from replay_buffer.sampler import BaselineSampler, DistanceStrategy, TwoLevelSampler
 
-        self._sampler = TwoLevelSampler(
-            self,
-            within_bucket_sampling=within_bucket_sampling,
-            rng=self._rng,
-        )
+        if eviction_type == "reservoir" or within_bucket_sampling == "priority":
+            # Main path: distance-based bucket strategy + within-bucket priority.
+            # ``bucket_strategy`` is accepted for backward compat but ignored --
+            # distance is the only bucket-level strategy now (quota/uniform
+            # archived 2026-07-23). Pass a DistanceStrategy instance directly.
+            strategy = bucket_strategy if not isinstance(bucket_strategy, str) else DistanceStrategy(metric=distance_metric)
+            self._sampler = TwoLevelSampler(
+                self,
+                bucket_strategy=strategy,
+                within_bucket_sampling=within_bucket_sampling,
+                rng=self._rng,
+            )
+        else:
+            # CLEAR baseline (Rolnick 2019): uniform over the whole pool, no
+            # bucket awareness. Used when within_bucket_sampling='uniform' and
+            # eviction is not reservoir (the no-CL-strategy control).
+            self._sampler = BaselineSampler(self, rng=self._rng)
 
         self._step = 0
         self._seen_counts: dict[str, int] = {b: 0 for b in self.bucket_names}
@@ -206,11 +237,12 @@ class BucketReplayBuffer:
         if self.eviction_type == "reservoir":
             return self._reservoir_add(tid, trajectory, meta, bucket)
 
-        # Priority eviction: evict the lowest-priority in-bucket trajectory
-        # FIRST when the bucket is at/over its soft target, then insert, so the
-        # steady-state bucket size never exceeds soft_target (bug A5).
+        # FIFO / priority eviction: evict the victim (oldest for fifo, lowest
+        # -priority for priority) FIRST when the bucket is at/over its soft
+        # target, then insert, so the steady-state size never exceeds
+        # soft_target (bug A5). Victim selection is delegated to Eviction.
         while self.store.bucket_size(bucket) >= self.soft_target[bucket]:
-            if self.store.bucket_size(bucket) <= self.q_min:
+            if self.store.bucket_size(bucket) <= self.bucket_floors[bucket]:
                 break
             victim = self.eviction.select_victim(self.store, bucket)
             if victim is None:
@@ -237,8 +269,8 @@ class BucketReplayBuffer:
             return tid
         n_seen = self._seen_counts[bucket]
         if self._rng.random() < cap / max(n_seen, 1):
-            # Reservoir manages capacity itself; the q_min hard floor (a
-            # bucketed-mode concept) must NOT block the random replacement,
+            # Reservoir manages capacity itself — pick victim directly. Hard
+            # floor must NOT block the random replacement in reservoir mode,
             # so pick the victim directly rather than via Eviction.select_victim.
             ids = self.store.list_by_bucket(bucket)
             if ids:
@@ -253,11 +285,38 @@ class BucketReplayBuffer:
         """Bulk add. Each item is (trajectory, bucket, metadata)."""
         return [self.add_trajectory(t, b, m) for t, b, m in batch]
 
-    def sample(self, batch_size: int):
-        """Two-level sampling -- delegates to the persistent TwoLevelSampler.
+    def set_current_bucket(self, bucket: str | None) -> None:
+        """Notify the sampler which bucket is currently being trained.
 
-        The sampler is created once in ``__init__`` so starvation_boost and
-        last-sample bookkeeping persist across calls (bug A4).
+        Convenience wrapper for the single-bucket case: builds a distribution
+        {bucket: 1.0} and forwards to ``set_current_distribution``. When the
+        training batch mixes buckets (multi-turn sessions expand to per-turn
+        GRPO groups, or the tail of one bucket blends into the next), call
+        ``set_current_distribution`` directly with the batch's bucket shares.
+        """
+        if bucket is None:
+            self.set_current_distribution(None)
+            return
+        self.set_current_distribution({bucket: 1.0})
+
+    def set_current_distribution(self, distribution: dict[str, float] | None) -> None:
+        """Notify the sampler of the current training batch's bucket distribution.
+
+        ``distribution`` maps bucket name -> share (n_i / batch_size). Drives
+        the distance-based replay weights: the centroid of the trained buckets
+        is computed, and buckets far from it (higher forgetting risk) get higher
+        replay weight. None during cold-start / warmup (falls back to uniform).
+        """
+        if hasattr(self._sampler, "set_current_distribution"):
+            self._sampler.set_current_distribution(distribution)
+
+    def sample(self, batch_size: int):
+        """Sample replay trajectories.
+
+        TwoLevelSampler (distance bucket strategy + within-bucket priority) is
+        the main path. BaselineSampler (CLEAR, uniform over the whole pool) is
+        the no-CL-strategy control, used when ``within_bucket_sampling='uniform'``
+        and ``eviction_type`` is not reservoir.
         """
         return self._sampler.sample(batch_size)
 
@@ -295,9 +354,7 @@ class BucketReplayBuffer:
                 "evictions": self._eviction_counts[name],
             }
         active_signals = (
-            self.priority_fn.active_signals()
-            if hasattr(self.priority_fn, "active_signals")
-            else {}
+            self.priority_fn.active_signals() if hasattr(self.priority_fn, "active_signals") else {}
         )
         return {
             "total_size": len(self.store),

@@ -13,7 +13,20 @@
 actor_rollout_ref:
   model:
     path: /tmp/qwen36
-    use_fused_kernels: true
+    model_type: custom_language_model   # ★ 必须放顶层(引擎选择键 engine_workers.py:128 EngineRegistry.new)。
+                                       #   选中 CustomFSDPEngineWithLMHead(GDN 变长+路由重放);其 __init__ 再把
+                                       #   hf_config.model_type 复位回 language_model → apply_monkey_patch 读到
+                                       #   真实 qwen3_5(27B 同为混合 GDN)走 SP-aware triton forward。✗ 放
+                                       #   override_config 会改 HF config.model_type → 落 dense_common 通用分支
+                                       #   → compute_log_prob assert hidden.shape[0]==labels.shape[0] 崩(见 debug §31)。
+    use_remove_padding: true            # 变长打包:GDN 层走 packed forward(cu_seqlens),full-attn 走 FA3 varlen
+    use_fused_kernels: true             # fused CE loss 等 kernel(配合 remove_padding)
+    enable_gradient_checkpointing: true
+    fused_kernel_options:
+      impl_backend: triton            # torch backend 的 FusedLinearForPPO chunk_size=512 硬编码 bug;triton 走
+                                       #   linear_cross_entropy(不 chunk/不预分配),绕开。
+    override_config:
+      attn_implementation: flash_attention_3
   ref:
     path: /tmp/qwen36            # pi_ref = pi_0（初始模型）；CL 后续阶段可改为上一阶段 ckpt
     fsdp_config:
@@ -21,85 +34,119 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: 1
 
   actor:
-    strategy: fsdp
+    strategy: fsdp2                # 新路线:custom_language_model 引擎 + remove_padding 依赖 fsdp2
+    use_torch_compile: false
+    clip_ratio_low: 0.2
     clip_ratio_high: 0.28
     clip_ratio_c: 10.0
     optim:
-      lr: 1.0e-6
+      lr: 2.0e-6
     use_dynamic_bsz: true
-    ppo_mini_batch_size: 64
-    ppo_micro_batch_size_per_gpu: 1
+    ppo_mini_batch_size: 32
     ppo_max_token_len_per_gpu: 32768
-    ulysses_sequence_parallel_size: 4
+    ulysses_sequence_parallel_size: ${oc.env:ULYSSES_SP_SIZE,4}   # 训练 SP; 换卡数按需覆盖
     fsdp_config:
       param_offload: false        # 不卸载
       optimizer_offload: false     # 不卸载
+      reshard_after_forward: true
+      model_dtype: bfloat16
 
   rollout:
     name: lightllm                 # 用拷到本项目侧的 verl（含 lightllm_rollout）跑 lightllm
-    mode: async                    # 泽寰版 verl 已移除 sync；agent-loop + lightllm 也走 async server
-    tensor_model_parallel_size: 4
-    gpu_memory_utilization: 0.75
+    mode: async                    # 定制版 verl 已移除 sync；agent-loop + lightllm 也走 async server
+    tensor_model_parallel_size: ${oc.env:ROLLOUT_TP_SIZE,4}   # rollout TP; 换卡数按需覆盖
+    gpu_memory_utilization: 0.65
     n: 8
-    max_model_len: 131072
-    max_num_batched_tokens: 8192
+    max_model_len: 65536
+    max_num_batched_tokens: 6144
     enable_chunked_prefill: false
     calculate_log_probs: true
     log_prob_micro_batch_size_per_gpu: 1
-    # agentic 多轮：走项目自带的 winner-sync 管理器（与 CL loss 注入并存，
-    # 通过 verl 官方注入点 ray_trainer.py:931 替换默认 rollout）。
+    log_prob_max_token_len_per_gpu: 32768
+    response_length: 12288
+    # agentic 多轮：verl 原生 v1 agent_loop（RemoteAgentLoopManager + 沙箱 harness），
+    # 与 9B 新路线一致（见 b1_9b_16gpu.yaml / debug §30-31）。取代旧自写 winner-sync
+    # cl_rollout_manager.AgentLoopManager（与 use_v1 custom_sync + transfer_queue 不自洽）。
     agent:
-      agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
-      sessions_per_step: 16          # 每步 16 会话并行（× n=8 槽 = 128 并发）
-      sandbox_backend: e2b           # 腾讯沙箱（凭证经 docker/sandbox/tencent.env 注入）
+      agent_loop_manager_class: recipe_custom.agent.agent_loop_manager.RemoteAgentLoopManager
+      agent_loop_config_path: exps/agent_loop_config.yaml
+      default_agent_loop: hermes_agent
+    custom:
+      remote_agent:
+        gateway_count: 8
+        num_session_workers: 8
+        session_timeout: 1000
+        harness_log_dir: ${oc.env:HARNESS_LOG_DIR,logs/harness}
+        harness_log_save_mode: all
     # 多轮 / 推理格式（沿用参考脚本的 Qwen3 设置）
     multi_turn:
       format: qwen3_coder
       reasoning_format: qwen3
-      max_turns: 6
+      max_assistant_turns: 8
+      max_tool_response_length: 16384
     checkpoint_engine:
-      update_weights_bucket_megabytes: 3072
+      update_weights_bucket_megabytes: 6144
     # lightllm 引擎参数（对齐参考脚本里的 engine_kwargs.lightllm.*）
     engine_kwargs:
       lightllm:
-        batch_max_tokens: 8192
-        enable_multimodal: true
+        batch_max_tokens: 6144
+        enable_multimodal: false
         enable_torch_memory_saver: true
         graph_max_batch_size: 64
         running_max_req_size: 64
-        sampling_backend: sglang_kernel
+        sampling_backend: triton
 
-# verl reward_model worker 不启用（judge 走外部服务）
+# verl reward_model worker 不启用（judge 走外部服务）；omni RewardManager 转发到项目 LLM judge
 reward:
+  reward_manager:
+    name: omni
   reward_model:
     enable: false
     rollout:
       name: vllm
 
-# ---- 数据：默认指向 mock parquet，正式训练请改成真实数据集 -------------------
+# ---- 数据：能力桶打标产物(scripts/labeled_to_parquet.py)。TRAIN_FILES/VAL_FILES 可覆盖 ----
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/agentic_cl_research/data/mock/datasets/train.parquet
-  val_files: /mnt/afs_toolcall/sunhao4/agentic_cl_research/data/mock/datasets/val.parquet
-  train_batch_size: 64
-  gen_batch_size: 64
+  train_files: ${oc.env:TRAIN_FILES,/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet}
+  val_files: ${oc.env:VAL_FILES,/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet}
+  train_batch_size: ${oc.env:TRAIN_BATCH_SIZE,256}   # base.yaml=256; env 可覆盖
+  gen_batch_size: ${oc.env:TRAIN_BATCH_SIZE,256}
   max_prompt_length: 4096
-  max_response_length: 8192
+  max_response_length: 12288
   return_raw_chat: true
   filter_overlong_prompts: true
   trust_remote_code: true
   dataloader_num_workers: 0
   cache_dir: /tmp/verl_rlhf_cache
 
-# ---- trainer：64 卡 = 8 节点 x 8 卡 -----------------------------------------
+# ---- trainer：卡数/机器数【不写死】，由环境变量注入(默认 64 卡 = 8x8) ----------
+# 32 卡: NNODES=4 (4x8) 或 N_GPUS_PER_NODE=4 (8x4)。集群调度器按实际节点注入 NNODES。
 trainer:
-  nnodes: 8
-  n_gpus_per_node: 8
+  nnodes: ${oc.env:NNODES,8}
+  n_gpus_per_node: ${oc.env:N_GPUS_PER_NODE,8}
   total_epochs: 1
   save_freq: 50
   test_freq: 50
   critic_warmup: 0
-  logger: ['console', 'swanlab']
+  logger: [console, swanlab]   # 字面 list（oc.decode 返回 list 会在 verl resolve 阶段炸）
+  log_val_generations: 50
+  rollout_data_dir: ${oc.decode:${oc.env:ROLLOUT_DATA_DIR,null}}
+  validation_data_dir: ${oc.decode:${oc.env:VAL_DATA_DIR,null}}
   project_name: RL
+  # ── v1 开关：走 verl 原生 main_ppo 的 V1 分支 + custom_sync trainer（对齐 9B 新路线）──
+  use_v1: true
+  v1:
+    trainer_mode: custom_sync
+    sampler:
+      # 9桶 buffer 接入点：R 系列设 custom_sampler.{path,name} 指向 CLReplayBuffer。
+      # B1/K* buffer.enabled=false 用 verl 内建 ReplayBuffer(null)即可。
+      custom_sampler:
+        path: null
+        name: null
+
+# transfer_queue：v1 架构数据通道（KVBatchMeta 元数据句柄 + tq 存张量）。custom_sync 必须开。
+transfer_queue:
+  enable: true
 
 # ---- Ray：连接脚本起好的多机 head（不传 address=local）----------------------
 ray_kwargs:

@@ -1,0 +1,14 @@
+% English abstract
+\begin{abstracten}
+Deployed agentic large language models evolve through periodic RL updates. This is inherently continual reinforcement learning: the model must acquire new capabilities while retaining existing ones. Unlike lab training with full, balanced distributions, online data arrives unevenly---training proceeds \textbf{sequentially, one capability domain at a time}---which exacerbates \textbf{catastrophic forgetting}.
+
+We tackle this with experience replay. Three core contributions:
+
+First, a \textbf{capability-partitioned nine-bucket replay buffer}. Buckets are split by capability domain, obtained from official benchmark categories merged into nine text-only groups. Each bucket has a fixed capacity cap (square-root-weighted by task count) and a hard floor. Eviction is in-bucket only, preventing cross-capability displacement. Replay is sampled by \textbf{distance} in capability space: farther buckets (higher forgetting risk) receive higher weight. Within-bucket sampling and eviction are pluggable policies (currently uniform and FIFO respectively).
+
+Second, a \textbf{composite continual-learning objective} injected into GRPO with no framework fork: policy gradient, reverse-KL anchor, replay loss, and a fixed entropy regularizer. Reward is scored by a single frozen external LLM judge under one rubric, aggregated multiplicatively with safety as a binary gate.
+
+Third, a \textbf{bucket-grouped anti-forgetting evaluation protocol}: one evaluation pass after all domains are trained, with post-hoc decay weighting by training recency to quantify the core signal---earlier-trained buckets forget more---compared against a same-scale baseline without continual learning.
+
+We implement and validate the system on a Qwen3.5-9B agent across nine capability domains.
+\end{abstracten}

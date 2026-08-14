@@ -1,0 +1,19 @@
+# Phase 2 / K4 — 中 KL + 阶段锚定 (vs K2)
+# 继承 configs/base.yaml
+# 对照轴：pi_ref 锚点 (K2 ↔ K4)
+
+defaults:
+  - ../../base
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: true
+    kl_loss_coef: 0.05           # lambda_2 = 0.05
+    kl_loss_type: low_var_kl
+  ref:
+    path: ???                    # pi_{t-1} 上阶段 checkpoint
+
+cl:
+  lambda_replay: 0.0
+  buffer:
+    enabled: false

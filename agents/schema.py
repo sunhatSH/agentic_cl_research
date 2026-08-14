@@ -37,6 +37,17 @@ class ObservationReport:
     discrepancies: str = ""
     """Internal red flags in the produced state (empty/corrupt/contradictory); may be empty."""
 
+    has_red_flag: bool = False
+    """Structured verdict: does THIS report carry a genuine, unresolved red flag?
+
+    Set authoritatively by the observer (deterministic checks always know; the LLM
+    path sets it explicitly). Consumers (questioner banner / block-end, analyzer)
+    key off THIS boolean, NOT keyword-matching ``discrepancies`` free text -- the
+    observer routinely opens with a reassuring boilerplate sentence ("No empty
+    deliverables detected.") and THEN states a real concern ("One discrepancy is
+    present: ..."), which a substring filter would wrongly suppress.
+    """
+
     file_tree: str = ""
     """Winner workspace file tree (depth-truncated; fallback evidence)."""
 
@@ -62,12 +73,21 @@ class ObservationReport:
 
         Drives the failure / patience path (§3.6.5): an empty report after a
         winner rollout means the response failed / stopped / produced nothing.
-        Diff-driven: ``has_effect`` False (empty diff) counts as empty. The
-        pass-through ``actor_trajectory`` does NOT count as evidence of effect.
+
+        Evidence precedence (bug fix 2026-07-27): a concrete deliverable in
+        ``final`` / ``intermediate`` is GROUND TRUTH and always counts as
+        non-empty -- even when the FS/system diff is empty. Text-deliverable
+        tasks (QA / reasoning / role-play, ~3 of the 9 buckets) legitimately
+        write no files: the observer folds the assistant's reply into ``final``
+        with ``has_effect`` possibly False (no env change). The OLD gate short-
+        circuited on ``has_effect`` FIRST, so those reports were judged empty ->
+        reward forced to 0 for ALL 8 slots -> zero GRPO advantage -> no learning
+        signal on entire buckets (silent collapse). ``has_effect`` is only the
+        fallback when there is no deliverable at all.
         """
-        if not self.has_effect:
-            return True
-        return not (self.intermediate or self.final)
+        if self.intermediate or self.final:
+            return False
+        return not self.has_effect
 
 
 @dataclass

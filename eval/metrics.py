@@ -90,7 +90,7 @@ def output_entropy(logits: Sequence[Sequence[float]], mask: Sequence[int] | None
 
 
 def _ngrams(tokens: Sequence, n: int) -> list[tuple]:
-    return [tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)]
+    return [tuple(tokens[i : i + n]) for i in range(len(tokens) - n + 1)]
 
 
 def _distinct_n(trajectories: Sequence[Sequence], n: int) -> float:

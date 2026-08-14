@@ -1,6 +1,6 @@
 """Inference (generation) side: the single-step generate boundary.
 
-Decision (doc/Sandbox_Agent架构.md §3.2): we orchestrate the session loop, but
+Decision (doc/sandbox/Sandbox_Agent架构.md §3.2): we orchestrate the session loop, but
 every single generation step is produced by verl's NATIVE rollout generate
 (token + logprob + response_mask come for free), NOT by an HTTP proxy. The
 session/agent layer depends only on the ``GenerateFn`` boundary defined in

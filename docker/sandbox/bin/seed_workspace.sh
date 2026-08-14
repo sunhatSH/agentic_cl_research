@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Materialize a "user machine" filesystem into the agent workspace at INSTANCE
-# START (not at image build) — see doc/Sandbox_Agent架构.md §4.
+# START (not at image build) — see doc/sandbox/Sandbox_Agent架构.md §4.
 #
 # Determinism contract (CRITICAL): same AGENTIC_CL_PERSONA / AGENTIC_CL_FS_SEED
 # => byte-identical workspace. All 8 slots of a GRPO group are launched with the

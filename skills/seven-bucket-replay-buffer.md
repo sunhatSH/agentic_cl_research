@@ -1,4 +1,4 @@
-# Skill: 7 桶 Replay Buffer 设计
+# Skill: 9 桶 Replay Buffer 设计
 
 ## 适用场景
 - 在持续学习 / 多任务 RL 中需要一个**抗遗忘**的经验回放池，且任务天然分属不同**能力/领域**。
@@ -6,7 +6,7 @@
 - 需要把回放池与训练框架（verl/Ray）**解耦**以便独立单测。
 
 ## 核心步骤
-1. **按能力/领域分桶，不按难度分桶**。难度随模型能力漂移，会让桶定义不稳定；能力/领域是稳定的。本项目 7 桶：Workflow / SysOps / Dialogue / Finance / Communication / Knowledge / OfficeQA。
+1. **按能力/领域分桶，不按难度分桶**。难度随模型能力漂移，会让桶定义不稳定；能力/领域是稳定的。本项目 9 桶（ClawEval 官方 category 合并、去多模态、单层无子桶）：workflow / ops / qa / finance / office / communication / safety / coding / research。定义与映射见 `runs/_analysis/capability_buckets/buckets.json`。
 2. **Quota = 保底 + 次线性加权**：`target_b = q_min + (C - K·q_min) · w_b`，其中 `w_b ∝ task_count_b^α`（α=0.5 平方根，大桶得更多但不按比例膨胀）。见 `allocate_quota`。
 3. **Priority 用抗遗忘信号，不用 reward 绝对值**：4 信号融合 `(forgetting_risk, rarity, diversity, within_bucket_difficulty)`，权重和为 1。reward 整体上升会系统性淘汰旧轨迹 → 退化为滑动窗口，所以 reward-priority 仅作 R5 对照（`RewardPriority`）。
 4. **桶内淘汰，禁止跨桶挤出**：over soft_target 时只在本桶内选 victim（priority 模式选最低分；reservoir 模式随机）。

@@ -1,0 +1,10 @@
+列序号,字段名,中文名,是否必填
+1,FDate,业务日期,是
+2,FVoucherGroup,凭证字,是
+3,FNumber,凭证号,是
+4,FExplanation,摘要,是
+5,FAccountCode,科目代码,是
+8,FDebit,借方金额,否
+9,FCredit,贷方金额,否
+10,FCustomerCode,客户编码,否
+11,FDeptCode,部门编码,否

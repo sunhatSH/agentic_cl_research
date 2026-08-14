@@ -1,0 +1,22 @@
+# Phase 3 / R3 — BucketDesign 基础版 (两级采样，无 priority)
+# 继承 configs/base.yaml
+# 对照轴：桶结构 vs CLEAR (R0 → R3), 是否使用 priority (R3 → R4)
+
+defaults:
+  - ../../base
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    kl_loss_coef: 0.0
+
+cl:
+  lambda_replay: 0.5
+  buffer:
+    enabled: true
+    num_buckets: 9
+    priority_type: uniform       # 无 priority：淘汰/采样均退化为桶内均匀
+  weighting:
+    scheme: W2                   # gamma=delta=1 即均权（token 权重不引入 priority 维度）
+    gamma: 1.0
+    delta: 1.0

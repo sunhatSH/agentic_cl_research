@@ -33,7 +33,6 @@ from typing import Protocol
 
 from rollout.sandbox_env import load_sandbox_runtime_env
 
-
 # =========================================================================== #
 # INTERFACE -- the contract every backend implements. The rollout loop depends  #
 # ONLY on this (run_code -> ExecResult, kill); it never imports a vendor class.  #
@@ -69,9 +68,11 @@ class SandboxClient(Protocol):
       - ``kill()`` releases the instance; best-effort, must not raise on teardown.
     """
 
-    def run_code(self, code: str, language: str = "python") -> ExecResult: ...
+    def run_code(self, code: str, language: str = "python") -> ExecResult:
+        ...
 
-    def kill(self) -> None: ...
+    def kill(self) -> None:
+        ...
 
 
 # =========================================================================== #
@@ -125,101 +126,66 @@ class LocalSandbox:
 class E2BSandbox:
     """Tencent Agent Runtime / E2B-compatible sandbox (cluster backend).
 
-    Uses the REST API directly: create returns ``envdAccessToken``; run-code
-  host is ``49999-<sandboxID>.<E2B_DOMAIN>`` with header ``X-Access-Token``.
-  (The pip ``e2b_code_interpreter`` SDK uses a different host/auth shape on
-  Tencent and returns 401 on ``/execute`` without this path.)
+    Uses the official ``e2b_code_interpreter`` SDK against the Tencent
+    Agent Runtime E2B-compatible endpoint (``E2B_DOMAIN``). The SDK handles
+    sandbox connect + envd/traffic token acquisition internally, so we just
+    ``Sandbox.create(template=...)`` and drive execution.
+
+    Code execution goes through ``commands.run`` (envd process gRPC on port
+    49983), NOT ``run_code`` (Jupyter ``/execute`` on port 49999): the base
+    ``sandbox-code`` image does not ship a Jupyter kernel, so
+    ``POST 49999-{sid}/execute`` returns 500 (openresty). ``commands.run``
+    only needs a shell (base image ships ``/bin/sh``) and is verified working
+    on 2026-06-26 (see doc/sandbox/Sandbox_规格与run_code踩坑.md §四).
     """
 
-    _RUN_CODE_PORT = 49999
-
-    def __init__(self, template: str = "agentic-cl-code-interpreter", timeout: int = 300):
+    def __init__(self, template: str = "agentic-cl-sandbox", timeout: int = 600):
         import os
-
-        import httpx
 
         api_key = os.environ.get("E2B_API_KEY")
         domain = os.environ.get("E2B_DOMAIN")
         if not api_key or not domain:
             raise RuntimeError("E2B_API_KEY and E2B_DOMAIN must be set for e2b backend")
 
-        self._api_key = api_key
-        self._domain = domain
-        self._api_url = f"https://api.{domain}"
+        # 注:不动 e2b 连接池/HTTP2 设置 —— 用 SDK 原生默认(keepalive=20,复用长连接,
+        # 短任务省资源/低延迟)。GOAWAY(入口网关单连接 ~1000 stream 后回收)只在【长任务】
+        # 触发,短任务遇不到。长任务需要时再按需开:E2B_MAX_KEEPALIVE_CONNECTIONS 调大分散
+        # stream,或对 RemoteProtocolError 重试一次。当前采集/训练以短任务为主,不改。
+
+        # The e2b SDK reads E2B_API_KEY / E2B_DOMAIN from env itself; they are
+        # already set (validated above), so create() picks the Tencent endpoint.
+        from e2b_code_interpreter import Sandbox
+
         self._timeout = timeout
-        self._client = httpx.Client()
-
-        runtime_env = load_sandbox_runtime_env()
-        resp = self._client.post(
-            f"{self._api_url}/sandboxes",
-            json={
-                "templateID": template,
-                "timeout": timeout,
-                "metadata": {},
-                "envVars": runtime_env,
-            },
-            headers={"X-API-KEY": api_key},
-            timeout=60.0,
+        runtime_env = load_sandbox_runtime_env() or None
+        self._sb = Sandbox.create(
+            template=template,
+            timeout=timeout,
+            envs=runtime_env,
         )
-        if resp.status_code >= 300:
-            raise RuntimeError(f"sandbox create failed: {resp.status_code} {resp.text}")
-
-        data = resp.json()
-        self._sandbox_id = data["sandboxID"]
-        self._full_id = f"{data['sandboxID']}-{data['clientID']}"
-        self._envd_token = data["envdAccessToken"]
-        self._run_url = f"https://{self._RUN_CODE_PORT}-{self._sandbox_id}.{domain}/execute"
+        self._sandbox_id = self._sb.sandbox_id
 
     def run_code(self, code: str, language: str = "python") -> ExecResult:
-        import json
+        import shlex
 
-        stdout_parts: list[str] = []
-        stderr_parts: list[str] = []
+        if language != "python":
+            return ExecResult("", f"E2BSandbox supports python only, got {language}", False)
+        cmd = f"python3 -c {shlex.quote(code)}"
         try:
-            with self._client.stream(
-                "POST",
-                self._run_url,
-                json={"code": code, "language": language},
-                headers={"X-Access-Token": self._envd_token},
-                timeout=float(self._timeout),
-            ) as resp:
-                if resp.status_code >= 300:
-                    body = resp.read().decode(errors="replace")
-                    return ExecResult("", body, False)
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    try:
-                        evt = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    kind = evt.get("type")
-                    if kind == "stdout":
-                        stdout_parts.append(evt.get("text", ""))
-                    elif kind == "stderr":
-                        stderr_parts.append(evt.get("text", ""))
-                    elif kind == "error":
-                        stderr_parts.append(str(evt))
-        except Exception as exc:  # noqa: BLE001 — surface network/SDK errors to rollout
+            out = self._sb.commands.run(cmd, timeout=self._timeout, cwd="/tmp")
+        except Exception as exc:
             return ExecResult("", str(exc), False)
-
-        stdout = "".join(stdout_parts).strip()
-        stderr = "".join(stderr_parts).strip()
-        return ExecResult(stdout, stderr, not stderr)
+        stdout = (out.stdout or "").strip()
+        stderr = (out.stderr or "").strip()
+        return ExecResult(stdout, stderr, out.exit_code == 0)
 
     def kill(self) -> None:
-        # Delete by the bare sandboxID (the run-code host id), NOT the
-        # ``sandboxID-clientID`` form: the platform returns 404 for the latter
-        # and the instance leaks. Verified 2026-06-12 against ap-beijing:
-        # DELETE /sandboxes/<sandboxID> -> 204 (reclaimed), -<clientID> -> 404.
+        # The SDK reclaims the instance via its own DELETE /sandboxes/<sandboxID>;
+        # best-effort teardown (must not raise).
         try:
-            self._client.delete(
-                f"{self._api_url}/sandboxes/{self._sandbox_id}",
-                headers={"X-API-KEY": self._api_key},
-                timeout=30.0,
-            )
-        finally:
-            self._client.close()
+            self._sb.kill()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class AliyunSandbox:
@@ -239,7 +205,7 @@ class AliyunSandbox:
     available for the observer's read-only state probing (see CLAUDE.md TODO#5).
     """
 
-    def __init__(self, image_id: str = "code_latest", timeout: int = 300):
+    def __init__(self, image_id: str = "code_latest", timeout: int = 600):
         raise NotImplementedError(
             "AliyunSandbox is a stub (留空): the SandboxClient interface + registry are "
             "ready, only this vendor body is unimplemented. Fill it in on the cluster "
@@ -282,9 +248,7 @@ def make_sandbox(backend: str = "local", **kwargs) -> SandboxClient:
     try:
         builder = _BACKENDS[backend]
     except KeyError:
-        raise ValueError(
-            f"unknown sandbox backend: {backend!r}; registered: {sorted(_BACKENDS)}"
-        ) from None
+        raise ValueError(f"unknown sandbox backend: {backend!r}; registered: {sorted(_BACKENDS)}") from None
     return builder(**kwargs)
 
 
@@ -292,7 +256,7 @@ register_backend("local", lambda **kw: LocalSandbox(timeout=kw.get("timeout", 30
 register_backend(
     "e2b",
     lambda **kw: E2BSandbox(
-        template=kw.get("template", "agentic-cl-code-interpreter"),
+        template=kw.get("template", "agentic-cl-sandbox"),
         timeout=kw.get("timeout", 300),
     ),
 )

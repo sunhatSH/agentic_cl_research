@@ -86,7 +86,6 @@ def per_row_masked_mean(values: Any, mask: Any) -> list[float]:
     return 0.0 (no observed tokens). Returned as a plain ``list[float]`` so the
     result can cross the Ray driver boundary and feed ``backfill_forgetting``.
     """
-    import torch
 
     m = mask.to(dtype=values.dtype)
     denom = m.sum(dim=-1).clamp(min=1.0)
@@ -94,9 +93,7 @@ def per_row_masked_mean(values: Any, mask: Any) -> list[float]:
     return [float(x) for x in row_mean.tolist()]
 
 
-def backfill_forgetting(
-    buffer: Any, tids: list[str], current_means: list[float]
-) -> int:
+def backfill_forgetting(buffer: Any, tids: list[str], current_means: list[float]) -> int:
     """Write current-policy log-prob means back so ``forgetting_risk`` activates.
 
     For each replayed trajectory we store ``current_logprobs`` as the per-row
@@ -108,7 +105,7 @@ def backfill_forgetting(
     fused priority immediately. Returns the number of trajectories updated.
     """
     updated = 0
-    for tid, mean in zip(tids, current_means):
+    for tid, mean in zip(tids, current_means, strict=True):
         meta = buffer.store.get_metadata(tid)
         if meta is None:
             continue

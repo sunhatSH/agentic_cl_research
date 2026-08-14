@@ -24,6 +24,15 @@ rows only), while ``replay_response_mask`` drives the supervised replay term
 (replay rows only). The two row sets therefore never contaminate each other,
 yet share ONE differentiable forward pass.
 
+Why NOT one mask + ``is_replay`` (asked & rejected, RunLog §65): verl's native
+``ppo_loss`` is a black box we do NOT control -- it reads ONLY ``response_mask``
+(masked_mean / masked_whiten) and never our ``is_replay``. If replay rows kept a
+non-zero ``response_mask``, verl would fold their zero-advantage tokens into the
+PPO denominator (diluting RL) and into ``masked_whiten`` (corrupting the RL
+rows' advantage normalization). So replay ``response_mask`` MUST be 0, and the
+real span has to live in a second field. The redundancy is forced by verl's
+black-box ppo_loss, not a design smell.
+
 Pure helpers (``align_token_weights``, ``select_replay_rows``,
 ``pad_rows_to_seq_len``) are unit-tested without verl. ``build_replay_rows`` is
 tokenizer specific and is validated on the GPU cluster (see doc/Progress.md).
@@ -160,11 +169,20 @@ def build_replay_rows(
     built_tids: list[str] = []
 
     tw = token_weights if token_weights is not None else [None] * len(samples)
-    for (_tid, _traj, meta), w in zip(samples, tw):
-        messages = meta.get("messages") or []
-        if not messages:
-            continue
-        prompt_ids, resp_ids = _split_prompt_response(messages, tokenizer, max_length)
+    for (_tid, _traj, meta), w in zip(samples, tw, strict=True):
+        # v1 路径：buffer 存的是 token ids（prompt_token_ids/response_token_ids），
+        # tq 里没有完整 messages 文本，无法重新 tokenize。直接用存好的 ids。
+        # v0 路径：meta 有 messages，用 tokenizer 现切 prompt/response。
+        prompt_ids = meta.get("prompt_token_ids")
+        resp_ids = meta.get("response_token_ids")
+        if prompt_ids and resp_ids:
+            prompt_ids = [int(t) for t in prompt_ids][:max_length]
+            resp_ids = [int(t) for t in resp_ids][:max_length]
+        else:
+            messages = meta.get("messages") or []
+            if not messages:
+                continue
+            prompt_ids, resp_ids = _split_prompt_response(messages, tokenizer, max_length)
         if not prompt_ids or not resp_ids:
             # no_padding_2_padding asserts prompt_len > 0; skip degenerate rows
             continue
@@ -191,7 +209,7 @@ def build_replay_rows(
     prompt_mask = torch.zeros((n, P), dtype=torch.long)
     resp_attn = torch.zeros((n, R), dtype=torch.long)
     replay_response_mask = torch.zeros((n, R), dtype=torch.long)
-    for i, (p, r) in enumerate(zip(prompt_rows, resp_rows)):
+    for i, (p, r) in enumerate(zip(prompt_rows, resp_rows, strict=True)):
         prompts[i, P - len(p) :] = torch.tensor(p, dtype=torch.long)
         prompt_mask[i, P - len(p) :] = 1
         responses[i, : len(r)] = torch.tensor(r, dtype=torch.long)

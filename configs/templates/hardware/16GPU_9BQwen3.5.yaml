@@ -1,0 +1,83 @@
+# 【模板·压力层】16 GPU × Qwen3.5-9B —— 当前生产规格(实测压测值)
+#
+# 只装「随 GPU规格 × 模型size 变」的压力参数。逻辑→base.yaml;实验语义→experiment/*.yaml。
+# 硬件:H800 80GB × 16(2 节点 × 8)。布局 DP=8, SP=2, TP=2。
+# 压测记录:rollout 内存60%/显存85%(健康);update_actor 余量仅 0.07GB(靠 expandable_segments 治碎片)。
+# 详见 doc/ops/Concurrency_Policy_by_GPU.md §16GPU。
+
+actor_rollout_ref:
+  model:
+    path: /mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B
+    use_fused_kernels: false
+    override_config:
+      attn_implementation: sdpa           # 混合 GatedDeltaNet 结构,禁 flash-attn varlen
+
+  actor:
+    strategy: fsdp
+    ulysses_sequence_parallel_size: 2     # SP=2 → DP=8
+    ppo_mini_batch_size: 64
+    ppo_micro_batch_size_per_gpu: 1       # micro=2 时 update_actor OOM;降 1 减半激活峰值
+    ppo_max_token_len_per_gpu: 32768      # 压激活
+    optim:                                # lr 按模型 size 定(9B:2e-6;27B 更低)
+      lr: 2.0e-6
+      lr_warmup_steps_ratio: 0.03
+      lr_scheduler_type: constant
+    fsdp_config:
+      param_offload: true
+      optimizer_offload: true
+
+  rollout:
+    name: lightllm
+    mode: async
+    tensor_model_parallel_size: 2
+    gpu_memory_utilization: 0.7           # rollout KV 池上限(训练时 lightllm sleep 让出)
+    n: 8
+    load_format: auto
+    max_model_len: 65536
+    max_num_batched_tokens: 8192
+    enable_chunked_prefill: false
+    calculate_log_probs: true
+    log_prob_micro_batch_size_per_gpu: 1
+    agent:
+      agent_loop_manager_class: trainer.cl_rollout_manager.AgentLoopManager
+    multi_turn:
+      enable: false
+      format: qwen3_coder
+      reasoning_format: qwen3
+      max_assistant_turns: 20
+    checkpoint_engine:
+      update_weights_bucket_megabytes: 2048
+    engine_kwargs:
+      lightllm:
+        batch_max_tokens: 8192
+        enable_multimodal: false
+        enable_torch_memory_saver: true
+        graph_max_batch_size: 512
+        running_max_req_size: 512         # 须 ≥ sessions_per_step
+        sampling_backend: triton
+        disable_vision: true
+        disable_audio: true
+
+  ref:
+    log_prob_micro_batch_size_per_gpu: 1
+    fsdp_config:
+      param_offload: true
+
+data:
+  train_batch_size: 64                    # 64 query × n8 = 512 轨迹/step
+  gen_batch_size: 64
+  max_prompt_length: 2048
+  max_response_length: 53886
+
+cl:
+  rollout:
+    sessions_per_step: 512                # rollout 并发(per-row)。放 cl 段避开 verl 严格校验。
+
+trainer:
+  nnodes: 2
+  n_gpus_per_node: 8
+
+ray_kwargs:
+  ray_init:
+    address: auto
+    num_cpus: null

@@ -1,0 +1,120 @@
+\chapter{方法}
+\label{chap:method}
+
+本章详述本文方法的三个核心组件：面向持续学习的复合训练目标（\ref{sec:cl-loss}）、奖励设计（\ref{sec:reward}）、按能力分区的九桶经验回放缓冲区（\ref{sec:buffer}）以及回放损失的加权方案（\ref{sec:replay-weight}）。
+
+\section{持续学习复合目标}
+\label{sec:cl-loss}
+
+本文在标准强化学习目标之外，叠加多项持续学习正则，构成复合损失：
+
+\begin{equation}
+  L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_4 L_{ent}.
+  \label{eq:cl-loss}
+\end{equation}
+
+各项含义：
+
+\begin{itemize}
+  \item $L_{rl}$：策略梯度项，采用 GRPO（组内奖励归一化估计优势）。
+  \item $L_{kl}$：对参考策略 $\pi_{ref}$ 的\textbf{逆向} KL 锚定 $D_{KL}(\pi_{new}\,\|\,\pi_{ref})$，约束新策略不偏离过远。$\pi_{ref}$ 可取 $\pi_0$ 或上一阶段 checkpoint $\pi_{t-1}$。
+  \item $L_{replay}$：经验回放损失，对从缓冲区采样的历史轨迹计算（详见\ref{sec:buffer}、\ref{sec:replay-weight}）。回放行的 \texttt{response\_mask}$=0$，不参与 PPO 主损失，仅通过独立的 \texttt{replay\_response\_mask} 让模型温习旧桶。
+  \item $L_{ent}$：熵正则，$\lambda_4=0.001$ \textbf{所有阶段固定开启}，防止策略多样性坍缩（Echo Trap\upcite{B4}），不参与消融。
+\end{itemize}
+
+早期方案中的参数 L2 正则项 $L_{reg}$ 已弃用（权重置零），槽位让给熵正则。$\lambda_1$ 恒为 1；$\lambda_2,\lambda_3$ 按实验配置，基线实验令 $\lambda_3=0$（无回放）。
+
+该复合目标以\textbf{零框架改动}的方式注入 GRPO——不 fork 底层强化学习框架，而是通过其损失注入接口与钩子挂载（实现见第\ref{chap:system}章）。
+
+\section{奖励设计}
+\label{sec:reward}
+
+本文\textbf{不用规则奖励}，而由一个\textbf{外部冻结的大模型裁判}（frozen LLM judge）按统一细则对每条轨迹打分。单一冻结裁判在统一尺度上评分，抗奖励作弊、覆盖语义化的能力桶。裁判在四个维度打分：
+
+\begin{itemize}
+  \item \textbf{Done}（完成度，$0/1$）：任务是否真正完成。
+  \item \textbf{Correctness}（正确性，$[0,1]$）：产出是否正确（有答案键时对照，否则由裁判语义判断）。
+  \item \textbf{Trajectory}（轨迹质量，$[0,1]$）：工具调用质量、有无冗余/重复步、推理是否连贯；\textbf{并惩罚"加了不该加的东西"}（装多余的包、改任务范围外的文件等无害越界）。
+  \item \textbf{Safety}（安全，\textbf{二元 $0/1$}）：是否出现破坏性/越权操作。作为\textbf{二元门控}而非连续打分——只判"有没有危险操作"这一可判定问题，一致性更高。
+\end{itemize}
+
+最终奖励按下式\textbf{乘性}聚合：
+
+\begin{equation}
+  r =
+  \begin{cases}
+    (0.4\cdot \text{correctness} + 0.4\cdot \text{trajectory} + 0.2)\cdot \text{safety}, & \text{if done}=1,\\[4pt]
+    0.4\cdot \text{trajectory}\cdot \text{safety}, & \text{if done}=0.
+  \end{cases}
+  \label{eq:reward}
+\end{equation}
+
+安全作为 $\{0,1\}$ 乘性门控：一旦出现危险操作（safety$=0$），无论其余维度多高，整条奖励清零；未完成任务仍给轨迹分（过程有价值），但无完成基线分与正确性分。裁判返回严格 JSON，解析失败重试一次，再失败则丢弃该轨迹；同一 GRPO 组内轨迹丢弃过半则整组丢弃。
+
+\section{九桶经验回放缓冲区}
+\label{sec:buffer}
+
+\subsection{按能力分桶}
+
+桶按\textbf{能力/领域}划分而非按难度——难度会随模型能力提升而漂移，而能力域相对稳定。九个纯文本能力域由评测基准官方类目合并、去多模态、单层无子桶得到：
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+桶（能力域） & 任务数 & 容量上限 \\
+\midrule
+workflow（工作流编排） & 56 & 4915 \\
+ops（系统操作） & 44 & 4354 \\
+qa（问答检索） & 36 & 3938 \\
+finance（财务金融） & 20 & 2935 \\
+office（办公文档） & 11 & 2177 \\
+communication（沟通表达） & 11 & 2177 \\
+safety（安全合规） & 9 & 1969 \\
+research（研究综合） & 6 & 1607 \\
+coding（代码） & 2 & 928 \\
+\midrule
+合计 & 195 & 25000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{容量分配（平方根加权）}
+
+各桶容量上限 $\text{cap}_i$ 由任务数 $n_i$ 的\textbf{平方根加权}分配，总容量 $C=25000$：
+
+\begin{equation}
+  \text{cap}_i = C\cdot \frac{n_i^{\alpha}}{\sum_j n_j^{\alpha}}, \qquad \alpha=0.5.
+\end{equation}
+
+取 $\alpha=0.5$（次线性）的理由：$\alpha=1$（按比例）会让大桶碾压、长尾饿死；$\alpha=0$（均匀）无视任务分布，主流能力吃亏；$\alpha=0.5$ 把比值压到约 $5.3\!:\!1$，大桶温和倾斜、小桶被抬起。每桶另设\textbf{保护下限}（floor，约为 cap 的 $1/30$），淘汰不得使桶跌破下限。
+
+\subsection{能力空间坐标与训练序}
+
+回放权重的核心是桶间距离。为此，本文为每个能力桶标定一组\textbf{七维能力空间坐标}（knowledge, reasoning, planning, tool\_use, environment\_action, generation, social），每维 1-10 分，由大模型对中等难度（4-7 分）的完整 agent 轨迹独立打分后取均值得到。之所以筛选中等难度，是因为简单任务的固有低复杂度会压低全维度分数，困难任务会抬高，导致各桶坐标差异被难度方差掩盖而非反映真实能力结构。
+
+训练桶的顺序对遗忘程度有直接影响。常规做法是按自然分布排列，但本文选择一种更极端的策略：\textbf{最大化相邻桶间的欧氏距离}——从任意桶开始，每次选择距离当前桶最远的未访问桶作为下一站，形成"最不相似相邻"的训练序。这样做的理由是：相邻桶差距越大，策略分布偏移越剧烈，灾难性遗忘越明显，从而给回放机制提供最严苛的测试条件。如果回放能在该极端序下有效缓解遗忘，那么在任何温和序下理应更有效。
+
+最终七桶训练序为：workflow → research → ops → finance → coding → office → safety。qa 和 communication 因训练数据极度稀缺，仅作为评测域保留。
+
+\subsection{桶内淘汰与桶间采样}
+
+\textbf{淘汰}：只在桶内进行，\textbf{禁止跨桶挤出}——保证不同能力互不侵占。桶内达到容量上限后触发淘汰，淘汰算法暂采用 \textbf{FIFO}（先进先出，淘汰最早进桶的轨迹）；采样和淘汰策略均为可替换设计，下限以下不可淘汰。
+
+\textbf{桶间采样}：回放时按能力空间的\textbf{距离}选桶。以当前训练批的桶质心为参照，离质心越远的桶遗忘风险越高、回放权重越大；处于当前批的桶（正在 on-policy 训练）权重趋近于零。采样总数固定，桶内采样目前采用\textbf{随机（uniform）}，采样和淘汰策略均为可替换的工程实现。
+
+\subsection{冷启动种子}
+
+为避免缓冲区从空开始（持续学习起步时 $L_{replay}$ 无历史经验），可用预先采集的冷启动轨迹（完整多轮、含工具调用与思考，OpenAI 消息格式）预填缓冲区。
+
+\section{回放损失加权}
+\label{sec:replay-weight}
+
+回放样本进入 $L_{replay}$ 时按下式加权（trajectory 级 × 块级）：
+
+\begin{equation}
+  w_t^{(i)} = \text{normalize}\!\Big(\text{clip}\big(\text{priority}_i \cdot \tfrac{\gamma^{\text{block}(t)} + \delta^{K_i - \text{block}(t)}}{2},\; q_5,\; q_{95}\big)\Big).
+\end{equation}
+
+其中块按 OpenAI chat message 边界（assistant／tool 消息）划分，$K_i$ 为该轨迹的响应消息数。第二个因子是\textbf{U 形块权重}（首尾两端高、中间低）的一般形式。
+
+\textbf{当前配置将 U 形关闭}：令 $\gamma=\delta=1$，块权重退化为常数 $1$，即本文主实验\textbf{不使用} U 形加权（scheme W0）。这是刻意的简化——U 形加权（$\gamma=\delta<1$）作为独立消融项保留，仅在专门的对照实验中开启（scheme W2），以隔离其贡献、避免与其他组件混淆。此处显式记录 $\gamma=\delta=1$ 的默认取值，以免后续误开。

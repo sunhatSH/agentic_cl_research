@@ -10,12 +10,13 @@ Zero-coefficient short-circuit (mandatory project rule):
   buffer hooks. The cl_loss closure also picks a no-replay branch.
 
 Usage:
-    python -m trainer.cl_main --config configs/phase1/b1.yaml
+    python -m trainer.cl_main --config configs/run/b1_9b_16gpu.yaml
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -25,7 +26,45 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Path to experiment yaml.")
     parser.add_argument("--resume-from", type=str, default=None, help="Optional checkpoint to resume.")
+    # 具名传参（优先级最高：命令行具名 > 命令行 override > 实验配置 > 基础配置）
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help="Override actor_rollout_ref.actor.optim.lr (e.g. --lr 1.5e-6).",
+    )
+    # Hydra-style key=value overrides, e.g. trainer.total_training_steps=50
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        default=[],
+        help="Config overrides in key=value format (e.g. data.train_files=/path/to/file.parquet).",
+    )
     return parser.parse_args()
+
+
+def _apply_overrides(cfg, overrides: list[str]):
+    for ov in overrides:
+        if "=" not in ov:
+            print(f"[cl] WARNING: skipping malformed override '{ov}' (missing '=')")
+            continue
+        key, _, value = ov.partition("=")
+        # coerce int/float/bool
+        v = value.strip()
+        if v.lower() == "true":
+            v = True
+        elif v.lower() == "false":
+            v = False
+        else:
+            try:
+                v = int(v)
+            except ValueError:
+                try:
+                    v = float(v)
+                except ValueError:
+                    v = value  # keep as string
+        OmegaConf.update(cfg, key.strip(), v, force_add=True)
+        print(f"[cl] override: {key.strip()}={v!r}")
 
 
 def load_config(config_path: str):
@@ -46,6 +85,13 @@ def load_config(config_path: str):
                 base_path = (cfg_path.parent / f"{ref}.yaml").resolve()
             merged = OmegaConf.merge(merged, OmegaConf.load(base_path))
         cfg = OmegaConf.merge(merged, cfg)
+
+    # runs/ layout: if CKPT_DIR is set (start_train.sh), write real checkpoints
+    # there (runs-external ckpts/<exp>/, symlinked from runs/<phase>/<exp>/checkpoints).
+    # See runs/README.md + doc/eval/训练与评测总思路_产物结构.md.
+    ckpt_dir = os.environ.get("CKPT_DIR")
+    if ckpt_dir:
+        OmegaConf.update(cfg, "trainer.default_local_dir", ckpt_dir, force_add=True)
     return cfg
 
 
@@ -77,15 +123,17 @@ def build_buffer(cfg):
         priority = Priority()
 
     buffer = BucketReplayBuffer(
-        num_buckets=int(bcfg.get("num_buckets", 7)),
+        num_buckets=int(bcfg.get("num_buckets", 9)),
         total_capacity=int(bcfg.get("total_capacity", 25000)),
-        q_min=int(bcfg.get("q_min", 2000)),
         bucket_names=list(bcfg.get("bucket_names", [])) or None,
         bucket_task_counts=list(bcfg.get("bucket_task_counts", [])) or None,
+        bucket_floors=list(bcfg.get("bucket_floors", [])) or None,
         alpha=float(bcfg.get("alpha", 0.5)),
         priority=priority,
-        eviction_type=bcfg.get("eviction_type", "priority"),
-        within_bucket_sampling=bcfg.get("within_bucket_sampling", "priority"),
+        eviction_type=bcfg.get("eviction_type", "fifo"),
+        within_bucket_sampling=bcfg.get("within_bucket_sampling", "uniform"),
+        bucket_strategy=bcfg.get("bucket_strategy", "distance"),
+        distance_metric=bcfg.get("distance_metric", "euclidean"),
         seed=bcfg.get("seed", None),
     )
 
@@ -114,8 +162,7 @@ def _preload_warmup(buffer, warmup_path) -> None:
     stats = buffer.stats()
     dist = {b: v["size"] for b, v in stats["per_bucket"].items()}
     print(
-        f"[cl] warm-started buffer from {path}: "
-        f"{stats['total_size']} trajectories, per-bucket={dist}",
+        f"[cl] warm-started buffer from {path}: " f"{stats['total_size']} trajectories, per-bucket={dist}",
         flush=True,
     )
 
@@ -123,6 +170,11 @@ def _preload_warmup(buffer, warmup_path) -> None:
 def main():
     args = parse_args()
     cfg = load_config(args.config)
+    _apply_overrides(cfg, args.overrides)
+    # 具名参数优先级最高（在 overrides 之后应用，覆盖任何配置）
+    if args.lr is not None:
+        OmegaConf.update(cfg, "actor_rollout_ref.actor.optim.lr", args.lr, force_add=True)
+        print(f"[cl] --lr override: actor_rollout_ref.actor.optim.lr={args.lr}", flush=True)
     from trainer.verl_runner import run_cl_ppo
 
     run_cl_ppo(cfg, resume_from=args.resume_from)

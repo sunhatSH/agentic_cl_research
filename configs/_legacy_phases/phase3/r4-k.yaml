@@ -1,0 +1,22 @@
+# Phase 3 / R4-K — R4 + KL 交互验证 (与 K2-R 对偶)
+# 继承 configs/base.yaml
+# 对照轴：KL × Replay 交互 (R4 → R4-K)
+
+defaults:
+  - ../../base
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: true
+    kl_loss_coef: 0.05           # lambda_2 = 0.05
+    kl_loss_type: low_var_kl
+  ref:
+    path: ???                    # pi_0 初始 checkpoint
+
+cl:
+  lambda_replay: 0.5
+  buffer:
+    enabled: true
+    num_buckets: 9
+  weighting:
+    scheme: W0

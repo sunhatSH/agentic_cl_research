@@ -17,6 +17,7 @@ try:
 
     ChunkGatedDeltaRule.__init__ = _patched_init
     import os
+
     print(f"[gdn-patch pid={os.getpid()}] ChunkGatedDeltaRule -> forward_native", flush=True)
 except Exception:
     pass

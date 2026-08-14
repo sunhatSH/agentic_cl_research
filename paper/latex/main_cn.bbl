@@ -1,0 +1,28 @@
+\begin{thebibliography}{1}
+
+\bibitem{D1}
+David Lopez-Paz and Marc'Aurelio Ranzato.
+\newblock Gradient episodic memory for continual learning (gem).
+\newblock 2017.
+
+\bibitem{A2}
+David Rolnick et~al.
+\newblock Experience replay for continual learning (clear).
+\newblock 2019.
+\newblock Task-agnostic vanilla ER + V-trace + behavioral cloning matches
+  EWC/P\&C; our R0 baseline.
+
+\bibitem{B4}
+Zihan Wang et~al.
+\newblock Multi-turn rl for llm agents: The echo trap.
+\newblock 2025.
+\newblock Naive PPO/GRPO in multi-turn agents collapses via Echo Trap;
+  motivates the entropy term.
+
+\bibitem{C1}
+Zhenquan Yao et~al.
+\newblock Cgl: Advancing continual gui learning via rft.
+\newblock 2025.
+\newblock GRPO's Matthew effect yields natural forgetting resistance.
+
+\end{thebibliography}
