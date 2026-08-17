@@ -2,6 +2,9 @@
 # 9B 16GPU（2节点×8卡）——verl 原生 agent_loop 新路线（2026-07-30 对齐 b1_9b_16gpu）。
 # 机制层（trainer/rollout/引擎）与 b1_9b_16gpu 逐字一致：custom_sync + RemoteAgentLoopManager
 # + fsdp2 + remove_padding + fused triton + custom_language_model(顶层)。只 CL/KL 语义不同。
+# （2026-08-17 撤销过 use_fused_kernels/use_dynamic_bsz 的临时改动，恢复对齐 b1_16gpu——
+#  b1 用 true/true 8/10~8/17 一直成功；此前 num_tokens.to 崩溃是 use_dynamic_bsz=false
+#  误关导致的，GDN 崩溃是 replay fix 之前 position_ids 结构错的旧问题，均已排除。）
 #
 # 启动: bash scripts/train.sh 16gpu --config configs/run/r0-25k_9b_16gpu.yaml
 
@@ -19,7 +22,7 @@ actor_rollout_ref:
                                        #   真实 qwen3_5 走 SP-aware triton forward。✗ 放 override_config 会改 HF
                                        #   config.model_type → 落 dense_common 通用分支 → compute_log_prob assert 崩。
     use_remove_padding: true            # 变长打包:GDN 层走 packed forward(cu_seqlens),full-attn 走 FA3 varlen
-    use_fused_kernels: true             # fused CE loss 等 kernel(配合 remove_padding)
+    use_fused_kernels: true             # fused CE loss 等 kernel(配合 remove_padding);对齐 b1_16gpu
     enable_gradient_checkpointing: true # 对齐参考脚本,省激活显存
     fused_kernel_options:
       impl_backend: triton            # torch backend 的 FusedLinearForPPO chunk_size=512 硬编码 bug;triton 走
@@ -42,13 +45,7 @@ actor_rollout_ref:
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
     ppo_mini_batch_size: 32             # =train_batch(全 batch 单更);×n8=256 轨迹 % DP4=0
-    # use_dynamic_bsz=false + micro=1：对齐 b1（不崩）。dynamic_bsz 把多条变长序列按 token
-    # 打包进一个 forward micro-batch → GDN(GatedDeltaNet) 变长 kernel 收到多段 cu_seqlens
-    # + 巨大 packed 长度(NT 极大)时 launch 失败(Triton Error [CUDA]: invalid argument,
-    # qwen3_5.py:626 chunk_gated_delta_rule_fwd_h)。b1 用固定 micro=1(N=1 单序列)从不崩。
-    # 关掉 dynamic_bsz 让每个 forward 只喂一条序列，规避该 kernel 边界(2026-08-17)。
-    use_dynamic_bsz: false
-    ppo_micro_batch_size_per_gpu: 1
+    use_dynamic_bsz: true               # 变长打包:按实际 token 数切 micro(配 remove_padding);对齐 b1_16gpu
     ppo_max_token_len_per_gpu: 32768    # = max_token_length(131072)/SP(4)
     ulysses_sequence_parallel_size: 4   # SP=4 → DP=16÷4=4。16头%4=0
     fsdp_config:
