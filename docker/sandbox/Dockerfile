@@ -37,7 +37,7 @@ ARG OPENCLAW_VERSION=latest
 # Pinned to a release tag (matches the verl-hermes-remote-agent image family).
 # Override at build time with --build-arg. See doc/Agent轨迹_Schema.md §0:
 # training uses Hermes (spawn synchronous, child-trace separated), not OpenClaw.
-ARG HERMES_VERSION=v2026.6.5
+ARG HERMES_VERSION=v2026.7.7.2
 
 # 1. System tooling for agent ACTIONS (shell/file ops) + office/doc tasks.
 #    No model/GPU/inference deps — those live outside the sandbox.
