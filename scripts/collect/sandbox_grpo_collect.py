@@ -475,7 +475,9 @@ def _run_one_collect_query(
         turn = 0
         ended_by = "incomplete"   # 被 end_session/patience_exhausted/agent_error/no_usersim_single 覆盖
         cur_query: str | None = query
-        session_sid: str | None = sid  # use sandbox_id as stable session key across turns
+        session_sid: str | None = None  # 首次 turn 不 resume（无历史 session）；后续 turn 用 hermes 返回的 session_id
+        # 之前误用 sid(sandbox_id) 作 resume_sid → hermes --resume <sandbox_id> → "Session not found"
+        # (sandbox_id 不是 hermes session)。单轮采集本就不需要 resume，首次必须 None。
 
         while cur_query is not None:
             turn += 1
