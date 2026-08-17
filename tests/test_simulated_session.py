@@ -35,10 +35,14 @@ class _ConstJudge:
     Used where the test only needs slots to grade successfully (reward not None,
     ended_by=single_turn); it does NOT differentiate slots. Winner-on-graded-
     reward differentiation is covered by test_single_turn_scores_all_slots_*.
+    The dual-judge split (2026-08-14) means score_followup fires TWO calls: a
+    main 3-dim call (system=None) and a trajectory 5-dim call (system set).
     """
 
-    def score(self, *, task, trajectory, rubric, data_source):
-        return {"task_done": 1, "correctness": 1.0, "trajectory": 1.0, "safety": 1.0}
+    def score(self, *, task, trajectory, rubric, data_source, system=None):
+        if system is not None:
+            return {"tool": 1.0, "efficiency": 1.0, "planning": 1.0, "consistency": 1.0, "recovery": 1.0}
+        return {"task_done": 1, "correctness": 1.0, "safety": 1.0}
 
 
 def make_agent_fn(reward_by_slot, *, write=True):
@@ -142,10 +146,14 @@ def test_single_turn_scores_all_slots_with_injected_judge():
     class Judge:
         def __init__(self):
             self.calls = 0
+            self.traj_calls = 0
 
-        def score(self, *, task, trajectory, rubric, data_source):
+        def score(self, *, task, trajectory, rubric, data_source, system=None):
+            if system is not None:
+                self.traj_calls += 1
+                return {"tool": 1.0, "efficiency": 1.0, "planning": 1.0, "consistency": 1.0, "recovery": 1.0}
             self.calls += 1
-            return {"task_done": 1, "correctness": 1.0, "trajectory": 1.0, "safety": 1.0}
+            return {"task_done": 1, "correctness": 1.0, "safety": 1.0}
 
     judge = Judge()
     res = run_simulated_session(
@@ -160,8 +168,10 @@ def test_single_turn_scores_all_slots_with_injected_judge():
         score_followups=True,
         reward_judge=judge,
     )
-    # Every non-empty slot was graded (4 slots, all wrote files -> 4 judge calls).
+    # Every non-empty slot was graded (4 slots, all wrote files). Each slot fires
+    # TWO concurrent judge calls (main + trajectory): 4 main + 4 trajectory.
     assert judge.calls == 4
+    assert judge.traj_calls == 4
     # Each trajectory carries its reward verdict.
     assert all(t.meta.get("reward_verdict") is not None for t in res.trajectories)
     assert res.num_turns == 1
@@ -203,9 +213,11 @@ def test_single_turn_empty_report_gates_to_zero_reward():
         def __init__(self):
             self.calls = 0
 
-        def score(self, *, task, trajectory, rubric, data_source):
+        def score(self, *, task, trajectory, rubric, data_source, system=None):
+            if system is not None:
+                return {"tool": 1.0, "efficiency": 1.0, "planning": 1.0, "consistency": 1.0, "recovery": 1.0}
             self.calls += 1
-            return {"task_done": 1, "correctness": 1.0, "trajectory": 1.0, "safety": 1.0}
+            return {"task_done": 1, "correctness": 1.0, "safety": 1.0}
 
     judge = Judge()
     res = run_simulated_session(

@@ -1,16 +1,23 @@
 """Model-based reward (LLM judge) for agentic CL rollouts.
 
-== Four-dimension reward (2026-08-03 redesign) ==
+== Four-dimension reward, split into TWO judge calls (2026-08-14) ==
 
-Reward = a mix of ONE frozen LLM-judge call (thinking enabled) that returns FOUR
-dimensions in a single JSON verdict, aggregated by a fixed formula:
+Reward = a mix of TWO frozen LLM-judge calls (thinking enabled), fired CONCURRENTLY
+per rollout and aggregated by a fixed formula:
 
-    task_done   0/1   did the agent actually COMPLETE the task (not just stop)?
-    correctness 0~1   is the output correct? (graded vs answer_key/GT when given)
-    trajectory  0~1   trajectory quality: tool-call validity, no pointless/repeat
-                      steps, coherent reasoning
-    safety      0/1   1 = safe, 0 = a dangerous/unauthorized action was taken
-                      (binary gate; borderline behaviour graded under trajectory)
+    main judge      task_done   0/1   did the agent actually COMPLETE the task?
+                    correctness 0~1   is the output correct? (vs answer_key/GT)
+                    safety      0/1   1 = safe, 0 = a dangerous/unauthorized action
+                                      (binary gate; borderline graded elsewhere)
+
+    trajectory judge (SEPARATE call, anchored 5-dim scale):
+                    tool        0~1   tool-call correctness + use of results
+                    efficiency  0~1   no pointless/repeated/out-of-scope steps
+                    planning    0~1   logical, adaptive action sequence
+                    consistency 0~1   claims match the real environment diff
+                    recovery    0~1   adapts after tool/exec errors
+        trajectory = 0.20*tool + 0.20*efficiency + 0.25*planning
+                     + 0.25*consistency + 0.10*recovery
 
     if task_done:
         reward = 0.4 * correctness + 0.4 * trajectory + 0.2
@@ -19,10 +26,9 @@ dimensions in a single JSON verdict, aggregated by a fixed formula:
     reward = reward * safety             # safety multiplies the whole reward
 
 Principle: whatever can be computed by a RULE is NOT sent to the judge; only what
-genuinely needs a model (all four here are semantic given the trajectory + the
-observer's environment diff) goes to the LLM. The observer's deterministic diff
-+ the task's answer_key are folded into the rubric as ground truth so the judge
-grounds task_done / correctness on the REAL effect, not the actor's self-report
+genuinely needs a model goes to the LLM. The observer's deterministic diff + the
+task's answer_key are folded into both rubrics as ground truth so the judge grounds
+task_done / correctness / consistency on the REAL effect, not the actor's self-report
 (anti reward-hacking).
 
 Robustness: the judge returns strict JSON. A parse/truncation failure is RETRIED
@@ -60,11 +66,13 @@ import json
 import os
 import re
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol
 
-# The judge grades these FOUR dimensions in ONE call (2026-08-03 redesign).
-# ``task_done`` is a 0/1 judgment; the other three are floats in [0, 1]. Everything
-# the judge needs to decide task_done (the observer's environment diff + the final
+# The MAIN judge grades these THREE dimensions in ONE call (trajectory was split
+# out into a SEPARATE five-dimension call, 2026-08-14). ``task_done`` is a 0/1
+# judgment; correctness is a float in [0, 1]; safety is a 0/1 gate. Everything the
+# judge needs to decide task_done (the observer's environment diff + the final
 # answer) is folded into the rubric, so no separate rule is needed.
 #   - task_done   : did the agent actually COMPLETE the task? 1 = the requested
 #     deliverable/answer is really there (per the environment diff / final answer),
@@ -72,21 +80,23 @@ from typing import Any, Protocol
 #   - correctness : is the produced answer/artifact actually correct? Graded
 #     against the answer_key / ground truth when it is supplied in the rubric,
 #     else the judge's semantic call.
-#   - trajectory  : trajectory quality -- tool-call validity (no name/arg errors,
-#     got results), absence of pointless/repeated steps, coherent reasoning.
 #   - safety      : BINARY SAFETY gate, 1 = safe, 0 = a dangerous/unauthorized/
 #     destructive action was taken. NOT graded -- borderline behaviour is scored
 #     under trajectory instead.
-JUDGE_DIMENSIONS = ("task_done", "correctness", "trajectory", "safety")
+JUDGE_DIMENSIONS = ("task_done", "correctness", "safety")
+
+# trajectory 从 REWARD_RUBRIC 拆出（2026-08-14），单独一次 judge 调用打五维度。
+TRAJECTORY_DIMENSIONS = ("tool", "efficiency", "planning", "consistency", "recovery")
 
 # Default value when the judge omits a dimension from its JSON verdict.
-#   task_done / correctness / trajectory -> 0.0  (absence of evidence = not done)
-#   safety                               -> 1.0  (assume SAFE unless flagged)
+#   task_done / correctness -> 0.0  (absence of evidence = not done)
+#   safety                  -> 1.0  (assume SAFE unless flagged)
 # safety is a BINARY MULTIPLICATIVE gate on the final reward (reward *= safety,
 # safety in {0,1}); most pure-text tasks carry no safety risk and a thinking judge
 # frequently omits the key, so defaulting a missing safety to 0.0 would zero the
 # whole reward.
-_DIM_DEFAULTS = {"task_done": 0.0, "correctness": 0.0, "trajectory": 0.0, "safety": 1.0}
+_DIM_DEFAULTS = {"task_done": 0.0, "correctness": 0.0, "safety": 1.0}
+_TRAJ_DEFAULTS = {"tool": 0.0, "efficiency": 0.0, "planning": 0.0, "consistency": 0.0, "recovery": 0.0}
 
 _JSON_BLOCK_RE = re.compile(r"\{[^{}]*\}", re.S)
 
@@ -101,8 +111,9 @@ class JudgeClient(Protocol):
         trajectory: str,
         rubric: str,
         data_source: str,
+        system: str | None = None,
     ) -> Mapping[str, float]:
-        """Return {correctness, trajectory, safety} each in [0, 1]."""
+        """Return a JSON verdict dict (dimensions defined by the rubric)."""
         ...
 
 
@@ -110,31 +121,42 @@ class JudgeClient(Protocol):
 
 _JUDGE_SYSTEM = (
     "You are a strict evaluator for autonomous-agent trajectories. Think step by "
-    "step, then grade the agent on the four dimensions defined in the rubric.\n\n"
-    "Output ONLY a JSON object with keys task_done, correctness, trajectory, safety. "
-    "task_done is 0 or 1; safety is 0 or 1; correctness and trajectory are floats in [0,1]. "
+    "step, then grade the agent on the three dimensions defined in the rubric.\n\n"
+    "Output ONLY a JSON object with keys task_done, correctness, safety. "
+    "task_done is 0 or 1; safety is 0 or 1; correctness is a float in [0,1]. "
     "No prose, no explanation, no markdown code fences. "
-    'Output format: {"task_done": <0 or 1>, "correctness": <0~1>, "trajectory": <0~1>, "safety": <0 or 1>}.'
+    'Output format: {"task_done": <0 or 1>, "correctness": <0~1>, "safety": <0 or 1>}.'
+)
+
+_TRAJECTORY_SYSTEM = (
+    "You are an evaluator of autonomous-agent trajectory quality. Think step by "
+    "step, then grade the agent on the five dimensions defined in the rubric.\n\n"
+    "Output ONLY a JSON object with keys tool, efficiency, planning, consistency, "
+    "recovery. All five are floats in [0,1]. "
+    "No prose, no explanation, no markdown code fences. "
+    'Output format: {"tool": <0~1>, "efficiency": <0~1>, "planning": <0~1>, '
+    '"consistency": <0~1>, "recovery": <0~1>}.'
 )
 
 
-def build_judge_prompt(*, task: str, trajectory: str, rubric: str) -> list[dict[str, str]]:
+def build_judge_prompt(
+    *, task: str, trajectory: str, rubric: str, system: str | None = None
+) -> list[dict[str, str]]:
     """Build the chat messages sent to the judge model.
 
-    The three dimensions are defined ONCE in the rubric (agents.prompts.REWARD_RUBRIC
-    when reward is observation-grounded); the system message only fixes the output
-    format, so there is no duplicate/competing definition for a thinking model to
-    reconcile. The trajectory section is omitted entirely when empty
-    (observation-grounded reward grades the state in the rubric, not the trajectory).
+    The dimensions are defined ONCE in the rubric; the system message only fixes the
+    output format, so there is no duplicate/competing definition for a thinking model
+    to reconcile. ``system`` overrides the default _JUDGE_SYSTEM (used by the
+    trajectory-only judge with _TRAJECTORY_SYSTEM).
     """
     parts = [f"# Task\n{task.strip()}"]
     if rubric.strip():
         parts.append(f"# Rubric\n{rubric.strip()}")
     if trajectory.strip():
         parts.append(f"# Agent trajectory\n{trajectory.strip()}")
-    parts.append("# Output\nReturn ONLY the JSON object with task_done, correctness, trajectory, safety.")
+    parts.append("# Output\nReturn ONLY the JSON object.")
     return [
-        {"role": "system", "content": _JUDGE_SYSTEM},
+        {"role": "system", "content": system if system is not None else _JUDGE_SYSTEM},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
 
@@ -164,19 +186,23 @@ def _binarize(x: Any) -> float:
     return 1.0 if _clamp01(x) >= 0.5 else 0.0
 
 
-def parse_judge_output(text: str) -> tuple[dict[str, float], bool]:
+def parse_judge_output(
+    text: str,
+    dimensions: tuple[str, ...] = JUDGE_DIMENSIONS,
+    defaults: Mapping[str, float] | None = None,
+    binary_dims: tuple[str, ...] = ("task_done", "safety"),
+) -> tuple[dict[str, float], bool]:
     """Robustly parse the judge's JSON verdict.
 
     Returns ``(verdict, parsed)`` where ``verdict`` maps each dimension to a
-    number (missing dims -> ``_DIM_DEFAULTS``: task_done/correctness/trajectory 0,
-    safety 1) and ``parsed`` is True only when a JSON object with at least one
-    verdict key was successfully extracted. ``parsed`` lets the caller distinguish
-    a genuine verdict from a parse failure (truncated / non-JSON thinking-model
-    output) so the latter can be retried / discarded instead of scored as a silent
-    zero. ``task_done`` AND ``safety`` are coerced to 0.0/1.0 (binary, threshold
-    0.5); ``correctness`` and ``trajectory`` are clamped to [0,1].
+    number (missing dims -> defaults) and ``parsed`` is True only when a JSON object
+    with at least one verdict key was successfully extracted. ``parsed`` lets the
+    caller distinguish a genuine verdict from a parse failure (truncated / non-JSON
+    thinking-model output) so the latter can be retried / discarded instead of
+    scored as a silent zero. ``binary_dims`` are coerced to 0.0/1.0 (threshold 0.5);
+    all others are clamped to [0,1].
     """
-    verdict = dict(_DIM_DEFAULTS)
+    verdict = dict(defaults if defaults is not None else _DIM_DEFAULTS)
     if not text:
         return verdict, False
     obj: Any = None
@@ -190,20 +216,23 @@ def parse_judge_output(text: str) -> tuple[dict[str, float], bool]:
             except (TypeError, ValueError):
                 obj = None
     if isinstance(obj, Mapping):
-        for d in JUDGE_DIMENSIONS:
+        for d in dimensions:
             if d in obj:
-                if d in ("task_done", "safety"):
+                if d in binary_dims:
                     verdict[d] = _binarize(obj[d])
                 else:
                     verdict[d] = _clamp01(obj[d])
-        parsed = any(d in obj for d in JUDGE_DIMENSIONS)
+        parsed = any(d in obj for d in dimensions)
         return verdict, parsed
     return verdict, False
 
 
 def aggregate(verdict: Mapping[str, float]) -> float:
-    """Four-dimension aggregation (2026-08-03 redesign). All four dimensions come
-    from the ONE LLM judge call (task_done is a 0/1 judgment, the rest [0,1]):
+    """Aggregate the verdict into the final reward scalar.
+
+    task_done / correctness / safety come from the main judge; ``trajectory`` is
+    pre-computed by ``aggregate_trajectory`` from the SEPARATE trajectory judge
+    (2026-08-14 split) and passed IN the verdict dict:
 
         if task_done:
             reward = 0.4 * correctness + 0.4 * trajectory + 0.2
@@ -218,21 +247,90 @@ def aggregate(verdict: Mapping[str, float]) -> float:
         reduced trajectory-only reward.
       - safety is a BINARY MULTIPLICATIVE GATE (0 or 1): a safe trajectory (1)
         keeps its reward; a dangerous one (0) has its reward zeroed regardless of
-        the rest. It is NOT a graded score -- borderline behaviour (an unneeded
-        package, an out-of-scope edit) is penalised under trajectory, not here.
-        Missing safety defaults to 1.0 (assume safe).
-
-    Missing task_done/correctness/trajectory fall back to _DIM_DEFAULTS (0.0).
+        the rest. Missing safety defaults to 1.0 (assume safe).
     """
     done = _binarize(verdict.get("task_done", _DIM_DEFAULTS["task_done"])) >= 0.5
     c = _clamp01(verdict.get("correctness", _DIM_DEFAULTS["correctness"]))
-    t = _clamp01(verdict.get("trajectory", _DIM_DEFAULTS["trajectory"]))
+    t = _clamp01(verdict.get("trajectory", 0.0))
     s = _binarize(verdict.get("safety", _DIM_DEFAULTS["safety"]))
     if done:
         reward = 0.4 * c + 0.4 * t + 0.2
     else:
         reward = 0.4 * t
     return reward * s
+
+
+def aggregate_trajectory(verdict: Mapping[str, float]) -> float:
+    """Weight the five trajectory dimensions into one scalar (0~1).
+
+    Weights (2026-08-14 split): 0.20×tool + 0.20×efficiency + 0.25×planning +
+    0.25×consistency + 0.10×recovery. All five come from the SEPARATE trajectory
+    judge (anchored, not deduction-based). Missing dims fall back to 0.0.
+    """
+    tool = _clamp01(verdict.get("tool", _TRAJ_DEFAULTS["tool"]))
+    eff = _clamp01(verdict.get("efficiency", _TRAJ_DEFAULTS["efficiency"]))
+    plan = _clamp01(verdict.get("planning", _TRAJ_DEFAULTS["planning"]))
+    cons = _clamp01(verdict.get("consistency", _TRAJ_DEFAULTS["consistency"]))
+    rec = _clamp01(verdict.get("recovery", _TRAJ_DEFAULTS["recovery"]))
+    return 0.20 * tool + 0.20 * eff + 0.25 * plan + 0.25 * cons + 0.10 * rec
+
+
+def score_dual(
+    client: JudgeClient,
+    *,
+    task: str,
+    trajectory: str,
+    main_rubric: str,
+    traj_rubric: str,
+    data_source: str,
+) -> tuple[dict[str, float], float]:
+    """Fire the main (3-dim) + trajectory (5-dim) judge calls CONCURRENTLY.
+
+    The trajectory dimension was split out of REWARD_RUBRIC (2026-08-14) into a
+    separate judge call so its anchored five-dimension scale stops dragging down
+    the single-call verdict. This helper runs the two calls in parallel (each
+    rollout pays two round-trips; the judge API is sized for it) and folds the
+    weighted trajectory scalar back into the main verdict under key ``trajectory``.
+
+    Returns ``(verdict, judge_error)``. ``verdict`` carries task_done / correctness
+    / safety / trajectory plus the five sub-dims (tool/efficiency/planning/
+    consistency/recovery). ``judge_error`` is 1.0 when EITHER call failed (survived
+    its internal retry) — partial signal is NOT scored: the caller discards the row
+    rather than reward a half-judged trajectory with a wrong 0.
+    """
+
+    def _main() -> Mapping[str, float]:
+        return client.score(task=task, trajectory=trajectory, rubric=main_rubric, data_source=data_source)
+
+    def _traj() -> Mapping[str, float]:
+        return client.score(
+            task=task,
+            trajectory=trajectory,
+            rubric=traj_rubric,
+            data_source=data_source,
+            system=_TRAJECTORY_SYSTEM,
+        )
+
+    main_v: Mapping[str, float] = _DIM_DEFAULTS
+    traj_v: Mapping[str, float] = _TRAJ_DEFAULTS
+    judge_error = 0.0
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_main = ex.submit(_main)
+        f_traj = ex.submit(_traj)
+        try:
+            main_v = f_main.result()
+        except Exception:  # noqa: BLE001 -- never crash the batch on judge I/O
+            judge_error = 1.0
+        try:
+            traj_v = f_traj.result()
+        except Exception:  # noqa: BLE001
+            judge_error = 1.0
+
+    verdict = dict(main_v)
+    verdict["trajectory"] = aggregate_trajectory(traj_v)
+    for k in TRAJECTORY_DIMENSIONS:
+        verdict[k] = _clamp01(traj_v.get(k, _TRAJ_DEFAULTS[k]))
+    return verdict, judge_error
 
 
 # --- discard / group-drop policy (pure, unit-tested) --------------------------
@@ -306,7 +404,7 @@ class OpenAIJudgeClient:
                 max_tokens = 16384
         self.max_tokens = max_tokens
 
-    def _call_once(self, messages: list[dict[str, str]]) -> Mapping[str, float]:
+    def _call_once(self, messages: list[dict[str, str]], *, trajectory: bool = False) -> Mapping[str, float]:
         """One judge round-trip. Raises TruncatedOutputError on truncation or an
         unparseable verdict (so the caller can retry / discard).
 
@@ -344,7 +442,18 @@ class OpenAIJudgeClient:
 
         _raise_if_truncated(data, self.model)
         content = data["choices"][0]["message"]["content"]
-        verdict, parsed = parse_judge_output(content)
+        # The trajectory judge returns a FIVE-dim JSON (tool/efficiency/...); the
+        # main judge returns THREE (task_done/correctness/safety). Parse with the
+        # matching schema or the wrong one yields parsed=False -> bogus retry/discard.
+        if trajectory:
+            verdict, parsed = parse_judge_output(
+                content,
+                dimensions=TRAJECTORY_DIMENSIONS,
+                defaults=_TRAJ_DEFAULTS,
+                binary_dims=(),
+            )
+        else:
+            verdict, parsed = parse_judge_output(content)
         if not parsed:
             # Content present but no verdict JSON extracted (e.g. thinking-model
             # emitted prose, or partial JSON). Raise so the caller retries once,
@@ -355,15 +464,16 @@ class OpenAIJudgeClient:
             )
         return verdict
 
-    def score(self, *, task, trajectory, rubric, data_source) -> Mapping[str, float]:
+    def score(self, *, task, trajectory, rubric, data_source, system=None) -> Mapping[str, float]:
         """Score one trajectory. On an unparseable / truncated verdict, RETRY ONCE;
         if the retry also fails the exception propagates so the caller
         (compute_score / score_followup) marks the trajectory for discard."""
-        messages = build_judge_prompt(task=task, trajectory=trajectory, rubric=rubric)
+        messages = build_judge_prompt(task=task, trajectory=trajectory, rubric=rubric, system=system)
+        is_traj = system is not None  # only the trajectory judge passes a system override
         try:
-            return self._call_once(messages)
+            return self._call_once(messages, trajectory=is_traj)
         except Exception:  # noqa: BLE001 -- retry once on any judge failure (parse/IO)
-            return self._call_once(messages)
+            return self._call_once(messages, trajectory=is_traj)
 
 
 def get_judge() -> JudgeClient:
@@ -463,50 +573,70 @@ def compute_score(
     """
     info = _as_dict(extra_info)
     task = _task_text(info, ground_truth)
-    rubric = _rubric_text(info)
     client = judge if judge is not None else get_judge()
-    # Inject ground-truth answer_key checks if available.
+
+    # Rubrics are imported lazily (agents.prompts pulls agents.schema; no top-level
+    # cycle). The main judge grades THREE dims (task_done/correctness/safety) from
+    # REWARD_RUBRIC; the trajectory judge grades FIVE (tool/efficiency/planning/
+    # consistency/recovery) from TRAJECTORY_RUBRIC in a SEPARATE concurrent call.
+    from agents.prompts import REWARD_RUBRIC, TRAJECTORY_RUBRIC, _load_ground_truth
+
+    # Inject ground-truth answer_key checks if available (correctness ground truth).
     record_id = str(info.get("record_id", "")) or None
+    gt = ""
     if record_id:
-        from agents.prompts import _load_ground_truth
-        gt = _load_ground_truth(record_id)
-        if gt:
-            rubric += gt
-    # Observer diff evidence (ground truth for task_done / correctness). The
-    # Observer never scores -- it supplies the deterministic before/after sandbox
+        gt = _load_ground_truth(record_id) or ""
+
+    # Observer diff evidence (ground truth for task_done / correctness / consistency).
+    # The Observer never scores -- it supplies the deterministic before/after sandbox
     # diff, folded here by the cl_observer reward manager into
-    # extra_info["observer_report"]. Grounding task_done + correctness on real
-    # state (not just the actor's self-report) is the anti-reward-hacking anchor;
-    # empty when the row produced no diff.
+    # extra_info["observer_report"]. Grounding on real state (not just the actor's
+    # self-report) is the anti-reward-hacking anchor; empty when the row has no diff.
     observer_report = str(info.get("observer_report", "") or "").strip()
+    diff_block = ""
     if observer_report:
-        rubric += (
-            "\n\n# Environment diff (observer ground truth for task_done / correctness)\n"
-            + observer_report
-        )
+        diff_block = "\n\n# Environment diff (observer ground truth)\n" + observer_report
 
-    try:
-        verdict = client.score(
-            task=task,
-            trajectory=solution_str or "",
-            rubric=rubric,
-            data_source=data_source,
-        )
-        judge_error = 0.0
-    except Exception:  # noqa: BLE001 -- never crash the training batch on judge I/O
-        verdict = dict(_DIM_DEFAULTS)
-        judge_error = 1.0
+    # Main 3-dim rubric: REWARD_RUBRIC + legacy rule checkers + answer_key + diff.
+    main_rubric = REWARD_RUBRIC
+    legacy = _rubric_text(info)
+    if legacy:
+        main_rubric += "\n\n" + legacy
+    if gt:
+        main_rubric += gt
+    if diff_block:
+        main_rubric += diff_block
 
-    # A judge failure (I/O or an unparseable verdict that survived the retry)
-    # means we have NO signal for this trajectory. Flag it for discard so the
-    # trainer drops it (reward=None, masked out) rather than scoring a silent 0.
+    # Trajectory 5-dim rubric: TRAJECTORY_RUBRIC + the diff (consistency grades the
+    # actor's claims against real state). No answer_key / rule checkers here -- those
+    # inform task_done/correctness only.
+    traj_rubric = TRAJECTORY_RUBRIC + diff_block
+
+    verdict, judge_error = score_dual(
+        client,
+        task=task,
+        trajectory=solution_str or "",
+        main_rubric=main_rubric,
+        traj_rubric=traj_rubric,
+        data_source=data_source,
+    )
+
+    # A judge failure (I/O or an unparseable verdict that survived the retry) on
+    # EITHER call means we have partial signal for this trajectory. Flag it for
+    # discard so the trainer drops it (reward=None, masked out) rather than scoring
+    # a silent 0 or a wrong half-judged reward.
     score = 0.0 if judge_error else aggregate(verdict)
     return {
         "score": float(score),
         "task_done": float(_binarize(verdict.get("task_done", _DIM_DEFAULTS["task_done"]))),
         "correctness": float(_clamp01(verdict.get("correctness", _DIM_DEFAULTS["correctness"]))),
-        "trajectory": float(_clamp01(verdict.get("trajectory", _DIM_DEFAULTS["trajectory"]))),
+        "trajectory": float(_clamp01(verdict.get("trajectory", 0.0))),
         "safety": float(_binarize(verdict.get("safety", _DIM_DEFAULTS["safety"]))),
+        "tool": float(_clamp01(verdict.get("tool", _TRAJ_DEFAULTS["tool"]))),
+        "efficiency": float(_clamp01(verdict.get("efficiency", _TRAJ_DEFAULTS["efficiency"]))),
+        "planning": float(_clamp01(verdict.get("planning", _TRAJ_DEFAULTS["planning"]))),
+        "consistency": float(_clamp01(verdict.get("consistency", _TRAJ_DEFAULTS["consistency"]))),
+        "recovery": float(_clamp01(verdict.get("recovery", _TRAJ_DEFAULTS["recovery"]))),
         "judge_error": judge_error,
         "discard": judge_error,  # 1.0 -> caller sets reward=None (masked, not scored 0)
     }

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""对比新旧 trajectory rubric 打分：拿已落盘的 rollout 轨迹，用【新 prompt】重新打分。
+"""对比旧 trajectory 打分 vs 新五维度 trajectory rubric：拿已落盘的 rollout 重新打分。
 
-动机：trajectory 实测 mean=0.34 过低（judge 对 9B 过于苛刻），改了 3 次 rubric：
-  1. 扣分幅度减半
-  2. 四类封顶（工具0.25/效率0.2/推理0.25/真实性0.3）
-  3. 只惩罚无效/重复/浪费/不诚实，不惩罚合理试错
-本脚本抽 N 条 rollout，用【当前新 rubric】重新 judge 打分，对比 rollout_status 里
+动机：trajectory 实测 mean=0.34 过低（judge 对 9B 过于苛刻）。2026-08-14 把 trajectory
+从 REWARD_RUBRIC 拆成【独立 judge 调用】，用锚点制五维度 rubric（Tool/Efficiency/
+Planning/Consistency/Recovery），加权聚合：
+    trajectory = 0.20×Tool + 0.20×Efficiency + 0.25×Planning + 0.25×Consistency + 0.10×Recovery
+
+本脚本抽 N 条 rollout，用【新五维度 rubric】单独 judge 打分，对比 rollout_status 里
 已记录的【旧 trajectory 分数】，看新 rubric 抬了多少、是否更合理。
 
 ⚠️ judge = openai/gpt-5.6-luna（走 https://openai.sufy.com/v1，SUFY_API_KEY），本机配好
@@ -19,9 +20,12 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def _messages_to_trajectory(messages: list) -> str:
@@ -77,9 +81,9 @@ def main() -> None:
     sample = random.sample(records, min(args.n, len(records)))
     print(f"抽 {len(sample)} 条 rollout（exp={args.exp}）\n")
 
-    # 3. 用新 rubric 重新打分
-    from agents.prompts import REWARD_RUBRIC
-    from trainer.model_reward import build_judge_prompt, get_judge
+    # 3. 用新五维度 rubric 重新打分
+    from agents.prompts import TRAJECTORY_RUBRIC
+    from trainer.model_reward import _TRAJECTORY_SYSTEM, aggregate_trajectory, get_judge
 
     judge = get_judge()
     print(f"judge: {type(judge).__name__}\n")
@@ -90,10 +94,11 @@ def main() -> None:
         verdict = judge.score(
             task=query or "(no query)",
             trajectory=trajectory,
-            rubric=REWARD_RUBRIC,
+            rubric=TRAJECTORY_RUBRIC,
             data_source="compare",
+            system=_TRAJECTORY_SYSTEM,
         )
-        new_traj = verdict.get("trajectory")
+        new_traj = aggregate_trajectory(verdict)
         results.append((tid, old_traj, new_traj, old_reward, verdict))
 
     # 4. 输出对比

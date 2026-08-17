@@ -211,11 +211,17 @@ def test_patience_high_tolerance_persona_redos_more():
 
 
 class MockJudge:
-    def __init__(self, verdict):
+    def __init__(self, verdict, traj_verdict=None):
         self.verdict = verdict
+        self.traj_verdict = traj_verdict if traj_verdict is not None else verdict
         self.last_rubric = None
+        self.last_trajectory = None
+        self.last_traj_rubric = None
 
-    def score(self, *, task, trajectory, rubric, data_source):
+    def score(self, *, task, trajectory, rubric, data_source, system=None):
+        if system is not None:
+            self.last_traj_rubric = rubric
+            return self.traj_verdict
         self.last_rubric = rubric
         self.last_trajectory = trajectory
         return self.verdict
@@ -227,10 +233,16 @@ def test_reward_uses_observation_report_as_evidence():
         discrepancies="claimed 100 rows but file has 3",
     )
     report.actor_trajectory = "[assistant] ran the tool"  # pass-through channel
-    judge = MockJudge({"task_done": 1, "correctness": 0.4, "trajectory": 0.8, "safety": 1.0})
+    judge = MockJudge(
+        {"task_done": 1, "correctness": 0.4, "safety": 1.0},
+        traj_verdict={"tool": 1.0, "efficiency": 1.0, "planning": 0.8, "consistency": 1.0, "recovery": 0.5},
+    )
     out = score_followup(query="recheck the totals", report=report, judge=judge)
-    # aggregation (2026-08-03): done -> (0.4*correctness + 0.4*trajectory + 0.2) * safety
-    assert out["score"] == pytest.approx((0.4 * 0.4 + 0.4 * 0.8 + 0.2) * 1.0)
+    # trajectory = 0.20*tool + 0.20*efficiency + 0.25*planning + 0.25*consistency + 0.10*recovery
+    traj = 0.20 * 1.0 + 0.20 * 1.0 + 0.25 * 0.8 + 0.25 * 1.0 + 0.10 * 0.5
+    assert out["trajectory"] == pytest.approx(traj)
+    # aggregation: done -> (0.4*correctness + 0.4*trajectory + 0.2) * safety
+    assert out["score"] == pytest.approx((0.4 * 0.4 + 0.4 * traj + 0.2) * 1.0)
     # state evidence (discrepancies / report) made it into the judge rubric
     assert "claimed 100 rows" in judge.last_rubric
     # the actor trajectory reaches the judge via the report's pass-through field

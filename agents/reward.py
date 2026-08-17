@@ -69,42 +69,41 @@ def score_followup(
     if report.is_empty():
         return dict(_NO_EFFECT_VERDICT)
 
-    from trainer.model_reward import _DIM_DEFAULTS, _binarize, aggregate, get_judge
+    from trainer.model_reward import (
+        _DIM_DEFAULTS,
+        _TRAJ_DEFAULTS,
+        _binarize,
+        _clamp01,
+        aggregate,
+        get_judge,
+        score_dual,
+    )
 
     parts = build_reward_judge_input(query=query, report=report)
     client = judge if judge is not None else get_judge()
 
-    try:
-        verdict = client.score(
-            task=parts["task"],
-            trajectory=parts["trajectory"],
-            rubric=parts["rubric"],
-            data_source=data_source,
-        )
-        judge_error = 0.0
-    except Exception:  # noqa: BLE001 -- never crash the rollout on judge I/O
-        verdict = dict(_DIM_DEFAULTS)
-        judge_error = 1.0
-
-    def _c01(x: Any) -> float:
-        try:
-            v = float(x)
-        except (TypeError, ValueError):
-            return 0.0
-        # NaN slips past `<0`/`>1` (both False) -> would propagate into reward.
-        # Treat NaN as 0 (no signal); inf handled by >1 -> 1.0.
-        import math
-
-        if math.isnan(v):
-            return 0.0
-        return 0.0 if v < 0 else 1.0 if v > 1 else v
+    # Two concurrent judge calls (main 3-dim + trajectory 5-dim), folded by
+    # score_dual into one verdict whose "trajectory" key is the weighted scalar.
+    verdict, judge_error = score_dual(
+        client,
+        task=parts["task"],
+        trajectory=parts["trajectory"],
+        main_rubric=parts["rubric"],
+        traj_rubric=parts["trajectory_rubric"],
+        data_source=data_source,
+    )
 
     return {
         "score": 0.0 if judge_error else float(aggregate(verdict)),
         "task_done": _binarize(verdict.get("task_done", _DIM_DEFAULTS["task_done"])),
-        "correctness": _c01(verdict.get("correctness", _DIM_DEFAULTS["correctness"])),
-        "trajectory": _c01(verdict.get("trajectory", _DIM_DEFAULTS["trajectory"])),
+        "correctness": _clamp01(verdict.get("correctness", _DIM_DEFAULTS["correctness"])),
+        "trajectory": _clamp01(verdict.get("trajectory", 0.0)),
         "safety": _binarize(verdict.get("safety", _DIM_DEFAULTS["safety"])),
+        "tool": _clamp01(verdict.get("tool", _TRAJ_DEFAULTS["tool"])),
+        "efficiency": _clamp01(verdict.get("efficiency", _TRAJ_DEFAULTS["efficiency"])),
+        "planning": _clamp01(verdict.get("planning", _TRAJ_DEFAULTS["planning"])),
+        "consistency": _clamp01(verdict.get("consistency", _TRAJ_DEFAULTS["consistency"])),
+        "recovery": _clamp01(verdict.get("recovery", _TRAJ_DEFAULTS["recovery"])),
         "judge_error": judge_error,
         "discard": judge_error,  # 1.0 -> caller sets reward=None (masked, not scored 0)
     }

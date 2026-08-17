@@ -370,24 +370,26 @@ def _exact_match_reward(traj: SlotTrajectory, expected: str) -> float:
 
 
 def _judge_reward(traj: SlotTrajectory, query: str) -> float:
-    """Real reward: dev-side model judge (anthropic/claude-4.8-opus via sufy).
+    """Real reward: dev-side model judge (same dual-judge path as training).
 
-    Uses the observation-grounded judge from trainer.model_reward (the same one
-    verl's custom_reward_function calls), so reward scale matches eval.
+    Uses the observation-grounded judge from trainer.model_reward via score_dual
+    (main 3-dim + trajectory 5-dim, fired concurrently), so the reward scale
+    matches verl's custom_reward_function.
     """
-    from trainer.model_reward import get_judge  # local import: only needed on real path
+    from agents.prompts import REWARD_RUBRIC, TRAJECTORY_RUBRIC
+    from trainer.model_reward import aggregate, get_judge, score_dual
 
     judge = get_judge()
-    verdict = judge.score(
+    trajectory = "\n".join(m.get("content", "") for m in traj.messages)
+    verdict, judge_error = score_dual(
+        judge,
         task=query,
-        trajectory="\n".join(m.get("content", "") for m in traj.messages),
-        rubric="",  # observation-grounded rubric is built by the rollout; here we grade the trajectory
+        trajectory=trajectory,
+        main_rubric=REWARD_RUBRIC,
+        traj_rubric=TRAJECTORY_RUBRIC,
         data_source="sandbox_grpo",
     )
-    # aggregate: safety * (0.8*completion + 0.2*robustness)
-    from trainer.model_reward import aggregate
-
-    return float(aggregate(verdict))
+    return 0.0 if judge_error else float(aggregate(verdict))
 
 
 def _run_one_collect_query(
