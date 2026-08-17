@@ -249,7 +249,7 @@ Buffer 每桶 **hard floor** `q_min = 2000`。7 桶合计：
 - [ ] `pytest` 中 buffer 相关用例仍通过
 - [ ] 可选：`replay_warmup_size: 32` 时 step 0 的 `effective_replay_batch_size` 已满
 
-**数据来源配比（Phase 0，见 [`CL_Design.md`](CL_Design.md)）：**
+**数据来源配比（Phase 0，见 [`CL_Design.md`](../source/CL_Design.md)）：**
 
 - [ ] 每条 trajectory 带 `meta.policy` 来源标记（`pi0_27b` = 本地 Qwen3.6-27B on-policy；`gpt5` = sufy `openai/gpt-5` off-policy）——`collect_rollout.py` 已按 `--actor` 自动写入
 - [ ] 两来源**分目录**存（`data/rollouts/{local,remote}/`），便于 `warmup_buffer.py --ratio-27b` 按桶内配比混合

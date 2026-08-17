@@ -1,6 +1,6 @@
 # 沙盒平台 API 参考（腾讯云 Agent Runtime）
 
-> **定位**：本文仅保留平台 Tool/Instance API 对照与 PoC 清单，作为平台 API 的单一信源。调度逻辑（16×8 + winner-sync）见 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)；架构（动作内/推理外）见 [`Sandbox_Agent架构.md`](Sandbox_Agent架构.md)；运维见 [`Sandbox_腾讯云操作手册.md`](Sandbox_腾讯云操作手册.md)。
+> **定位**：本文仅保留平台 Tool/Instance API 对照与 PoC 清单，作为平台 API 的单一信源。调度逻辑（16×8 + winner-sync）见 [`Sandbox_管理调度指南.md`](../ops/sandbox/Sandbox_管理调度指南.md)；架构（动作内/推理外）见 [`Sandbox_Agent架构.md`](../ops/sandbox/Sandbox_Agent架构.md)；运维见 [`Sandbox_腾讯云操作手册.md`](Sandbox_腾讯云操作手册.md)。
 
 ---
 

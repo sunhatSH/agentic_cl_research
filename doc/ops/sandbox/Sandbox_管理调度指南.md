@@ -1,7 +1,7 @@
 # Sandbox 管理调度指南
 
 > **定位**：训练时 **谁起多少沙箱、何时对齐状态、何时回母版**。  
-> 运维/账号见 [`Sandbox_腾讯云操作手册.md`](Sandbox_腾讯云操作手册.md)；API 对照见 [`SandboxRollout.md`](SandboxRollout.md)。
+> 运维/账号见 [`Sandbox_腾讯云操作手册.md`](../../archive/Sandbox_腾讯云操作手册.md)；API 对照见 [`SandboxRollout.md`](../../archive/SandboxRollout.md)。
 
 **最后更新**：2026-06-10（与 @孙豪 确认的目标调度模型）
 

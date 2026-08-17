@@ -3,11 +3,35 @@
 > **接手项目**：先读 `ops/Migration_64GPU.md` → `archive/Progress.md` → `source/CL_Design.md`。
 > **沙箱文档入口**：`ops/sandbox/Sandbox_概念与术语.md`。
 > **论文/学位论文参考**：`refs.md`（唯一信源）+ `重构指南.md`（两套论文资产改造规格）。
-> 归档文件（冗余/过期/已合并）在 `archive/`，不再维护。
 
 ---
 
-## source/ — 信源（论文与代码的上游依据，长期维护）
+## 目录总览
+
+| 目录 | 定位 | 维护状态 |
+|------|------|----------|
+| [source/](#source--信源) | 信源：论文与代码的上游依据 | 长期维护 |
+| [ops/](#ops--运行手册) | 运行手册（含 sandbox/） | 按需更新 |
+| [eval/](#eval--评测) | 评测方案 | 维护 |
+| [debug/](#debug--调试记录) | 训练排障记录 | 追加，结论已并入精简总表 |
+| [expr/](#expr--实验) | 实验结论（每实验一子目录） | 追加 |
+| [weekly_report/](#weekly_report--周报) | 周报 | 追加 |
+| [根目录单一信源](#根目录--单一信源) | prompt / refs / 重构指南 | 维护 |
+| [archive/](#archive--归档) | 归档：冗余/过期/已合并 | **不再维护** |
+
+## 接手阅读顺序
+
+1. [ops/Migration_64GPU.md](ops/Migration_64GPU.md) — 交接快照 + 冷启动步骤
+2. [archive/Progress.md](archive/Progress.md) — 交付状态单一来源（里程碑 / 模块完成度 / 阻塞）
+3. [source/CL_Design.md](source/CL_Design.md) — 核心设计（CL Loss / Buffer / 实验路线）
+4. [source/BucketAlgorithm.md](source/BucketAlgorithm.md) — 分桶算法规范
+5. [source/usersim.md](source/usersim.md) — 三 Agent 用户模拟
+6. [source/训练与推理流程.md](source/训练与推理流程.md) — 训练 + 推理全链路落地
+7. [eval/防遗忘评测方案.md](eval/防遗忘评测方案.md) — 评测方法与遗忘度量
+
+---
+
+## source/ — 信源
 
 | 文档 | 内容 |
 |------|------|
@@ -19,7 +43,7 @@
 | [Agent轨迹_Schema.md](source/Agent轨迹_Schema.md) | Agent 轨迹 schema（现状 mock vs 目标 buffer/训练） |
 | [Hermes_Subagent_训练数据方案.md](source/Hermes_Subagent_训练数据方案.md) | Hermes 同步出入栈 + OpenClaw 主子各自训练方案 |
 
-## ops/ — 运行手册（操作向，按需查阅）
+## ops/ — 运行手册
 
 | 文档 | 内容 |
 |------|------|
@@ -51,18 +75,20 @@
 | [防遗忘评测方案.md](eval/防遗忘评测方案.md) | 防遗忘评测方案：按桶分组训练 + 统一评测 + 权重后置 |
 | [训练与评测总思路_产物结构.md](eval/训练与评测总思路_产物结构.md) | 训练/评测产物结构 |
 
-## debug/ — 调试记录（踩坑与修复）
+## debug/ — 调试记录
+
+> **先读 [Bug_Fix_精简总表.md](debug/Bug_Fix_精简总表.md)**——已合并去重以下记录，只保留结论。
 
 | 文档 | 内容 |
 |------|------|
 | [Bug_Fix_精简总表.md](debug/Bug_Fix_精简总表.md) | bug 修复精简总表 |
-| [16gpu_hang_handoff_2026-08-01.md](debug/16gpu_hang_handoff_2026-08-01.md) | 16GPU hang 交接 |
-| [16—migrate-4.md](debug/16—migrate-4.md) | 迁移记录 |
+| [16gpu_hang_handoff_2026-08-01.md](debug/16gpu_hang_handoff_2026-08-01.md) | 16GPU hang 交接（✅ 已解决） |
+| [16—migrate-4.md](debug/16—migrate-4.md) | verl 原生 agent_loop 迁移记录 |
 | [LightLLM_pause_abort_deadlock_请教.md](debug/LightLLM_pause_abort_deadlock_请教.md) | LightLLM pause/abort 死锁 |
 | [OOM_求助_GPT.md](debug/OOM_求助_GPT.md) | OOM 排查 |
 | [Training_Debug_2026-07-24.md](debug/Training_Debug_2026-07-24.md) | 训练调试记录 |
 
-## expr/ — 实验（面向结论，每实验一子目录）
+## expr/ — 实验
 
 | 文档 | 内容 |
 |------|------|
@@ -70,16 +96,16 @@
 | [B1/](expr/B1/) | 纯 PPO baseline（每次训练一个日期 .md + 图引 assets/） |
 | [K2/](expr/K2/) | PPO + KL 约束 |
 | [R0/](expr/R0/) | CLEAR baseline（单桶 replay） |
-| assets/ · data/ | 实验图 / 数据（各 .md 用相对路径 `../assets/` 引用） |
+| assets/ · data/ | 实验图 / 数据（各 .md 用相对路径 ../assets/ 引用） |
 
 ## weekly_report/ — 周报
 
 | 文档 | 内容 |
 |------|------|
-| [20260706-20260712工作.md](weekly_report/20260706-20260712工作.md) | |
-| [20260718-20260723工作.md](weekly_report/20260718-20260723工作.md) | |
-| [20260724-20260729工作.md](weekly_report/20260724-20260729工作.md) | |
-| [20260730-20260731工作.md](weekly_report/20260730-20260731工作.md) | |
+| [20260706-20260712工作.md](weekly_report/20260706-20260712工作.md) | 冷采集全链路打通 + 数据清洗 |
+| [20260718-20260723工作.md](weekly_report/20260718-20260723工作.md) | 4 卡环境适配 + Qwen3.5-9B smoke |
+| [20260724-20260729工作.md](weekly_report/20260724-20260729工作.md) | 16 卡 9B baseline 从崩溃到跑通 |
+| [20260730-20260731工作.md](weekly_report/20260730-20260731工作.md) | 迁移 verl 原生 agent_loop |
 | [20260803-20260810工作.md](weekly_report/20260803-20260810工作.md) | |
 
 ## 根目录 — 单一信源
@@ -90,9 +116,19 @@
 | [refs.md](refs.md) | **参考文献唯一信源**（同步到 paper/refs + master-thesis/ref） |
 | [重构指南.md](重构指南.md) | 论文重构规格：paper/ + master-thesis/ 两套资产改造 |
 
-## archive/ — 归档（冗余/过期/已合并，不再维护）
+## archive/ — 归档
 
-含过程记录（Progress.md / RunLog.md / BugLog_集群采集.md）、一次性技术报告副本、已合并的启动指南/操作手册/踩坑记录/VerlIntegration/Plan_冷启动/BucketDesign/Buffer_冷启动/UserSim 四件套/WeeklyReport_20260713 等，详见 `archive/` 目录。
+> **已归档，不再维护。** 冗余 / 过期 / 已合并的文档集中于此，仅作历史参考。核心结论均已上移到上面各目录。
 
-> 论文产出在 [`../paper/`](../paper/) 目录（drafts 中英 Intro/Method + 总览、latex、refs）。
-> 学位论文在 [`../master-thesis/`](../master-thesis/) 目录。
+| 分组 | 文件 |
+|------|------|
+| 交付状态 / 过程记录 | Progress.md、RunLog.md（append-only）、BugLog_集群采集.md |
+| 施工图 / 计划 | Plan_训练链路补齐.md、Plan_冷启动数据来源消融.md、0622 待办计划.md |
+| Buffer 历史设计 | BucketDesign.md、bucket_buffer.md、Buffer_冷启动数据需求.md（已被 source/BucketAlgorithm.md 取代） |
+| UserSim 历史设计 | 模型选型.md、UserSim_三Agent架构与技术设计.md、UserSim_多轮Query在线生成.md、UserSim_人设库.md（已被 source/usersim.md 取代） |
+| verl 集成 / 沙箱历史 | VerlIntegration.md、SandboxRollout.md、Sandbox_腾讯云操作手册.md、Sandbox_规格与run_code踩坑.md、沙箱操作验证与证据.md、沙箱_实例_Queries对应关系_待定.md |
+| 技术报告 / 复盘 | 汇报_技术总报告.md、RolloutCollect_技术报告.md、集群推理采集_经验复盘.md、集群训练启动指南.md、vllm_upgrade_0.19.md、模型配额申请_sufy.md |
+| 周报 / 工作整理（旧） | WeeklyReport_20260713-0717.md、20260805-08_工作整理.md |
+
+> 论文产出在 [../paper/](../paper/) 目录（drafts 中英 Intro/Method + 总览、latex、refs）。
+> 学位论文在 [../master-thesis/](../master-thesis/) 目录。

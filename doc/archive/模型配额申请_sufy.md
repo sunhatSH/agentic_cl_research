@@ -2,7 +2,7 @@
 
 > **状态**：2026-07-01，沙箱已验证能连 `openai.sufy.com`（沙箱→sufy:443 通、`/v1/models` 返回 118 模型）。
 > **用途**：给 sufy 平台申请模型 TPM 配额用。数字为经验值（已降并发 + 含余量），非理论峰值。
-> **信源**：模型选型见 [`doc/source/usersim.md`](../source/模型选型.md)；调度见 [`doc/source/训练与推理流程.md`](../source/训练与推理流程.md)。
+> **信源**：模型选型见 [`doc/source/usersim.md`](模型选型.md)；调度见 [`doc/source/训练与推理流程.md`](../source/训练与推理流程.md)。
 
 ---
 

@@ -5,7 +5,7 @@
 
 ## 1. 这一阶段做什么（与 UserSim 设计的差异）
 
-本阶段是 [`UserSim_多轮Query在线生成.md`](../../source/UserSim_多轮Query在线生成.md) 的**简化采集变体**（2026-06-13 孙豪定）：
+本阶段是 [`UserSim_多轮Query在线生成.md`](../../archive/UserSim_多轮Query在线生成.md) 的**简化采集变体**（2026-06-13 孙豪定）：
 
 | 维度 | 本阶段 | 完整 UserSim 设计 |
 |------|--------|-------------------|
@@ -19,7 +19,7 @@
 
 ## 2. 模型选型（本阶段：三方 + actor 双路，均不同）
 
-> **权威选型见 [`模型选型.md`](../../source/模型选型.md)**（单一信源）。下表为冷启动采集阶段的具体落点（数据去向），选型本身以选型文档为准。
+> **权威选型见 [`模型选型.md`](../../archive/模型选型.md)**（单一信源）。下表为冷启动采集阶段的具体落点（数据去向），选型本身以选型文档为准。
 
 | 角色 | 模型 | 后端 | 数据去向 |
 |------|------|------|----------|
@@ -28,7 +28,7 @@
 | **observer** | **openai/gpt-5-mini** | sufy | （三 agent 不存数据，只驱动） |
 | **questioner** | **anthropic/claude-sonnet-5** + 轮换池 | sufy | |
 
-三个角色（沙箱内 actor / observer / questioner）刻意用**三个不同模型**，抗 self-preference。两套 actor 数据**分目录存**。模型选型单一信源见 [`模型选型.md`](../模型选型.md)。
+三个角色（沙箱内 actor / observer / questioner）刻意用**三个不同模型**，抗 self-preference。两套 actor 数据**分目录存**。模型选型单一信源见 [`模型选型.md`](../../archive/模型选型.md)。
 
 ## 3. 远程 API 来源（关键）
 
@@ -61,7 +61,7 @@ sufy（OpenAI 兼容，沙箱可达）：
 - `data/cleaning.py` — 文本清洗核心模块：零宽字符剥离 + 乱码检测 + 阈值过滤。`collect_rollout.py` 默认在采集时对 seed query 和轨迹消息做在线清洗（`--no-clean` 可跳过）。
 - `scripts/clean_queries.py` — 批量清洗 queries JSONL 文件（采集前预处理）。
 - `scripts/clean_buffer.py` — 批量清洗冷启动 buffer SQLite 快照（采集后后处理）。
-- `scripts/taskspec_to_queries.py` — **Step 3**：taskspec.yaml → queries.jsonl（`{record_id, queries:[seed_query, *follow_ups]}`）。本脚本的输出是 `collect_cold.py`/`collect_rollout.py` 的 `--queries` 输入。完整 7 步 pipeline 见 [`doc/source/训练与推理流程.md` §6.5](../训练与推理流程.md#65-数据-pipelinetaskspec--训练数据7-步)。
+- `scripts/taskspec_to_queries.py` — **Step 3**：taskspec.yaml → queries.jsonl（`{record_id, queries:[seed_query, *follow_ups]}`）。本脚本的输出是 `collect_cold.py`/`collect_rollout.py` 的 `--queries` 输入。完整 7 步 pipeline 见 [`doc/source/训练与推理流程.md` §6.5](../../source/训练与推理流程.md#65-数据-pipelinetaskspec--训练数据7-步)。
 - `scripts/trajectory_to_parquet.py` — **Step 6**：冷启动 trajectory JSONL → verl rl_dataset parquet（`prompt`/`data_source`/`reward_model`/`extra_info` 4 列）。产出填进 `configs/cluster.yaml: data.train_files`。
 
 ## 6. 运行命令

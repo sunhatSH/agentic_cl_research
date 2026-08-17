@@ -1,7 +1,7 @@
 # 接口使用指南：Sandbox 后端 + 三 Agent（报告与声明）
 
-> **定位**：给后续接手的人 / AI agent 的**接口使用速查**——每个接口在哪、签名、怎么调、谁产出谁消费。设计动机见 [`UserSim_三Agent架构与技术设计.md`](../../source/UserSim_三Agent架构与技术设计.md)（接口契约）与 [`SandboxRollout.md`](SandboxRollout.md)（平台 API）。本文只讲**怎么用**。
-> **状态**：沙箱接口/实现已解耦；三 Agent 代码已落盘 `agents/`。observer 已落地 **diff-driven、模型只看 state**；reward **双通道**（state 判 completion + pass-through 轨迹判 safety/robustness）。完整设计与"diff 能否到内容"的论证见 [`../paper/refs/Observer_DiffDriven_技术报告.md`](../paper/refs/Observer_DiffDriven_技术报告.md)。
+> **定位**：给后续接手的人 / AI agent 的**接口使用速查**——每个接口在哪、签名、怎么调、谁产出谁消费。设计动机见 [`UserSim_三Agent架构与技术设计.md`](../../archive/UserSim_三Agent架构与技术设计.md)（接口契约）与 [`SandboxRollout.md`](../../archive/SandboxRollout.md)（平台 API）。本文只讲**怎么用**。
+> **状态**：沙箱接口/实现已解耦；三 Agent 代码已落盘 `agents/`。observer 已落地 **diff-driven、模型只看 state**；reward **双通道**（state 判 completion + pass-through 轨迹判 safety/robustness）。完整设计与"diff 能否到内容"的论证见 [`../paper/refs/Observer_DiffDriven_技术报告.md`](../../../paper/refs/Observer_DiffDriven_技术报告.md)。
 > **写作日期**：2026-06-19（2026-06-22 校订）
 
 ---
@@ -97,7 +97,7 @@ export AGENTBAY_API_KEY=...   # pip install wuying-agentbay-sdk
 
 ## 2. 三 Agent 层接口（**报告**）
 
-> **用哪个模型（observer/questioner/judge 的选型）见 [`模型选型.md`](../../source/模型选型.md)**（单一信源）。本节只讲接口与 env 变量名，不记具体模型。
+> **用哪个模型（observer/questioner/judge 的选型）见 [`模型选型.md`](../../archive/模型选型.md)**（单一信源）。本节只讲接口与 env 变量名，不记具体模型。
 
 一句话：**Observer 产出一份 `ObservationReport`（报告），Questioner 和 Reward 各读这同一份报告**。报告核心是 `state_diff`（环境 diff = ground truth）；另有 `actor_trajectory`（actor 轨迹文本，**pass-through**：observer 组件捎带、observer 模型不看、只给 reward）。
 
@@ -184,7 +184,7 @@ sandbox(winner) ─► Observer.observe(sandbox, actor_trajectory=, baseline=, p
 
 ## 3. 观察证据采集：diff-driven（现行实现）
 
-> 设计动机（为什么从 claim-driven 改 diff-driven 的 6 条理由）、"沙箱 diff 能否到内容"的分层论证，见 [`../paper/refs/Observer_DiffDriven_技术报告.md`](../paper/refs/Observer_DiffDriven_技术报告.md)。本节只列**现行机制**与**落地状态**，不重复论证。
+> 设计动机（为什么从 claim-driven 改 diff-driven 的 6 条理由）、"沙箱 diff 能否到内容"的分层论证，见 [`../paper/refs/Observer_DiffDriven_技术报告.md`](../../../paper/refs/Observer_DiffDriven_技术报告.md)。本节只列**现行机制**与**落地状态**，不重复论证。
 
 ### 3.1 机制（确定性取证，observer 模型只看 state）
 

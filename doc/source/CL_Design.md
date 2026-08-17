@@ -1081,7 +1081,7 @@ verl FP8 E2E 现状（来自 `docs/low_precision/fp8.md`）:
 
 #### 训练组（24 卡，FSDP2）
 
-| 组件 | 精度 | 27B 总量 | shard 24 卡 | 备注 |
+| 组件 | 精度 | 70B 总量（待按 27B 重算）| shard 24 卡 | 备注 |
 |------|------|----------|--------------|------|
 | 训练参数 | BF16 | 140 GB | 5.8 GB/卡 | FSDP shard |
 | 梯度 | BF16 | 140 GB | 5.8 GB/卡 | reduce-scatter 后 shard |

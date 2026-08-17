@@ -243,6 +243,7 @@ agentic_cl_research/
 | 文件 | 内容 |
 |------|------|
 | `doc/source/CL_Design.md` | **主文档**：CL Loss / Replay Buffer（9桶+quota+priority+冷启动数据需求）/ 实验路线 / 评测 / GPU / 精度 / 文献 |
+| `doc/source/BucketAlgorithm.md` | **9 桶 Buffer 算法单一规范**：quota / priority / 两级采样 / 淘汰 / 持久化 |
 | `doc/source/usersim.md` | **UserSim 单一信源**：模型选型 + 三 agent 架构（observer/questioner/reward）+ 多轮 query 在线生成 + 42 人设表 |
 | `doc/source/训练与推理流程.md` | 训练循环 + 推理全链路 + verl 0.8.0 集成（不 fork，外挂注入）+ 数据 pipeline |
 | `doc/source/ClawEval_Metadata.md` | 评测基准数据 |
@@ -268,13 +269,17 @@ agentic_cl_research/
 |------|------|
 | `doc/eval/防遗忘评测方案.md` | 防遗忘评测方案：按桶分组训练 + 统一评测 + 权重后置 |
 
-**④ archive/ — 归档（冗余/过期/已合并，不再维护）**
+**④ debug/ — 训练排障**（结论已并入 `Bug_Fix_精简总表.md`，逐条历程见源文件）
 
-含过程记录（Progress.md / RunLog.md / BugLog_集群采集.md）、一次性技术报告副本、已合并的启动指南/操作手册/踩坑记录、过期待办、已完成的施工图等 16 篇，详见 `doc/README.md`。
+**⑤ weekly_report/ — 周报**（追加）
+
+**⑥ archive/ — 归档（冗余/过期/已合并，不再维护）**
+
+含过程记录（Progress.md / RunLog.md / BugLog_集群采集.md）、一次性技术报告副本、已合并的启动指南/操作手册/踩坑记录、过期待办、已完成的施工图等 26 篇，详见 `doc/README.md`。
 
 > 论文产出在 `paper/`（`drafts/` 中英 Intro/Method + 总览、`latex/`、`assets/`、`refs/`）。一次性技术报告和复盘文档归档在 `paper/refs/`。
 
-阅读顺序建议：接手先读 `doc/ops/Migration_64GPU.md` → `doc/archive/Progress.md`；理解设计读 `doc/source/CL_Design.md`（技术细节）→ `doc/source/CL_Design.md`（分桶论证）→ `doc/source/ClawEval_Metadata.md`（评测数据）→ `doc/source/训练与推理流程.md`（落地工程）。
+阅读顺序建议：接手先读 `doc/ops/Migration_64GPU.md` → `doc/archive/Progress.md`；理解设计读 `doc/source/CL_Design.md`（技术细节）→ `doc/source/BucketAlgorithm.md`（分桶论证）→ `doc/source/ClawEval_Metadata.md`（评测数据）→ `doc/source/训练与推理流程.md`（落地工程）。
 
 ## 可复用方法（skills/）
 

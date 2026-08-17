@@ -1,7 +1,7 @@
 # Sandbox Agent 架构：动作在内、推理在外
 
 > **定位**：回答「沙箱里跑什么、推理在哪、镜像装什么、起实例前要做什么、用户文件系统怎么随机化」。
-> 调度（16×8 / winner 同步）见 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)；平台 API 见 [`SandboxRollout.md`](SandboxRollout.md)；运维见 [`Sandbox_腾讯云操作手册.md`](Sandbox_腾讯云操作手册.md)。
+> 调度（16×8 / winner 同步）见 [`Sandbox_管理调度指南.md`](Sandbox_管理调度指南.md)；平台 API 见 [`SandboxRollout.md`](../../archive/SandboxRollout.md)；运维见 [`Sandbox_腾讯云操作手册.md`](../../archive/Sandbox_腾讯云操作手册.md)。
 
 **最后更新**：2026-06-10 ｜ 决策：agent harness = **OpenClaw**（敲定待选项）
 
@@ -181,7 +181,7 @@ verl 的范式是「整批 prompt **一次性生成完** → 再统一打分」�
 
 ## 7b. Reward judge（模型判分）
 
-> **选型权威见 [`模型选型.md`](../../source/模型选型.md)**（单一信源，由 @孙豪 拍板：reward 走 sufy 托管的 `anthropic/claude-4.8-opus`，冻结）。本节只保留**为什么这么设计**的论证；具体用哪个模型 / endpoint / 校准状态以选型文档为准。一致率校准是**可选验证**，非选型阻塞。
+> **选型权威见 [`模型选型.md`](../../archive/模型选型.md)**（单一信源，由 @孙豪 拍板：reward 走 sufy 托管的 `anthropic/claude-4.8-opus`，冻结）。本节只保留**为什么这么设计**的论证；具体用哪个模型 / endpoint / 校准状态以选型文档为准。一致率校准是**可选验证**，非选型阻塞。
 
 **倾向（2026-06-10，可改）**：reward 用**单一冻结模型 judge**。
 
@@ -191,7 +191,7 @@ verl 的范式是「整批 prompt **一次性生成完** → 再统一打分」�
 | 覆盖不到 | Communication/Dialogue/无 gold 的 Knowledge 规则判不了 |
 | reward/eval 一致 | ClawEval 本身就是模型 judge（completion/safety/robustness rubric） |
 
-**本地 vs API → sufy 托管冻结**：RL reward 必须是不变的尺子，跑数周/20 实验测遗忘；judge 走 sufy（`anthropic/claude-4.8-opus`），由网关托管保证冻结（不再本地 vLLM 部署，避免版本漂移污染遗忘度量）。判分对象 = ClawEval 三维 rubric，与评测同构。
+**本地 vs API → sufy 托管冻结**：RL reward 必须是不变的尺子，跑数周/21 实验测遗忘；judge 走 sufy（`anthropic/claude-4.8-opus`），由网关托管保证冻结（不再本地 vLLM 部署，避免版本漂移污染遗忘度量）。判分对象 = ClawEval 三维 rubric，与评测同构。
 
 **模型大小**：anti reward-hacking 要求 judge ≥ 策略（27B）；有 rubric 则核对清单较易。`claude-4.8-opus` 能力远超 27B 策略，用 ClawEval 人工 rubric **一致率**校准，不是凭参数量定。
 

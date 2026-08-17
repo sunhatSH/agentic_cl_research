@@ -16,7 +16,7 @@ Continual Learning over Agentic LLM 的训练项目——在 GRPO 上叠加 Repl
 │   ├── cluster.yaml         #   集群 64 卡引擎层 overlay
 │   ├── run/                 #   集群可运行配置（base + cluster + 实验语义）
 │   └── phase<N>/            #   各 phase 实验定义
-├── doc/                     # 设计文档（21 篇，三级索引见 doc/README.md）
+├── doc/                     # 设计文档（60 篇，索引见 doc/README.md）
 ├── docker/                  # 镜像构建（sandbox agent runtime / vllm019 / lightllm）
 ├── eval/                    # ClawEval 评测（195 纯文本任务）
 ├── inference/               # 单步生成边界（VerlRolloutGenerateFn / HTTP）
@@ -25,7 +25,7 @@ Continual Learning over Agentic LLM 的训练项目——在 GRPO 上叠加 Repl
 ├── rollout/                 # 采样侧：沙箱客户端 / 会话池 / 轨迹采集
 ├── scripts/                 # 训练 / 沙箱 / 数据 / 评测启动脚本（35 个）
 ├── skills/                  # 可复用方法论（5 篇工程规范）
-└── tests/                   # ~200 单元测试 + verl 兼容性 smoke
+└── tests/                   # ~290 单元测试 + verl 兼容性 smoke
 ```
 
 ## 快速开始
@@ -46,7 +46,7 @@ bash scripts/eval.sh ckpts/b1-step-100
 - **CL Loss**：$L_{cl} = \lambda_1 L_{rl} + \lambda_2 L_{kl} + \lambda_3 L_{replay} + \lambda_4 L_{ent}$；$\lambda_4=0.001$ 全程开启防 Echo Trap。
 - **9 桶 Buffer**：按能力/领域分桶（不按难度），桶内淘汰禁止跨桶挤出，priority 用抗遗忘信号而非 reward 绝对值。
 - **Token 级 w**：W2 主方案 = priority × U 形块权重 $\frac{\gamma^{\text{block}} + \delta^{K_i - \text{block}}}{2}$ + clip + normalize；首尾两端高、中间低（$\gamma=\delta=0.88$）。$\gamma=\delta=1$ 时 U 形退化为均权（W0），超参连续可调。块按动作块切分，$K_i$ 因 trajectory 而异，解析失败或 $K_i=1$ 退化为等长 $K=20$。
-- **训练框架**：[verl](https://github.com/volcengine/verl)，**不 fork**——通过 `actor.set_loss_fn` 注入自定义 loss，Buffer 完全外挂。详见 `doc/VerlIntegration.md`。
+- **训练框架**：[verl](https://github.com/volcengine/verl)，**不 fork**——通过 `actor.set_loss_fn` 注入自定义 loss，Buffer 完全外挂。详见 `doc/source/训练与推理流程.md`。
 
 ## 实验路线
 
@@ -64,7 +64,7 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
                            └── Phase 6 (X1-X7)  按需探索
 ```
 
-共 21 个核心训练（B1 + K1-5/K2-R = 6 + R0-10k/R0-25k/R3-6/R4-w/R4-k = 8 + C1-4 = 4 + S1-2 = 2，Phase 6 按需）。详见 `doc/CL_Update_Sunhao.md`。
+共 21 个核心训练（B1 + K1-5/K2-R = 6 + R0-10k/R0-25k/R3-6/R4-w/R4-k = 8 + C1-4 = 4 + S1-2 = 2，Phase 6 按需）。详见 `doc/source/CL_Design.md`。
 
 ## 分工
 

@@ -2,7 +2,7 @@
 
 > 把配置、命令行、控制台合成一份。**先看 §0 概念，再按 §2 文件地图填配置，按场景走 §4 或 §5。**
 >
-> **已跑通冒烟的精简步骤**：[`Sandbox_冒烟指南.md`](Sandbox_冒烟指南.md)
+> **已跑通冒烟的精简步骤**：[`Sandbox_冒烟指南.md`](../ops/sandbox/Sandbox_冒烟指南.md)
 >
 > 官方文档：[创建自定义沙箱（代码解释器镜像）](https://cloud.tencent.com/document/product/1814/129691)
 
