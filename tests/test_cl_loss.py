@@ -177,7 +177,44 @@ def test_build_replay_rows_tids_skip_empty_messages():
     from trainer.replay_forward import REPLAY_TIDS_KEY
 
     assert rows[REPLAY_TIDS_KEY] == ["t1", "t3"]
-    assert rows["is_replay"].shape[0] == 2
+
+
+def test_build_replay_rows_messages_in_traj_payload():
+    """冷启动 sqlite：messages 存在 traj payload dict 里、不在 meta。build_replay_rows
+    应从 traj 回退取到 messages（经 replay_sample_to_metadata），不再整条跳过（回放空转 bug）。"""
+    from trainer.replay_forward import REPLAY_TIDS_KEY
+
+    samples = [
+        # traj 是 payload dict（含 messages），meta 里没有 messages —— 冷启动 warmup 的真实结构
+        (
+            "cold1",
+            {
+                "messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "abc"}],
+                "response_token_ids": [],
+                "response_mask": [],
+            },
+            {"bucket": "workflow"},
+        ),
+    ]
+    rows = build_replay_rows(samples, token_weights=None, tokenizer=_FakeTokenizer())
+    # 关键：这条不被跳过，成功建成回放行。
+    assert rows[REPLAY_TIDS_KEY] == ["cold1"]
+    assert rows["is_replay"].shape[0] == 1
+    assert rows[REPLAY_MASK_KEY].sum().item() > 0  # response 段非空
+
+
+def test_build_replay_rows_token_ids_clamp_to_model_len():
+    """token-ids 路径：response 截到 max_length，prompt+response 总长受 max_model_len 约束。"""
+    samples = [
+        ("t1", None, {"prompt_token_ids": list(range(50)), "response_token_ids": list(range(300))}),
+    ]
+    # max_length(response 上限)=100, max_model_len(总)=120 → prompt50 全留, response 截到 120-50=70
+    rows = build_replay_rows(
+        samples, token_weights=None, tokenizer=_FakeTokenizer(), max_length=100, max_model_len=120
+    )
+    # responses 段宽 R = 实际 response 长度（此处 70），replay_response_mask 该有 70 个 1
+    assert rows[REPLAY_MASK_KEY].sum().item() == 70
+    assert rows["is_replay"].shape[0] == 1
 
 
 def test_cl_loss_with_replay_adds_weighted_term():

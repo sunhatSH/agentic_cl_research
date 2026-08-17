@@ -135,6 +135,7 @@ def build_replay_rows(
     token_weights: Any,
     tokenizer: Any,
     max_length: int = 4096,
+    max_model_len: int | None = None,
 ) -> dict[str, Any]:
     """Tokenize replay message lists into verl-compatible row tensors.
 
@@ -160,6 +161,14 @@ def build_replay_rows(
     Response-length alignment (R) matters: ``no_padding_2_padding`` returns dense
     ``[bsz, max_response_len]`` log-probs, so the replay mask / weights are R-wide,
     NOT (P+R)-wide.
+
+    Length contract (aligns with rollout gateway ``convert_buffer_to_trajectory``):
+    ``max_length`` is the RESPONSE cap (= data.max_response_length); ``max_model_len``
+    is the prompt+response total cap. ``_clamp_prompt_response`` keeps the full
+    prompt (only trims its head if the total overflows) and caps the response at
+    ``min(max_length, max_model_len - len(prompt))`` -- so a replayed trajectory is
+    truncated exactly like the rollout that produced it. ``max_model_len=None``
+    falls back to prompt+response each capped at ``max_length`` (legacy).
     """
     import torch
 
@@ -168,21 +177,28 @@ def build_replay_rows(
     weight_lists: list[list[float]] = []
     built_tids: list[str] = []
 
+    from trainer.trajectory_adapter import replay_sample_to_metadata
+
     tw = token_weights if token_weights is not None else [None] * len(samples)
     for (_tid, _traj, meta), w in zip(samples, tw, strict=True):
-        # v1 路径：buffer 存的是 token ids（prompt_token_ids/response_token_ids），
-        # tq 里没有完整 messages 文本，无法重新 tokenize。直接用存好的 ids。
-        # v0 路径：meta 有 messages，用 tokenizer 现切 prompt/response。
-        prompt_ids = meta.get("prompt_token_ids")
-        resp_ids = meta.get("response_token_ids")
+        # 归一化：把 traj payload 里的 messages 合进 meta（冷启动 sqlite 的 messages 存在
+        # traj dict 里、不在 meta；replay_sample_to_metadata 已实现该提取）。这样 rollout
+        # (token-ids 在 meta) 和冷启动 (messages 在 traj) 两种来源都能取到 prompt/response，
+        # 不再因 meta 缺字段被整条 continue 跳过（回放空转 bug）。
+        norm = replay_sample_to_metadata((_tid, _traj, meta))
+        # v1 路径：buffer 存 token ids（prompt_token_ids/response_token_ids），直接用。
+        # v0/冷启动路径：有 messages，用 tokenizer 现切 prompt/response。
+        prompt_ids = norm.get("prompt_token_ids")
+        resp_ids = norm.get("response_token_ids")
         if prompt_ids and resp_ids:
-            prompt_ids = [int(t) for t in prompt_ids][:max_length]
-            resp_ids = [int(t) for t in resp_ids][:max_length]
+            prompt_ids = [int(t) for t in prompt_ids]
+            resp_ids = [int(t) for t in resp_ids]
+            prompt_ids, resp_ids = _clamp_prompt_response(prompt_ids, resp_ids, max_length, max_model_len)
         else:
-            messages = meta.get("messages") or []
+            messages = norm.get("messages") or []
             if not messages:
                 continue
-            prompt_ids, resp_ids = _split_prompt_response(messages, tokenizer, max_length)
+            prompt_ids, resp_ids = _split_prompt_response(messages, tokenizer, max_length, max_model_len)
         if not prompt_ids or not resp_ids:
             # no_padding_2_padding asserts prompt_len > 0; skip degenerate rows
             continue
@@ -242,8 +258,38 @@ def build_replay_rows(
     }
 
 
+def _clamp_prompt_response(
+    prompt_ids: list[int],
+    resp_ids: list[int],
+    max_response_length: int,
+    max_model_len: int | None,
+) -> tuple[list[int], list[int]]:
+    """Clamp (prompt, response) to the rollout length contract (pure, unit-tested).
+
+    Mirrors the rollout gateway ``convert_buffer_to_trajectory`` (verl
+    recipe_custom/agent/gateway/trajectory_buffer.py:166-171) so a replayed
+    trajectory is truncated exactly like the rollout that produced it:
+      1. response is capped at ``max_response_length``;
+      2. prompt is kept whole, only its HEAD is trimmed if prompt+response would
+         exceed ``max_model_len`` (keep the newest prompt tokens, reserve >=1 for
+         a response) -- prompt is context (mask=0), response is what's trained.
+
+    ``max_model_len=None`` -> legacy behaviour: prompt and response each capped at
+    ``max_response_length`` independently (no cross total-budget coupling).
+    """
+    resp_ids = resp_ids[:max_response_length]
+    if max_model_len is None or max_model_len <= 0:
+        return prompt_ids[:max_response_length], resp_ids
+    # Reserve at least one slot for a response, then trim prompt HEAD to fit total.
+    prompt_capacity = max_model_len - (1 if resp_ids else 0)
+    if len(prompt_ids) > prompt_capacity:
+        prompt_ids = prompt_ids[len(prompt_ids) - prompt_capacity :]
+    resp_ids = resp_ids[: max(0, max_model_len - len(prompt_ids))]
+    return prompt_ids, resp_ids
+
+
 def _split_prompt_response(
-    messages: list[dict], tokenizer: Any, max_length: int
+    messages: list[dict], tokenizer: Any, max_length: int, max_model_len: int | None = None
 ) -> tuple[list[int], list[int]]:
     """Split a chat trajectory into (prompt_ids, response_ids).
 
@@ -251,7 +297,9 @@ def _split_prompt_response(
     response = the assistant/tool turns the policy is trained on. Uses the
     tokenizer chat template; the exact assistant-span recovery (offset map) is
     refined on the GPU cluster, but the prompt/response BOUNDARY here is what
-    no_padding_2_padding needs to slice correctly.
+    no_padding_2_padding needs to slice correctly. Length clamp goes through
+    ``_clamp_prompt_response`` so messages-path and token-ids-path share ONE
+    truncation contract (both align with rollout).
     """
     # First user turn (inclusive) is the prompt; the rest is the response.
     split = 1
@@ -271,6 +319,6 @@ def _split_prompt_response(
         ids = enc["input_ids"] if isinstance(enc, dict) else enc
         return list(ids)
 
-    prompt_ids = _enc(prompt_msgs, add_gen=True)[:max_length]
-    resp_ids = _enc(resp_msgs, add_gen=False)[: max(0, max_length - len(prompt_ids))]
-    return prompt_ids, resp_ids
+    prompt_ids = _enc(prompt_msgs, add_gen=True)
+    resp_ids = _enc(resp_msgs, add_gen=False)
+    return _clamp_prompt_response(prompt_ids, resp_ids, max_length, max_model_len)

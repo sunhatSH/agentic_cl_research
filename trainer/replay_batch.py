@@ -39,11 +39,14 @@ def prepare_replay_rows(
     batch_size: int,
     max_length: int = 4096,
     warmup_size: int = 0,
+    max_model_len: int | None = None,
 ) -> dict[str, Any]:
     """Sample + weight + tokenize replay rows. Empty dict when nothing to add.
 
     ``warmup_size`` ramps the effective batch size while the buffer is still
-    filling (see ``effective_replay_batch_size``).
+    filling (see ``effective_replay_batch_size``). ``max_length`` is the response
+    cap and ``max_model_len`` the prompt+response total cap -- both forwarded to
+    ``build_replay_rows`` so replay truncation matches the rollout contract.
     """
     if buffer is None or batch_size <= 0 or tokenizer is None:
         return {}
@@ -58,4 +61,6 @@ def prepare_replay_rows(
 
     replay_inputs = [replay_sample_to_metadata(s) for s in samples]
     token_weights = weighting.compute(replay_inputs) if weighting is not None else None
-    return build_replay_rows(samples, token_weights, tokenizer, max_length=max_length)
+    return build_replay_rows(
+        samples, token_weights, tokenizer, max_length=max_length, max_model_len=max_model_len
+    )

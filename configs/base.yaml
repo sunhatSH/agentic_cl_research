@@ -116,6 +116,16 @@ cl:
                                   # 有 replay 行(CL loss 每步生效)。旧值 32 太稀疏(~2/mini batch)
   replay_warmup_size: 0           # >0: linearly ramp replay batch while buffer
                                   # fills (cold-start); 0 = full batch immediately
+  replay_max_length: ${data.max_response_length}   # replay 行 response token 上限。
+                                  # 【必须与 rollout 的 max_response_length 一致】——今天的
+                                  # rollout winner 明天会进 buffer 成为 replay，同一条轨迹
+                                  # 前后长度上限必须相同，否则 replay 会把本可完整的轨迹截断。
+                                  # 故插值跟随 data.max_response_length（r0=65536），不写死。
+                                  # 旧硬编码 4096 砍掉 64% 回复的 ~35% token，是 bug。
+  replay_max_model_len: ${actor_rollout_ref.rollout.max_model_len}  # replay prompt+response
+                                  # 总长上限，跟随 rollout 的 max_model_len(r0=131072)。与
+                                  # replay_max_length 一起构成和 rollout gateway 一致的截断契约：
+                                  # prompt 全留、response≤max_response_length(65536)、总≤此值(128k)。
   # Paper-evidence cadences (steps; 0 disables). See trainer/replay_metrics.py.
   buffer_stats_log_freq: 1        # log buffer.stats() -> wandb + logs/buffer_stats/*.jsonl
   forgetting_update_freq: 1       # recompute current-policy logprobs -> activate forgetting_risk

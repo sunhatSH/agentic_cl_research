@@ -9,7 +9,7 @@ concat 要求（transfer_queue 实测）：回放 chunk 字段集必须 == rollo
 
 from __future__ import annotations
 
-from trainer.cl_replay_hook_v1 import _REPLAY_ONLY_FIELDS, plan_replay_fields
+from trainer.cl_replay_hook_v1 import _REPLAY_ONLY_FIELDS, plan_replay_fields, replay_zero_fill_kind
 
 # 模拟 v1 session_worker 写 tq 的 rollout 字段集（worker.py:1055 起）。
 _ROLLOUT_FIELDS = [
@@ -84,3 +84,75 @@ def test_replay_missing_some_replay_only():
     plan = plan_replay_fields(partial, _ROLLOUT_FIELDS)
     assert "replay_token_weights" not in plan
     assert plan["is_replay"] == "use"
+
+
+# --- 补零 dtype/形状分类（r0 16:03 dtype mismatch 的根因回归测试）------------------
+
+
+def test_zero_fill_kind_sequence_long():
+    """2D int64 序列字段（含 loss_mask）→ long_seq，补零必须 torch.long。"""
+    for f in (
+        "prompts",
+        "responses",
+        "response_mask",
+        "loss_mask",
+        "input_ids",
+        "attention_mask",
+        "position_ids",
+    ):
+        assert replay_zero_fill_kind(f) == "long_seq", f
+
+
+def test_zero_fill_kind_float_sequence():
+    """2D float32 序列字段 → float（含 compute 阶段写回的 returns/entropy/token_level_*）。"""
+    for f in (
+        "rollout_log_probs",
+        "rm_scores",
+        "old_log_probs",
+        "ref_log_prob",
+        "advantages",
+        "returns",
+        "entropy",
+        "token_level_scores",
+        "token_level_rewards",
+    ):
+        assert replay_zero_fill_kind(f) == "float", f
+
+
+def test_zero_fill_kind_scalar_long():
+    """1D int64 标量张量字段 → long_scalar（形状 [n]，非 [n,R]）。"""
+    assert replay_zero_fill_kind("num_turns") == "long_scalar"
+
+
+def test_zero_fill_kind_int_scalar():
+    """python int 元数据 → int_scalar（补真实 int，非空串，避免下游 int-str 崩）。"""
+    for f in ("global_steps", "session_id", "min_global_steps", "max_global_steps"):
+        assert replay_zero_fill_kind(f) == "int_scalar", f
+
+
+def test_zero_fill_kind_empty_dict():
+    """multi_modal_inputs → empty_dict（补 {}，非空串，避免 forward .get 崩）。"""
+    assert replay_zero_fill_kind("multi_modal_inputs") == "empty_dict"
+
+
+def test_zero_fill_kind_non_tensor():
+    """纯文本非张量字段（raw_prompt/extra_info/uid/...）→ non_tensor，补空串 NonTensorStack。"""
+    for f in (
+        "raw_prompt",
+        "extra_info",
+        "uid",
+        "data_source",
+        "reward_model",
+        "trace_type",
+        "tools",
+        "tools_kwargs",
+        "agent_name",
+        "env_name",
+        "routed_experts",
+    ):
+        assert replay_zero_fill_kind(f) == "non_tensor", f
+
+
+def test_zero_fill_kind_unknown_defaults_float():
+    """未分类的字段默认 float（保守，避免漏网 dtype 崩成 long）。"""
+    assert replay_zero_fill_kind("some_new_field") == "float"

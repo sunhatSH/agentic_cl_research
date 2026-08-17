@@ -25,11 +25,14 @@ logger = logging.getLogger(__name__)
 
 # 从 tq 取的张量字段（与 rollout 写入对齐；缺失字段 kv_batch_get 忽略）。
 # prompts/attention_mask 用于回放行构建（v1 直接用 token ids，不重新 tokenize messages）。
+# input_ids（= prompt+response 拼接，session_worker worker.py:1037）作 prompt 还原兜底：
+# v1 实测 tq 里 rollout 行的 prompts field 常取到空 → 用 input_ids 减 responses 段还原 prompt。
 _TENSOR_FIELDS = [
     "prompts",
     "responses",
     "response_mask",
     "attention_mask",
+    "input_ids",
     "old_log_probs",
     "rollout_log_probs",
     "rm_scores",
@@ -48,6 +51,27 @@ def _row_to_list(row) -> list[float] | None:
         return [float(x) for x in row]
     except (TypeError, ValueError):
         return None
+
+
+def _recover_prompt_from_input_ids(
+    input_ids: list[float] | None, response_token_ids: list[int]
+) -> list[int] | None:
+    """从 input_ids 还原 prompt token ids（纯函数，离线单测）。
+
+    session_worker 存 ``input_ids = cat([prompt_ids, response_ids])``（1D 无 padding，
+    worker.py:1037）。回放行需要 prompt 作上下文（mask=0 不训练，但 forward 要看到），
+    而 v1 tq 的 ``prompts`` field 实测常取空 → 缺 prompt 会让 build_replay_rows 整条丢弃
+    （回放空转）。故用 ``input_ids`` 减去尾部 response 段还原 prompt。
+
+    prompt = input_ids[: len(input_ids) - len(response_token_ids)]。
+    input_ids 缺失、或长度 <= response（无 prompt 段可分）时返回 None。
+    """
+    if not input_ids or not response_token_ids:
+        return None
+    prompt_len = len(input_ids) - len(response_token_ids)
+    if prompt_len <= 0:
+        return None
+    return [int(t) for t in input_ids[:prompt_len]]
 
 
 def _tag_get(tag: dict, *keys, default=None):
@@ -148,7 +172,17 @@ def extract_trajectories_from_kvbatch(
         # 这里取出来塞 meta，_persist_rollout_status 落盘用（排查 reward 涨不动根因）。
         rei = _non_tensor_row("reward_extra_info", i)
         if isinstance(rei, dict):
-            for _k in ("task_done", "correctness", "trajectory", "safety"):
+            for _k in (
+                "task_done",
+                "correctness",
+                "trajectory",
+                "safety",
+                "tool",
+                "efficiency",
+                "planning",
+                "consistency",
+                "recovery",
+            ):
                 if _k in rei:
                     meta[f"reward_{_k}"] = rei[_k]
 
@@ -197,15 +231,26 @@ def extract_trajectories_from_kvbatch(
         # 直接存进 meta，build_replay_rows 走 v1 分支直接用（见 replay_forward.py）。
         # prompts 是 left-padded，用 attention_mask 去 padding；无 mask 时按 pad!=0 兜底。
         pids = _row_to_list(_tensor_row("prompts", i))
+        prompt_ids: list[int] | None = None
         if pids is not None:
             pmask = _row_to_list(_tensor_row("attention_mask", i))
             if pmask:
                 # attention_mask 覆盖 prompt+response，取前 len(prompts) 段
                 pmask = pmask[: len(pids)]
-                pids = [int(t) for t, m in zip(pids, pmask, strict=False) if m]
+                prompt_ids = [int(t) for t, m in zip(pids, pmask, strict=False) if m]
             else:
-                pids = [int(t) for t in pids]
-            meta["prompt_token_ids"] = pids
+                prompt_ids = [int(t) for t in pids]
+        # 兜底：prompts field 取空/缺失时（v1 实测常见），用 input_ids 减 response 段还原。
+        # input_ids = cat([prompt_ids, response_ids])（worker.py:1037，1D 无 padding），
+        # response_token_ids 上面已按 response_mask 去 padding。prompt = 前 (len(input)-len(resp)) 段。
+        # 缺了 prompt 会让 build_replay_rows 整条丢弃（回放空转），故必须还原。
+        if not prompt_ids and meta.get("response_token_ids"):
+            iid = _row_to_list(_tensor_row("input_ids", i))
+            recovered = _recover_prompt_from_input_ids(iid, meta["response_token_ids"])
+            if recovered:
+                prompt_ids = recovered
+        if prompt_ids:
+            meta["prompt_token_ids"] = prompt_ids
 
         # trajectory messages：v1 从 tag/extra_info 取（session_worker 存的 message_history）。
         trajectory = _tag_get(tag, "messages", "message_history")

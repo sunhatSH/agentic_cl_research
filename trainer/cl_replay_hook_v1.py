@@ -57,11 +57,37 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
     #   <=0 关闭 ramp（buffer 一有数据就满额回放）。R0 空启动 buffer 前几步不足时，
     #   sampler 会 min(采样量, buffer 实际大小) 尽可能回放、不报错。
     replay_warmup_size = int(cl.get("replay_warmup_size", 0))
+    # replay_max_length：回放行 prompt/response 各自的 token 上限。【必须与 rollout 的
+    # max_response_length 一致】——rollout winner 会进 buffer 成为 replay，同一条轨迹前后
+    # 长度上限必须相同，否则 replay 把本可完整的轨迹截断。base.yaml 用 ${data.max_response_length}
+    # 插值跟随（r0=65536）。旧硬编码 4096 砍掉 64% 回复 ~35% token，是 bug。config 缺失时
+    # fallback 到 data.max_response_length，仍缺才退 65536（与 rollout 默认对齐，不再用 4096）。
+    _data_cfg = cfg.get("data", {}) or {}
+    _default_max_len = int(_data_cfg.get("max_response_length", 65536) or 65536)
+    replay_max_length = int(cl.get("replay_max_length", _default_max_len) or _default_max_len)
+    # replay_max_model_len：prompt+response 总长上限，对齐 rollout 的 max_model_len(131072)。
+    # 与 replay_max_length(response 上限) 一起构成和 rollout 一致的截断契约（prompt 全留、
+    # response≤max_response_length、总≤max_model_len）。config 缺失时回退 data.max_model_len，
+    # 仍缺则 None（build_replay_rows 退回 legacy：prompt/response 各自截 replay_max_length）。
+    _default_model_len = _data_cfg.get("max_model_len")
+    if _default_model_len is None:
+        _default_model_len = ((cfg.get("actor_rollout_ref", {}) or {}).get("rollout", {}) or {}).get(
+            "max_model_len"
+        )
+    _rmml = cl.get("replay_max_model_len", _default_model_len)
+    replay_max_model_len = int(_rmml) if _rmml else None
     stats_log_freq = int(cl.get("buffer_stats_log_freq", 1))
     forgetting_update_freq = int(cl.get("forgetting_update_freq", 1))
     trainer_cfg = cfg.get("trainer", {}) or {}
     save_freq = int(trainer_cfg.get("save_freq", 0))
     exp_name = trainer_cfg.get("experiment_name", "cl")
+    # mini_batch_size：verl 的 make_iterator 断言 batch_size % mini_batch_size == 0。
+    # 掺回放行后总行数(rollout+replay)可能不是其整数倍 → 需补 is_padding=True 全零行。
+    # verl 在 trainer_base._update_actor 里 mini_batch_size = ppo_mini_batch_size * rollout.n。
+    _ar = cfg.get("actor_rollout_ref", {}) or {}
+    mini_batch_size = int((_ar.get("actor", {}) or {}).get("ppo_mini_batch_size", 0) or 0) * int(
+        (_ar.get("rollout", {}) or {}).get("n", 1) or 1
+    )
 
     weighting = None
     if lambda_replay > 0:
@@ -107,12 +133,18 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
             # 采样 eff_replay 条回放行；buffer 前几步不足时 prepare_replay_rows→sampler 会
             # min(采样量, buffer 大小) 尽可能回放（不报错），随 step 累积爬满。
             replay_rows = prepare_replay_rows(
-                buffer, weighting, tokenizer, eff_replay, warmup_size=replay_warmup_size
+                buffer,
+                weighting,
+                tokenizer,
+                eff_replay,
+                max_length=replay_max_length,
+                warmup_size=replay_warmup_size,
+                max_model_len=replay_max_model_len,
             )
             if replay_rows:
                 shuffle_seed = int(getattr(trainer, "global_steps", 0) or 0)
                 batch, replay_meta = _append_replay_rows_v1(
-                    batch, replay_rows, rl_batch, shuffle_seed=shuffle_seed
+                    batch, replay_rows, rl_batch, shuffle_seed=shuffle_seed, mini_batch_size=mini_batch_size
                 )
 
         # ── 2. 原生 actor 更新（worker 从 tq 按 batch.keys 取张量训练）──
@@ -258,7 +290,9 @@ def _persist_rollout_status(groups: dict, exp_name: str, step: int) -> None:
     print(f"[persist] rollout 全量轨迹 {len(groups)} queries → {out_file}", flush=True)
 
 
-def _append_replay_rows_v1(batch, replay_rows: dict, rl_batch, shuffle_seed: int = 0):
+def _append_replay_rows_v1(
+    batch, replay_rows: dict, rl_batch, shuffle_seed: int = 0, mini_batch_size: int = 0
+):
     """把回放张量写进 tq，返回 (合并后的 KVBatchMeta, 回放 KVBatchMeta).
 
     方案 A（RunLog §65）：concat 要求两 chunk 的 **field 名集合完全相等**
@@ -270,6 +304,7 @@ def _append_replay_rows_v1(batch, replay_rows: dict, rl_batch, shuffle_seed: int
       3. **给 rollout keys 补 3 个 replay 专属字段的零值**（镜像 verl 给已存在 key 加
          old_log_probs/advantages 的 async_put 追加语义，transferqueue_utils.py:255）。
       4. 用扩展后的 fields 重建 batch meta → concat 两侧字段集一致 → 通过。
+      5. 若掺回放行后总行数不是 mini_batch_size 的整数倍，补 is_padding=True 全零行。
 
     ⚠️ 集群验证项：本机无 transfer_queue，kv_batch_put 对已存在 key 是否"追加字段"
     （非整行替换）需集群实测（verl 自身用同路径加字段，强证据为追加）。"""
@@ -281,9 +316,15 @@ def _append_replay_rows_v1(batch, replay_rows: dict, rl_batch, shuffle_seed: int
     except ImportError:
         return batch, None
 
-    fields_td = _replay_tensordict(replay_rows, batch)
+    fields_td = _replay_tensordict(replay_rows, batch, global_steps=int(shuffle_seed))
     if fields_td is None or fields_td.batch_size[0] == 0:
         return batch, None
+
+    # 保留原 batch 的 extra_info（含 _step_once 写入的 temperature 等）。KVBatchMeta.concat
+    # 不会自动继承它（replay_meta 未带 extra_info → merged.extra_info=None），而 verl 的
+    # _update_actor 会 batch.extra_info.update(...) → None 崩（r0 19:57 第二次崩）。故 concat
+    # 后手动回填。
+    extra_info = getattr(batch, "extra_info", None)
 
     n = fields_td.batch_size[0]
     base_step = int(shuffle_seed)
@@ -301,7 +342,9 @@ def _append_replay_rows_v1(batch, replay_rows: dict, rl_batch, shuffle_seed: int
     # ── 给 rollout keys 补 3 个 replay 专属字段（零值），使字段集与回放行一致 ──
     rollout_keys = list(getattr(batch, "keys", []) or [])
     batch_fields = list(getattr(batch, "fields", None) or [])
-    replay_only = [k for k in ("is_replay", "replay_response_mask", "replay_token_weights") if k not in batch_fields]
+    replay_only = [
+        k for k in ("is_replay", "replay_response_mask", "replay_token_weights") if k not in batch_fields
+    ]
     if rollout_keys and replay_only:
         m = len(rollout_keys)
         # response 段宽度 R：优先取回放行的（与回放 mask/weights 同宽），回退 1。
@@ -330,12 +373,154 @@ def _append_replay_rows_v1(batch, replay_rows: dict, rl_batch, shuffle_seed: int
         )
 
     merged = KVBatchMeta.concat([batch, replay_meta])
+
+    # ── 补 padding 行：verl 的 make_iterator 断言 batch_size % mini_batch_size == 0 ──
+    # 掺回放行后总行数(rollout+replay)可能不是 mini_batch_size(=ppo_mini_batch_size×n) 的
+    # 整数倍 → 加 is_padding=True 全零行补齐（r0 第四次崩：136 % 64 != 0）。
+    if mini_batch_size and mini_batch_size > 0:
+        total = len(list(getattr(merged, "keys", []) or []))
+        pad = (-total) % mini_batch_size
+        if pad > 0:
+            from tensordict.tensorclass import NonTensorStack
+
+            # padding 行的非张量字段必须按 replay_zero_fill_kind 分类补对类型（int_scalar
+            # 补 int、empty_dict 补 {}、其余补 ""）——之前一律补 "" → multi_modal_inputs
+            # 拿到 str，actor forward 的 extract_multi_modal_inputs 对它 .items() 崩
+            # （r0 第五次崩：'str' object has no attribute 'items'）。张量字段照零补。
+            pad_fields: dict = {}
+            for k in fields_td.keys():
+                v = fields_td[k]
+                if isinstance(v, torch.Tensor):
+                    pad_fields[k] = torch.zeros((pad, *v.shape[1:]), dtype=v.dtype)
+                    continue
+                kind = replay_zero_fill_kind(k)
+                if kind == "empty_dict":
+                    pad_fields[k] = NonTensorStack(*([{} for _ in range(pad)]))
+                elif kind == "int_scalar":
+                    pad_fields[k] = NonTensorStack(*([int(shuffle_seed)] * pad))
+                else:  # non_tensor / 其余
+                    pad_fields[k] = NonTensorStack(*([""] * pad))
+            pad_keys = [f"pad-{base_step}-{i}" for i in range(pad)]
+            pad_tags = [{"is_padding": True, "is_replay": False, "status": "finished"} for _ in range(pad)]
+            tq.kv_batch_put(
+                keys=pad_keys,
+                partition_id=_REPLAY_PARTITION,
+                fields=TensorDict(pad_fields, batch_size=pad),
+                tags=pad_tags,
+            )
+            pad_meta = KVBatchMeta(
+                keys=pad_keys,
+                tags=pad_tags,
+                partition_id=_REPLAY_PARTITION,
+                fields=list(fields_td.keys()),
+            )
+            merged = KVBatchMeta.concat([merged, pad_meta])
+            # padding 行与回放行一样是【临时】行，须随回放行一起 kv_clear（否则跨 step 在
+            # tq train 分区累积，污染下一 step 的采样）。
+            replay_meta = KVBatchMeta.concat([replay_meta, pad_meta])
+
+    merged.extra_info = extra_info
     return merged, replay_meta
 
 
 _REPLAY_ONLY_FIELDS = ("is_replay", "replay_response_mask", "replay_token_weights")
 _SEQ_FIELDS = ("input_ids", "attention_mask", "position_ids")
-_LONG_FIELDS = ("input_ids", "attention_mask", "position_ids", "prompts", "responses", "response_mask")
+# 2D int64 序列字段（session_worker 的 tq 张量 schema，worker.py:1054-1076）。
+# ⚠️ loss_mask 也是 int64（= response_mask）——之前漏掉 → 回放补零成 float32 →
+#   concat 报 dtype mismatch（r0 16:03 崩）。补零 dtype 用本集合 + _LONG_SCALAR_FIELDS 判定。
+_LONG_FIELDS = (
+    "input_ids",
+    "attention_mask",
+    "position_ids",
+    "prompts",
+    "responses",
+    "response_mask",
+    "loss_mask",
+)
+# 1D int64 标量字段（每行一个，如 num_turns）。补零形状 [n]，不是 [n, R]。
+_LONG_SCALAR_FIELDS = frozenset({"num_turns"})
+# python int 元数据字段（session_worker 存 python int，非张量也非 str）。回放补零若用
+# 空串 "" 会让下游数值运算（如 staleness = global_steps - min_global_steps）报 int-str 崩，
+# 故补真实 int（调用方传当前 global_steps）。
+_INT_SCALAR_FIELDS = frozenset(
+    {
+        "min_global_steps",
+        "max_global_steps",
+        "session_id",
+        "global_steps",
+    }
+)
+# dict 型非张量字段（multi_modal_inputs：文本任务是空 dict {}）。回放补零若用空串 ""，
+# actor forward 里对它 .get(...) 会 AttributeError（str 无 .get），故补空 dict {}。
+_EMPTY_DICT_FIELDS = frozenset({"multi_modal_inputs"})
+# 纯文本非张量字段（session_worker 用 NonTensorStack 存，list_of_dict_to_tensordict）。回放
+# 补零不能补成 torch.float32 张量，否则 concat 报 tensor-vs-non-tensor。补空串 NonTensorStack。
+_NON_TENSOR_FIELDS = frozenset(
+    {
+        "uid",
+        "raw_prompt",
+        "data_source",
+        "reward_model",
+        "extra_info",
+        "tools_kwargs",
+        "tools",
+        "agent_name",
+        "env_name",
+        "trace_type",
+        "routed_experts",
+    }
+)
+
+
+def replay_zero_fill_kind(field: str) -> str:
+    """回放补零字段按 dtype/形状/类型分类（纯函数，离线单测，不依赖 torch）。
+
+    Returns one of:
+      "long_seq"    2D int64 序列字段（prompts/responses/response_mask/loss_mask/input_ids/attention_mask/position_ids）
+      "long_scalar" 1D int64 标量张量字段（num_turns）
+      "int_scalar"  python int 元数据（global_steps/session_id/... → 补真实 int，非空串）
+      "empty_dict"  dict 型非张量字段（multi_modal_inputs → 补 {}）
+      "non_tensor"  其余非张量字段（raw_prompt/extra_info/uid/... → 补空串 NonTensorStack）
+      "float"       2D float32 序列字段（其余：rollout_log_probs/rm_scores/ref_log_prob/returns/entropy/token_level_* 等）
+    """
+    if field in _LONG_FIELDS:
+        return "long_seq"
+    if field in _LONG_SCALAR_FIELDS:
+        return "long_scalar"
+    if field in _INT_SCALAR_FIELDS:
+        return "int_scalar"
+    if field in _EMPTY_DICT_FIELDS:
+        return "empty_dict"
+    if field in _NON_TENSOR_FIELDS:
+        return "non_tensor"
+    return "float"
+
+
+def _probe_position_id_sections(batch) -> int:
+    """探测 rollout 侧 position_ids 每行的 section 数（M-RoPE 段数）。
+
+    Qwen3.5-9B 用 M-RoPE：session_worker 把 position_ids 每行存成 [S, T]（S=4，
+    纯文本也 expand 成 4 段，见 multi_modal_postprocess.py:138/168）。而回放行默认按
+    1D [T] 构建（replay_forward.py），二者 concat 打 nested tensor 时 dim 不一致 →
+    "Found dimension 1 ... dimension 2"（r0 第三次崩，index 127/128 = rollout|replay 边界）。
+
+    返回 rollout position_ids 的 section 数：per-row 是 [S,T]（tq 张量 [m,S,T]，ndim=3）
+    → 返回 S；per-row 是 [T]（tq 张量 [m,T]，ndim=2）→ 返回 1；探测失败 → 返回 1（保守）。
+    """
+    try:
+        import transfer_queue as tq
+
+        td = tq.kv_batch_get_by_meta(batch, select_fields=["position_ids"])
+        if td is None or "position_ids" not in td:
+            return 1
+        pid = td["position_ids"]
+        # tq 张量 batch 维在最前：[m, S, T] → per-row [S,T]（M-RoPE）；[m, T] → per-row [T]。
+        if hasattr(pid, "dim") and pid.dim() == 3:
+            return int(pid.shape[1])
+        return 1
+    except Exception as exc:  # noqa: BLE001 -- 探测失败不致命，退回 1D
+        print(f"[cl] v1: 探测 position_ids section 数失败({exc})；按 1 段(plain RoPE)处理", flush=True)
+        return 1
 
 
 def plan_replay_fields(replay_field_names, batch_fields):
@@ -361,7 +546,7 @@ def plan_replay_fields(replay_field_names, batch_fields):
     return plan
 
 
-def _replay_tensordict(replay_rows: dict, batch):
+def _replay_tensordict(replay_rows: dict, batch, global_steps: int = 0):
     """把 prepare_replay_rows 产出的张量 dict 转成 tq 需要的 TensorDict，字段对齐 rollout.
 
     方案 A（RunLog §65）：concat 要求回放行字段集 == rollout(``batch.fields``)。
@@ -390,16 +575,52 @@ def _replay_tensordict(replay_rows: dict, batch):
     inp = rows.get("input_ids")
     T = inp.shape[1] if inp is not None and inp.dim() == 2 else R
 
+    # M-RoPE section 数：rollout 侧 position_ids 每行是 [S,T]（Qwen3.5-9B S=4）。回放行
+    # 默认 1D [T]，二者 concat 打 nested tensor 会 dim 冲突（r0 第三次崩）。探测 S 后把
+    # 回放 position_ids reshape/广播成 [n,S,T]，与 rollout 对齐。
+    position_sections = _probe_position_id_sections(batch)
+
     aligned: dict = {}
     for f, src in plan.items():
         if src == "use":
-            aligned[f] = rows[f]
-        else:  # zero
+            val = rows[f]
+            # position_ids：回放构建为 [n,T]，rollout 为 [n,S,T]（M-RoPE）→ 广播补段对齐。
+            if f == "position_ids" and position_sections > 1 and hasattr(val, "dim") and val.dim() == 2:
+                val = val.unsqueeze(1).expand(-1, position_sections, -1).clone()
+            aligned[f] = val
+            continue
+        # 补零：按字段 dtype/形状分类（replay_zero_fill_kind，离线单测）。之前只按
+        # _LONG_FIELDS 猜 long/float，漏了 loss_mask（int64）和 num_turns（1D int64）
+        # 与非张量字段 → concat dtype/tensor-vs-non-tensor 崩。
+        kind = replay_zero_fill_kind(f)
+        if kind == "non_tensor":
+            from tensordict.tensorclass import NonTensorStack
+
+            # 非张量字段补空字符串，不能用 None —— transfer_queue 的 _pack_field_values
+            # 遇 None 会报 "some batch positions were not filled"（r0 第三次崩）。
+            aligned[f] = NonTensorStack(*([""] * n))
+        elif kind == "int_scalar":
+            from tensordict.tensorclass import NonTensorStack
+
+            # python int 元数据（global_steps/session_id/min|max_global_steps）：补真实 int，
+            # 不能补空串——下游 staleness = global_steps - min_global_steps 会 int-str 崩。
+            aligned[f] = NonTensorStack(*([int(global_steps)] * n))
+        elif kind == "empty_dict":
+            from tensordict.tensorclass import NonTensorStack
+
+            # multi_modal_inputs 文本任务是 {}：补空 dict，不能补空串——actor forward
+            # 对它 .get(...) 时 str 无 .get 会 AttributeError。
+            aligned[f] = NonTensorStack(*([{} for _ in range(n)]))
+        elif kind == "long_scalar":
+            aligned[f] = torch.zeros(n, dtype=torch.long)
+        elif f == "position_ids" and position_sections > 1:
+            # M-RoPE：补零也要 [n,S,T]，否则与 rollout 的 3D position_ids dim 不一致。
+            aligned[f] = torch.zeros((n, position_sections, T), dtype=torch.long)
+        else:  # long_seq / float：2D 序列字段
             width = T if f in _SEQ_FIELDS else R
-            dtype = torch.long if f in _LONG_FIELDS else torch.float32
+            dtype = torch.long if kind == "long_seq" else torch.float32
             aligned[f] = torch.zeros((n, width), dtype=dtype)
     return TensorDict(aligned, batch_size=n)
-
 
 
 def _clear_replay_keys(replay_meta) -> None:
