@@ -482,7 +482,7 @@ def main() -> None:
     ap.add_argument("--max-concurrent", type=int, default=32)
     ap.add_argument("--backend", default="e2b", help="sandbox backend (e2b|local)")
     ap.add_argument("--template", default="agentic-cl-sandbox", help="sandbox template name")
-    ap.add_argument("--actor-model", default="openai/gpt-5")
+    ap.add_argument("--actor-model", default="gpt-5")
     ap.add_argument("--actor-impl", default="hermes_cli",
                     choices=["hermes_cli", "hermes_structured"],
                     help="actor backend: hermes_cli (stdout, default) | "
