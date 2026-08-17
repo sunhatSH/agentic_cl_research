@@ -37,7 +37,10 @@ ARG OPENCLAW_VERSION=latest
 # Pinned to a release tag (matches the verl-hermes-remote-agent image family).
 # Override at build time with --build-arg. See doc/Agent轨迹_Schema.md §0:
 # training uses Hermes (spawn synchronous, child-trace separated), not OpenClaw.
-ARG HERMES_VERSION=v2026.7.7.2
+# ★ 版本锁定（2026-08-17，勿升级）：v2026.7.7.2 的 `hermes chat -q` session 管理变化，
+#   冷启动采集（sandbox_grpo_collect._hermes_chat）报 "Session not found"（242 条全废）。
+#   v2026.6.5 是采集代码兼容的版本，升级需先同步改 _hermes_chat 的 session 调用。
+ARG HERMES_VERSION=v2026.6.5
 
 # 1. System tooling for agent ACTIONS (shell/file ops) + office/doc tasks.
 #    No model/GPU/inference deps — those live outside the sandbox.
