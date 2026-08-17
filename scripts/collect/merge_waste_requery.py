@@ -65,6 +65,8 @@ def _l3_waste_reasons(rounds_checker: dict) -> list[str]:
 
 
 def main() -> None:
+    global _COMPLETION_MIN
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--cleaned", default=str(_CLEANED))
     ap.add_argument("--l3-dir", default=str(_L3_DIR))
@@ -73,7 +75,6 @@ def main() -> None:
     ap.add_argument("--completion-min", type=float, default=_COMPLETION_MIN)
     args = ap.parse_args()
 
-    global _COMPLETION_MIN
     _COMPLETION_MIN = args.completion_min
 
     # L2 不合格行号
