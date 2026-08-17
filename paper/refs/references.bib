@@ -25,13 +25,26 @@
 
 @article{A11,
   title   = {Overcoming catastrophic forgetting in neural networks},
-  author  = {Kirkpatrick, James and Pascanu, Razvan and Rabinowitz, Neil and others},
+  author  = {Kirkpatrick, James and Pascanu, Razvan and Rabinowitz, Neil and Veness, Joel and Desjardins, Guillaume and Rusu, Andrei A. and Milan, Kieran and Quan, John and Ramalho, Tiago and Grabska-Barwinska, Agnieszka and Hassabis, Demis and Clopath, Claudia and Kumaran, Dharshan and Hadsell, Raia},
   journal = {Proceedings of the National Academy of Sciences},
   volume  = {114},
   number  = {13},
   pages   = {3521--3526},
   year    = {2017},
   note    = {EWC: Fisher-weighted quadratic penalty on important parameters.}
+}
+
+@inproceedings{A12,
+  title     = {Continual Learning Through Synaptic Intelligence},
+  author    = {Zenke, Friedemann and Poole, Ben and Ganguli, Surya},
+  booktitle = {International Conference on Machine Learning (ICML)},
+  series    = {PMLR},
+  volume    = {70},
+  pages     = {3987--3995},
+  year      = {2017},
+  eprint    = {1703.04200},
+  archivePrefix = {arXiv},
+  note      = {SI: online per-synapse importance; regularization-based CL alongside EWC.}
 }
 
 % ── B. LLM Agent continual learning & RL training ─────────────────────────────
@@ -63,6 +76,15 @@
   note   = {GRPO variance reduction is driven by mini-batch rollout count B = Q*G.}
 }
 
+@article{B8,
+  title  = {DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models},
+  author = {Shao, Zhihong and Wang, Peiyi and Zhu, Qihao and Xu, Runxin and Song, Junxiao and Bi, Xiao and Zhang, Haowei and Zhang, Mingchuan and Li, Y. K. and Wu, Y. and Guo, Daya},
+  year   = {2024},
+  eprint = {2402.03300},
+  archivePrefix = {arXiv},
+  note   = {Original GRPO paper: group-relative advantage estimation; our policy-gradient baseline.}
+}
+
 % ── C. GUI Agent RL & continual learning ──────────────────────────────────────
 
 @article{C1,
@@ -82,4 +104,15 @@
   year   = {2017},
   eprint = {1706.08840},
   archivePrefix = {arXiv}
+}
+
+% ── E. RL training framework ──────────────────────────────────────────────────
+
+@article{E1,
+  title  = {HybridFlow: A Flexible and Efficient RLHF Framework},
+  author = {Sheng, Guangming and Zhang, Chi and Ye, Zilingfeng and Wu, Xibin and Zhang, Wang and Zhang, Ru and Peng, Yanghua and Lin, Haibin and Wu, Chuan},
+  year   = {2024},
+  eprint = {2409.19256},
+  archivePrefix = {arXiv},
+  note   = {The verl RL framework; our composite CL objective is injected with no fork.}
 }

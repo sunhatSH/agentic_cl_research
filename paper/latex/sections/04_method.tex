@@ -38,6 +38,22 @@ The final reward aggregates multiplicatively:
 
 Safety as a $\{0,1\}$ gate zeroes the entire reward if triggered. Unfinished trajectories still receive trajectory credit (process has value) but no completion bonus or correctness credit. JSON parse failures are retried once; on a second failure the trajectory is discarded. A GRPO group losing over half its trajectories is dropped entirely.
 
+\subsection{Task Difficulty Annotation}
+\label{sec:difficulty}
+
+Buckets partition tasks by \textbf{capability domain}, not by difficulty: a task's absolute difficulty drifts as the policy improves, so difficulty cannot serve as a stable partitioning axis. Difficulty is nonetheless useful---as one of the four \textbf{priority signals} in the replay buffer (within-bucket relative difficulty, Section~\ref{sec:buffer}) and for \textbf{difficulty-stratified analysis} of where the policy succeeds or fails.
+
+We therefore annotate each task with a \textbf{difficulty score} on a $1$--$10$ integer scale. Each task is scored by \textbf{two independent frozen LLM annotators} (grok-4.5 and gpt-5.6-luna) under a shared rubric. The rubric asks for the task's \textbf{absolute completion difficulty}---not answer quality, task value, or text length---and anchors the scale along \textbf{four dimensions}, each with explicit reference points:
+
+\begin{itemize}
+  \item \textbf{Tool/operation complexity}: $1$--$2$ for no tool or a single simple operation, up to $9$--$10$ for long tool chains with state management and failure recovery.
+  \item \textbf{Reasoning depth}: $1$--$2$ for single-step judgment, up to $9$--$10$ for deep problem decomposition and open-ended solving.
+  \item \textbf{Domain-knowledge requirement}: $1$--$2$ for common sense, up to $9$--$10$ for deep cross-domain expertise.
+  \item \textbf{Output complexity}: from a short answer to a multi-file, multi-format deliverable.
+\end{itemize}
+
+The two annotators' scores are \textbf{both retained} (rather than averaged) so that annotator disagreement itself remains inspectable.
+
 \subsection{Nine-Bucket Experience Replay Buffer}
 \label{sec:buffer}
 

@@ -11,11 +11,14 @@
 | A2 | Experience Replay for Continual Learning (CLEAR) | Rolnick et al. | 2019 | 1811.11682 | 经验回放基线、R0 对照 |
 | A9 | Prioritized Generative Replay | Wang et al. | 2023 | 2311.11557 | 优先级回放（相关工作引用） |
 | A11 | Overcoming catastrophic forgetting (EWC) | Kirkpatrick et al. | 2017 | PNAS | 参数空间正则对照 |
+| A12 | Continual Learning Through Synaptic Intelligence (SI) | Zenke et al. | 2017 | 1703.04200 (ICML) | 参数空间正则对照（与 EWC 并列） |
 | B2 | RFT Naturally Mitigates Forgetting | Lai et al. | 2026 | 2507.05386 | RFT vs SFT 遗忘对比 |
 | B4 | Multi-Turn RL for LLM Agents: Echo Trap | Wang et al. | 2025 | 2504.20073 | 策略多样性坍缩、熵正则动机 |
 | B7 | It Takes Two: Your GRPO Is Secretly DPO | Wu et al. | 2025 | 2510.00977 | GRPO 理论联系 |
+| B8 | DeepSeekMath (GRPO 原论文) | Shao et al. | 2024 | 2402.03300 | GRPO 提出出处、策略梯度基线 |
 | C1 | CGL: Advancing Continual GUI Learning via RFT | Yao et al. | 2025 | 2504.20073 | GUI 持续学习对照 |
 | D1 | Gradient Episodic Memory (GEM) | Lopez-Paz & Ranzato | 2017 | 1706.08840 | 灾难性遗忘经典 |
+| E1 | HybridFlow (verl 框架) | Sheng et al. | 2024 | 2409.19256 | 零框架改动注入的底层 RL 框架 |
 
 ## 二、候选论文（调研背景，未入 bib）
 
