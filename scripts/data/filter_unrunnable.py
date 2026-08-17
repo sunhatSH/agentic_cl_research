@@ -70,13 +70,13 @@ def _judge(query: str, client) -> dict:
 
 
 def _ensure_key() -> None:
-    if os.environ.get("SUFY_API_KEY", "").strip():
+    if os.environ.get("TOKENHUB_API_KEY", "").strip():
         return
     env = _REPO / "docker" / "sandbox" / "runtime.env"
     if env.is_file():
         for line in env.read_text(encoding="utf-8").splitlines():
             if line.strip().startswith("AGENT_MODEL_KEY") and "=" in line:
-                os.environ["SUFY_API_KEY"] = line.split("=", 1)[1].strip().strip('"').strip("'")
+                os.environ["TOKENHUB_API_KEY"] = line.split("=", 1)[1].strip().strip('"').strip("'")
                 break
 
 

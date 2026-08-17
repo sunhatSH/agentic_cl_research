@@ -46,11 +46,11 @@ echo "  stage 1 done."
 # ------------------------------------------------------------------ Stage 2: LLM 模型过滤 (LLMChecker)
 echo ""
 echo "=== Stage 2: LLMChecker ==="
-# Runtime creds: reuse sufy key from repo .env / runtime.env
+# Runtime creds: reuse tokenhub key from repo .env / runtime.env
 source "$REPO/scripts/env/load_tencent_env.sh" 2>/dev/null || true
-SUFY_KEY="${SUFY_API_KEY:-}"
-if [ -z "$SUFY_KEY" ] && [ -f "$REPO/.env" ]; then
-    SUFY_KEY="$(grep SUFY_API_KEY "$REPO/.env" 2>/dev/null | cut -d= -f2-)"
+TOKENHUB_KEY="${TOKENHUB_API_KEY:-}"
+if [ -z "$TOKENHUB_KEY" ] && [ -f "$REPO/.env" ]; then
+    TOKENHUB_KEY="$(grep TOKENHUB_API_KEY "$REPO/.env" 2>/dev/null | cut -d= -f2-)"
 fi
 
 # Build llmchecker config YAML.
@@ -61,12 +61,12 @@ output_dir: "$OUT_DIR/llmchecker"
 data_format: openai
 concurrency: $CONCURRENCY
 endpoints:
-  - base_url: https://openai.sufy.com/v1
+  - base_url: https://tokenhub.sensetime.com/v1
     model: deepseek-v4-pro-202606
     rpm: 30
     tpm: 500000
     keys:
-      - key: "$SUFY_KEY"
+      - key: "$TOKENHUB_KEY"
 max_retries: 2
 YAML
 

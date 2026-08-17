@@ -19,7 +19,7 @@
   阶段二（聚合归纳）：把阶段一所有提议喂给 LLM → 合并近义 → 输出最终
     {n_main, n_sub, taxonomy:[{main, subs:[...], definition, task_count}]}。
 
-走 tokenhub（本地开发机可达商汤内网；沙箱侧才用 sufy）。key 取 TOKENHUB_API_KEY。
+走 tokenhub（本地开发机可达商汤内网；沙箱侧也直连 tokenhub）。key 取 TOKENHUB_API_KEY。
 可用 DISCOVERY_API_BASE / DISCOVERY_API_KEY / DISCOVERY_MODEL 覆盖端点/密钥/模型。
 
 用法：
@@ -56,7 +56,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CLAWEVAL_TASKS = "/mnt/afs_agents/qinshilong/claw-eval/tasks"
 OUT_DIR = ROOT / "runs" / "_analysis" / "bucket_discovery"
 
-SUFY_BASE = os.environ.get("DISCOVERY_API_BASE", "https://tokenhub.sensetime.com/v1")
+DISCOVERY_BASE = os.environ.get("DISCOVERY_API_BASE", "https://tokenhub.sensetime.com/v1")
 
 # Multimodal categories (M-series) — excluded by default (project uses text-only 195).
 _MULTIMODAL_CATS = {
@@ -67,7 +67,7 @@ _MULTIMODAL_CATS = {
 
 
 def _load_key() -> str:
-    # 归纳在开发机本地跑(不经沙箱),用 tokenhub(商汤内网可达);沙箱侧才需 sufy。
+    # 归纳在开发机本地跑(不经沙箱),用 tokenhub(商汤内网可达);沙箱侧也走 tokenhub。
     # 可用 DISCOVERY_API_KEY 覆盖 key 变量名/值。
     key = os.environ.get("DISCOVERY_API_KEY", "") or os.environ.get("TOKENHUB_API_KEY", "")
     if not key:
@@ -92,7 +92,7 @@ def _chat(messages: list[dict], model: str, key: str, max_tokens: int = 1024, re
     for attempt in range(retries):
         try:
             resp = httpx.post(
-                f"{SUFY_BASE}/chat/completions",
+                f"{DISCOVERY_BASE}/chat/completions",
                 json={"model": model, "messages": messages, "temperature": 0.0, "max_tokens": max_tokens},
                 headers={"Authorization": f"Bearer {key}"},
                 timeout=180.0,
@@ -239,7 +239,7 @@ _STAGE2_SYSTEM = textwrap.dedent("""\
 
 def stage2_aggregate(proposals: list[dict], model: str, key: str) -> dict:
     # 压缩 payload：把 193 条逐条提议去重成"唯一(主桶,子桶)对 + 出现次数"，
-    # 避免一次性发几百条重复文本撑爆 sufy 网关(曾致 502 Bad Gateway)。
+    # 避免一次性发几百条重复文本撑爆 tokenhub 网关(曾致 502 Bad Gateway)。
     pair_counts = Counter((p["main_bucket"], p["sub_bucket"]) for p in proposals)
     pairs = [{"main": m, "sub": s, "count": c} for (m, s), c in pair_counts.most_common()]
     payload = json.dumps(pairs, ensure_ascii=False)

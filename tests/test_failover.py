@@ -62,22 +62,22 @@ def _patch_clients(monkeypatch, mapping):
 
 
 def test_first_model_502_switches_to_same_provider_next(monkeypatch):
-    # provider sufy: [A(502), B(ok)] -> should return B's answer
+    # provider vendor_a: [A(502), B(ok)] -> should return B's answer
     _patch_clients(monkeypatch, {"A": [_http_error(502)], "B": ["ok:B"]})
-    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    role = _role([ResolvedProvider("vendor_a", [_ep("A"), _ep("B")])])
     c = FailoverChatClient(role)
     assert c.chat([]) == "ok:B"
     assert c.model == "B"  # promoted to default
 
 
 def test_provider_fully_down_switches_provider(monkeypatch):
-    # sufy: [A(502), B(502)] all down; tokenhub: [C(ok)]
+    # vendor_a: [A(502), B(502)] all down; tokenhub: [C(ok)]
     _patch_clients(
         monkeypatch,
         {"A": [_http_error(502)], "B": [_http_error(503)], "C": ["ok:C"]},
     )
     role = _role([
-        ResolvedProvider("sufy", [_ep("A"), _ep("B")]),
+        ResolvedProvider("vendor_a", [_ep("A"), _ep("B")]),
         ResolvedProvider("tokenhub", [_ep("C")]),
     ])
     c = FailoverChatClient(role)
@@ -88,7 +88,7 @@ def test_provider_fully_down_switches_provider(monkeypatch):
 def test_success_updates_default_next_call_starts_there(monkeypatch):
     # First call: A fails, B ok -> default becomes B. Second call: B ok directly.
     _patch_clients(monkeypatch, {"A": [_http_error(502)], "B": ["ok:B1", "ok:B2"]})
-    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    role = _role([ResolvedProvider("vendor_a", [_ep("A"), _ep("B")])])
     c = FailoverChatClient(role)
     assert c.chat([]) == "ok:B1"
     assert c.chat([]) == "ok:B2"  # starts at B now, A not retried
@@ -96,7 +96,7 @@ def test_success_updates_default_next_call_starts_there(monkeypatch):
 
 def test_all_endpoints_failed_raises(monkeypatch):
     _patch_clients(monkeypatch, {"A": [_http_error(502)], "B": [_http_error(500)]})
-    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    role = _role([ResolvedProvider("vendor_a", [_ep("A"), _ep("B")])])
     c = FailoverChatClient(role)
     with pytest.raises(AllEndpointsFailed):
         c.chat([])
@@ -105,7 +105,7 @@ def test_all_endpoints_failed_raises(monkeypatch):
 def test_non_retryable_400_surfaces_immediately(monkeypatch):
     # 400 = bad request; retrying another model would not help -> re-raise as-is
     _patch_clients(monkeypatch, {"A": [_http_error(400)], "B": ["ok:B"]})
-    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    role = _role([ResolvedProvider("vendor_a", [_ep("A"), _ep("B")])])
     c = FailoverChatClient(role)
     with pytest.raises(httpx.HTTPStatusError):
         c.chat([])
@@ -115,7 +115,7 @@ def test_disk_state_roundtrip(monkeypatch, tmp_path):
     # First client discovers B works and persists it; a fresh client reads B as default.
     state = tmp_path / "endpoint_state.json"
     _patch_clients(monkeypatch, {"A": [_http_error(502)], "B": ["ok:B", "ok:B2"]})
-    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    role = _role([ResolvedProvider("vendor_a", [_ep("A"), _ep("B")])])
     c1 = FailoverChatClient(role, state_path=str(state))
     assert c1.chat([]) == "ok:B"
     saved = json.loads(state.read_text())
@@ -128,7 +128,7 @@ def test_disk_state_roundtrip(monkeypatch, tmp_path):
 def test_rotation_orthogonal_to_failover(monkeypatch):
     # rotate_every=1 advances default each call among available models.
     _patch_clients(monkeypatch, {"A": ["a1", "a2"], "B": ["b1", "b2"]})
-    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])], rotate_every=1)
+    role = _role([ResolvedProvider("vendor_a", [_ep("A"), _ep("B")])], rotate_every=1)
     c = FailoverChatClient(role)
     r1 = c.chat([])  # rotate: mi 0->1 (B), B ok
     r2 = c.chat([])  # rotate: mi 1->0 (A), A ok
@@ -152,7 +152,7 @@ def test_truncation_retries_same_model_with_doubled_budget(monkeypatch):
     # reward judge (escalate=True): A truncates twice then succeeds -> stays on A,
     # budgets 512,1024,2048.
     created = _patch_clients(monkeypatch, {"A": [_trunc(), _trunc(), "ok:A"]})
-    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    role = _role([ResolvedProvider("vendor_a", [_ep("A"), _ep("B")])])
     c = FailoverChatClient(role, escalate_on_truncation=True)
     assert c.chat([], max_tokens=512) == "ok:A"
     assert c.model == "A"  # never failed over
@@ -166,7 +166,7 @@ def test_truncation_exhausts_escalation_then_next_model(monkeypatch):
         monkeypatch,
         {"A": [_trunc(), _trunc(), _trunc(), _trunc()], "B": ["ok:B"]},
     )
-    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    role = _role([ResolvedProvider("vendor_a", [_ep("A"), _ep("B")])])
     c = FailoverChatClient(role, escalate_on_truncation=True)
     assert c.chat([], max_tokens=512) == "ok:B"
     assert created["A"].max_tokens_seen == [512, 1024, 2048, 4096]  # 4 escalations
@@ -177,7 +177,7 @@ def test_truncation_exhausts_escalation_then_next_model(monkeypatch):
 def test_non_truncation_error_does_not_escalate(monkeypatch):
     # A 502 -> immediately next model, NO budget doubling on A (even with escalate).
     created = _patch_clients(monkeypatch, {"A": [_http_error(502)], "B": ["ok:B"]})
-    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    role = _role([ResolvedProvider("vendor_a", [_ep("A"), _ep("B")])])
     c = FailoverChatClient(role, escalate_on_truncation=True)
     assert c.chat([], max_tokens=512) == "ok:B"
     assert created["A"].calls == 1  # tried once, no retry
@@ -188,7 +188,7 @@ def test_truncation_without_escalation_fails_over_immediately(monkeypatch):
     # Default (questioner/observer, escalate=False): A truncates ONCE -> straight
     # to B, no budget doubling on A.
     created = _patch_clients(monkeypatch, {"A": [_trunc()], "B": ["ok:B"]})
-    role = _role([ResolvedProvider("sufy", [_ep("A"), _ep("B")])])
+    role = _role([ResolvedProvider("vendor_a", [_ep("A"), _ep("B")])])
     c = FailoverChatClient(role)  # escalate_on_truncation defaults False
     assert c.chat([], max_tokens=512) == "ok:B"
     assert created["A"].calls == 1  # single attempt, no escalation

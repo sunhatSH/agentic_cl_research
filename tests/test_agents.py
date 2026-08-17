@@ -585,8 +585,8 @@ def test_config_resolve_observer_from_yaml():
     _reload_config(None)  # use default configs/agents.yaml
     try:
         ep = resolve_observer()
-        assert ep.base_url == "https://openai.sufy.com/v1"
-        assert ep.model == "openai/gpt-5.4-mini"
+        assert ep.base_url == "https://tokenhub.sensetime.com/v1"
+        assert ep.model == "gpt-5.4-mini"
         assert ep.temperature == 0.0
     finally:
         _reload_config(None)
@@ -599,10 +599,10 @@ def test_config_resolve_judge_from_yaml():
     _reload_config(None)
     try:
         ep = resolve_judge()
-        assert ep.base_url == "https://openai.sufy.com/v1"
+        assert ep.base_url == "https://tokenhub.sensetime.com/v1"
         # Judge model is the first in configs/agents.yaml reward.providers[0].models.
         # Kept in sync with the yaml (single source of truth); update both if changed.
-        assert ep.model == "openai/gpt-5.6-luna"
+        assert ep.model == "gpt-5.6-luna"
         assert ep.temperature == 0.0
     finally:
         _reload_config(None)
@@ -620,9 +620,9 @@ def test_config_resolve_questioner_from_yaml():
         # All reliable NON-thinking models — thinking models (deepseek/kimi) were
         # removed after iter9 showed they over-truncate on long prompts and cause
         # questioner_error via chained failover (2026-07-10 Iter10).
-        assert q_cfg.rotation[0].model == "qwen/qwen3.7-max"
-        assert q_cfg.rotation[1].model == "qwen/qwen3.6-plus"
-        assert q_cfg.rotation[2].model == "openai/gpt-5.4-mini"
+        assert q_cfg.rotation[0].model == "qwen3.7-max"
+        assert q_cfg.rotation[1].model == "qwen3.6-plus"
+        assert q_cfg.rotation[2].model == "gpt-5.4-mini"
         assert q_cfg.rotate_every == 5
     finally:
         _reload_config(None)
@@ -672,10 +672,10 @@ def test_config_validate_distinct_from_yaml():
 
 
 def test_config_key_env_resolves_from_env(monkeypatch):
-    """key_env in agents.yaml points to SUFY_API_KEY for the shared API key."""
+    """key_env in agents.yaml points to TOKENHUB_API_KEY for the shared API key."""
     from agents.config import _reload_config, resolve_observer
 
-    monkeypatch.setenv("SUFY_API_KEY", "my-secret-key")
+    monkeypatch.setenv("TOKENHUB_API_KEY", "my-secret-key")
     _reload_config(None)
     try:
         ep = resolve_observer()

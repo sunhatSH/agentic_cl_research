@@ -9,8 +9,8 @@ Planning/Consistency/Recovery），加权聚合：
 本脚本抽 N 条 rollout，用【新五维度 rubric】单独 judge 打分，对比 rollout_status 里
 已记录的【旧 trajectory 分数】，看新 rubric 抬了多少、是否更合理。
 
-⚠️ judge = openai/gpt-5.6-luna（走 https://openai.sufy.com/v1，SUFY_API_KEY），本机配好
-SUFY_API_KEY 即可跑，不需要集群。旧 trajectory 分数直接读 rollout_status，不重打旧 rubric。
+⚠️ judge = gpt-5.6-luna（走 https://tokenhub.sensetime.com/v1，TOKENHUB_API_KEY），本机配好
+TOKENHUB_API_KEY 即可跑，不需要集群。旧 trajectory 分数直接读 rollout_status，不重打旧 rubric。
 
 用法（集群）：
   python scripts/analysis/compare_trajectory_rubric.py --n 30 --exp qwen35_9b_b1_16gpu

@@ -3,11 +3,11 @@
 #
 # Two actors, data kept SEPARATE:
 #   local  : local vllm serving Qwen3.6-27B            -> $OUT_BASE/local/
-#   remote : remote model via sufy, e.g. openai/gpt-5   -> $OUT_BASE/remote/
+#   remote : remote model via tokenhub, e.g. gpt-5      -> $OUT_BASE/remote/
 # Agents (REQUIRED, remote, 3 DIFFERENT models):
-#   actor(remote)= openai/gpt-5   observer = openai/gpt-5-mini   questioner = anthropic/claude-sonnet-5
+#   actor(remote)= gpt-5   observer = gpt-5-mini   questioner = claude-sonnet-4-6
 #
-# Remote API (key + base) is sourced from the sufy key (SUFY_API_KEY in .env or
+# Remote API (key + base) is sourced from the tokenhub key (TOKENHUB_API_KEY in .env or
 # apodex_research env). If the remote endpoint is unreachable -> ABORT (this stage
 # needs observer+questioner; cannot proceed). E2B creds from docker/sandbox/tencent.env.
 #
@@ -27,21 +27,21 @@ BACKEND="${BACKEND:-e2b}"
 ACTORS="${ACTORS:-local remote}"
 OUT_BASE="${OUT_BASE:-$ROOT_DIR/data/mock/rollouts}"  # mock = 可行性验证数据，与正式数据隔离
 
-# remote API source (sufy). REMOTE_KEY/REMOTE_BASE override allowed.
+# remote API source (tokenhub). REMOTE_KEY/REMOTE_BASE override allowed.
 APODEX_ENV="${APODEX_ENV:-/mnt/afs_toolcall/sunhao4/apodex_research/configs/env_deepseek_v4_pro.env}"
-REMOTE_BASE="${REMOTE_BASE:-https://openai.sufy.com/v1}"
-REMOTE_KEY="${REMOTE_KEY:-${SUFY_API_KEY:-$(grep -h OPENAI_API_KEY "$APODEX_ENV" 2>/dev/null | head -1 | cut -d= -f2)}}"
+REMOTE_BASE="${REMOTE_BASE:-https://tokenhub.sensetime.com/v1}"
+REMOTE_KEY="${REMOTE_KEY:-${TOKENHUB_API_KEY:-$(grep -h OPENAI_API_KEY "$APODEX_ENV" 2>/dev/null | head -1 | cut -d= -f2)}}"
 
-# three DIFFERENT models (sufy vendor-prefixed ids; 已对 sufy /v1/models 核对存在)
-REMOTE_ACTOR_MODEL="${REMOTE_ACTOR_MODEL:-openai/gpt-5.5}"        # off-policy actor：sufy 最新 gpt-5.5
-OBSERVER_MODEL_ID="${OBSERVER_MODEL_ID:-openai/gpt-5.4-mini}"     # observer：sufy 最新 mini
-QUESTIONER_MODEL_ID="${QUESTIONER_MODEL_ID:-claude-4.6-sonnet}"   # questioner：sonnet 线最新（无 sonnet-5）
+# three DIFFERENT models (tokenhub ids, no vendor prefix; 已对 tokenhub /v1/models 核对存在)
+REMOTE_ACTOR_MODEL="${REMOTE_ACTOR_MODEL:-gpt-5.5}"              # off-policy actor：tokenhub gpt-5.5
+OBSERVER_MODEL_ID="${OBSERVER_MODEL_ID:-gpt-5.4-mini}"          # observer：mini
+QUESTIONER_MODEL_ID="${QUESTIONER_MODEL_ID:-claude-sonnet-4-6}" # questioner：sonnet 线
 
-# on-policy actor (27B) 走 sufy 而非本地 vllm（省 GPU；诉求 2026-07-03）。
-# LOCAL_VIA_SUFY=1（默认）：local 路也走 sufy 的 qwen/qwen3.6-27b，不起本地 vllm。
-# LOCAL_VIA_SUFY=0：回退到本地 vllm serve（旧行为，需 GPU + qwen3_5 vllm）。
-LOCAL_VIA_SUFY="${LOCAL_VIA_SUFY:-1}"
-LOCAL_SUFY_MODEL="${LOCAL_SUFY_MODEL:-qwen/qwen3.6-27b}"          # on-policy actor id on sufy
+# on-policy actor (27B) 走 tokenhub 而非本地 vllm（省 GPU；诉求 2026-07-03）。
+# LOCAL_VIA_REMOTE=1（默认）：local 路也走 tokenhub 的 qwen3.6-27b，不起本地 vllm。
+# LOCAL_VIA_REMOTE=0：回退到本地 vllm serve（旧行为，需 GPU + qwen3_5 vllm）。
+LOCAL_VIA_REMOTE="${LOCAL_VIA_REMOTE:-1}"
+LOCAL_REMOTE_MODEL="${LOCAL_REMOTE_MODEL:-qwen3.6-27b}"         # on-policy actor id on tokenhub
 
 # Questioner multi-model rotation (anti mode-collapse, 2026-06-22).
 # When set, overrides USERSIM_API_BASE/MODEL/KEY with a rotating pool.
@@ -67,7 +67,7 @@ fi
 [[ -n "$REMOTE_KEY" ]] || { echo "[rollout.sh] FATAL: no remote API key (looked in $APODEX_ENV). ABORT."; exit 5; }
 echo "[rollout.sh] checking remote models on $REMOTE_BASE ..."
 CHECK_MODELS=("$REMOTE_ACTOR_MODEL" "$OBSERVER_MODEL_ID" "$QUESTIONER_MODEL_ID")
-[[ "$LOCAL_VIA_SUFY" == "1" && " $ACTORS " == *" local "* ]] && CHECK_MODELS+=("$LOCAL_SUFY_MODEL")
+[[ "$LOCAL_VIA_REMOTE" == "1" && " $ACTORS " == *" local "* ]] && CHECK_MODELS+=("$LOCAL_REMOTE_MODEL")
 for M in "${CHECK_MODELS[@]}"; do
   code=$(curl -sS -m 40 -o /tmp/_chk.$$ -w '%{http_code}' "$REMOTE_BASE/chat/completions" \
     -H "Authorization: Bearer $REMOTE_KEY" -H "Content-Type: application/json" \
@@ -98,8 +98,8 @@ export LD_LIBRARY_PATH="$NVLIBS${LD_LIBRARY_PATH:-}"
 run_actor() {  # $1 = local|remote
   local actor="$1" base model key outdir
   if [[ "$actor" == "local" ]]; then
-    if [[ "$LOCAL_VIA_SUFY" == "1" ]]; then
-      base="$REMOTE_BASE"; model="$LOCAL_SUFY_MODEL"; key="$REMOTE_KEY"   # on-policy 27B via sufy
+    if [[ "$LOCAL_VIA_REMOTE" == "1" ]]; then
+      base="$REMOTE_BASE"; model="$LOCAL_REMOTE_MODEL"; key="$REMOTE_KEY"   # on-policy 27B via tokenhub
     else
       base="http://127.0.0.1:$PORT/v1"; model="$SERVED"; key="sk-local"  # local vllm fallback
     fi
@@ -117,7 +117,7 @@ VLLM_PID=""
 cleanup() { [[ -n "$VLLM_PID" ]] && { echo "[rollout.sh] stop vllm $VLLM_PID"; kill "$VLLM_PID" 2>/dev/null || true; }; }
 trap cleanup EXIT INT TERM
 
-if [[ " $ACTORS " == *" local "* && "$LOCAL_VIA_SUFY" != "1" ]]; then
+if [[ " $ACTORS " == *" local "* && "$LOCAL_VIA_REMOTE" != "1" ]]; then
   echo "[rollout.sh] starting local vllm ($MODEL_PATH, TP=$ACTOR_TP) ..."
   "$PY" -m vllm.entrypoints.openai.api_server --model "$MODEL_PATH" \
     --served-model-name "$SERVED" --port "$PORT" --tensor-parallel-size "$ACTOR_TP" \

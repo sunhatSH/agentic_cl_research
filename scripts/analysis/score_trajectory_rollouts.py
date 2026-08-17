@@ -8,7 +8,7 @@ messages 因 v1 tag 未带 message_history 全空，故用这份采集轨迹验�
 trajectory rubric 输入三通道：TASK（首条 user 消息）、TRAJECTORY（messages 序列化）、
 ENVIRONMENT DIFF（observer_reports 里的 state_diff，consistency 维度判据）。
 
-judge = openai/gpt-5.6-luna（sufy），本机配 SUFY_API_KEY 即可跑，不需要集群。
+judge = gpt-5.6-luna（tokenhub），本机配 TOKENHUB_API_KEY 即可跑，不需要集群。
 """
 from __future__ import annotations
 

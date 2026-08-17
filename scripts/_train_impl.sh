@@ -228,7 +228,7 @@ else
   [ -f "$ROOT_DIR/scripts/env/load_training_env.sh" ] && { set -a; source "$ROOT_DIR/scripts/env/load_training_env.sh"; set +a; }
   [ -f "$ROOT_DIR/scripts/env/load_tencent_env.sh" ] && { set -a; source "$ROOT_DIR/scripts/env/load_tencent_env.sh"; set +a; }
   # judge 端点权威来源 = configs/agents.yaml 的 reward 段(model_reward.py config-first 读它,
-  # 用 SUFY_API_KEY);env REWARD_* 仅 fallback。MODELING_BACKEND 已在上方集中区设,此处不重复。
+  # 用 TOKENHUB_API_KEY);env REWARD_* 仅 fallback。MODELING_BACKEND 已在上方集中区设,此处不重复。
 fi
 
 cd "$ROOT_DIR"

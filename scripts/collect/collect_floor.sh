@@ -22,7 +22,7 @@ OUT_DIR="$OUT_DIR/$TIMESTAMP"
 mkdir -p "$OUT_DIR"
 
 echo "=== Hermes Structured Collection ==="
-echo "Model: claude-4.6-sonnet (via sufy -> Anthropic)"
+echo "Model: claude-sonnet-4-6 (via tokenhub -> Anthropic)"
 echo "Concurrency: 64"
 echo "Queries: $ROOT/datasets/queries.jsonl"
 echo "Output: $OUT_DIR"
@@ -35,7 +35,7 @@ echo ""
   --backend e2b \
   --template node-python-hermes-26-7-1 \
   --queries "$ROOT/datasets/queries.jsonl" \
-  --actor-model "claude-4.6-sonnet" \
+  --actor-model "claude-sonnet-4-6" \
   --num-queries 0 \
   --max-turns 8 \
   --hermes-max-turns 30 \

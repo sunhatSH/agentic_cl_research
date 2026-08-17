@@ -12,7 +12,7 @@ external quality-check tools at /mnt/afs_toolcall/sunhao4/workspace/quality-chec
   Stage B — LLMChecker
     LLM-based 7-round quality annotation: mechanical → giveup → text_quality →
     scoring → verification → subagent → OCR. Each round reads prior findings.
-    Config via YAML; sufy endpoints for LLM.
+    Config via YAML; tokenhub endpoints for LLM.
 
 Usage:
     # Full QC pipeline
@@ -85,11 +85,11 @@ def _write_llmchecker_config(input_jsonl: Path, output_dir: Path) -> Path:
         "defaults": {"rpm": 60, "tpm": 500000},
         "endpoints": [
             {
-                "base_url": "https://openai.sufy.com/v1",
-                "model": "openai/gpt-5.4-mini",
+                "base_url": "https://tokenhub.sensetime.com/v1",
+                "model": "gpt-5.4-mini",
                 "rpm": 60,
                 "tpm": 500000,
-                "keys": [{"key": __import__("os").environ.get("SUFY_API_KEY", "")}],
+                "keys": [{"key": __import__("os").environ.get("TOKENHUB_API_KEY", "")}],
             }
         ],
         "concurrency": 8,

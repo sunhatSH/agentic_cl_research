@@ -9,7 +9,7 @@ Usage:
   # 2. 合作者填好后，用已打标样本作 few-shot，模型打全量
   python scripts/data/label_buckets.py --few-shot buckets_labeled.csv --write
 
-参考 (doc/模型配额申请_sufy.md): 脚本调用 sufy endpoint 和 SUFY_API_KEY。
+参考: 脚本调用 tokenhub endpoint 和 TOKENHUB_API_KEY。
 """
 
 from __future__ import annotations
@@ -174,18 +174,18 @@ def cmd_few_shot(few_shot_path: str, write: bool, model: str, dry_run: bool) -> 
 
     print(f"[label] 待模型补标: {len(unlabeled)} 条", flush=True)
 
-    # sufy API
-    api_key = os.environ.get("SUFY_API_KEY", "")
+    # tokenhub API
+    api_key = os.environ.get("TOKENHUB_API_KEY", "")
     if not api_key:
         env_file = ROOT / ".env"
         if env_file.is_file():
             for line in env_file.read_text(encoding="utf-8").splitlines():
-                if line.strip().startswith("SUFY_API_KEY="):
+                if line.strip().startswith("TOKENHUB_API_KEY="):
                     api_key = line.split("=", 1)[1].strip()
                     break
     if not api_key:
-        sys.exit("ERROR: SUFY_API_KEY not set (source scripts/env/load_training_env.sh)")
-    base_url = "https://openai.sufy.com/v1"
+        sys.exit("ERROR: TOKENHUB_API_KEY not set (source scripts/env/load_training_env.sh)")
+    base_url = "https://tokenhub.sensetime.com/v1"
 
     bucket_defs = _build_bucket_defs_text()
     example_text = _build_example_text(examples)
@@ -274,8 +274,8 @@ def main() -> None:
                     help="将打标结果写回 taskspec.yaml")
     ap.add_argument("--dry-run", action="store_true",
                     help="调模型但不写 yaml，仅打印结果")
-    ap.add_argument("--model", default="openai/gpt-5-mini",
-                    help="分类用的模型 (需便宜、稳定；默认 openai/gpt-5-mini)")
+    ap.add_argument("--model", default="gpt-5-mini",
+                    help="分类用的模型 (需便宜、稳定；默认 gpt-5-mini)")
     args = ap.parse_args()
 
     if args.generate_template:

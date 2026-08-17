@@ -13,7 +13,7 @@ Usage:
     # 无打桶（快速，桶全标 unknown）
     python scripts/data/taskspec_to_queries.py --output datasets/queries.jsonl
 
-    # LLM 打桶（需 SUFY_API_KEY 或 BUCKET_CLASSIFIER_* env）
+    # LLM 打桶（需 TOKENHUB_API_KEY 或 BUCKET_CLASSIFIER_* env）
     python scripts/data/taskspec_to_queries.py --classify --output datasets/queries.jsonl
 """
 from __future__ import annotations
@@ -102,9 +102,9 @@ def convert(taskspecs_dir: Path, output: Path, limit: int | None, *, classify: b
 
     client = None
     if classify:
-        # Ensure SUFY_API_KEY is set (reads AGENT_MODEL_KEY from runtime.env)
+        # Ensure TOKENHUB_API_KEY is set (reads AGENT_MODEL_KEY from runtime.env)
         import os as _os
-        if not _os.environ.get("SUFY_API_KEY", "").strip():
+        if not _os.environ.get("TOKENHUB_API_KEY", "").strip():
             env_file = Path(__file__).resolve().parent.parent / "docker" / "sandbox" / "runtime.env"
             if env_file.is_file():
                 for line in env_file.read_text(encoding="utf-8").splitlines():
@@ -113,7 +113,7 @@ def convert(taskspecs_dir: Path, output: Path, limit: int | None, *, classify: b
                         continue
                     k, _, v = line.partition("=")
                     if k.strip() == "AGENT_MODEL_KEY" and v.strip().strip('"').strip("'"):
-                        _os.environ["SUFY_API_KEY"] = v.strip().strip('"').strip("'")
+                        _os.environ["TOKENHUB_API_KEY"] = v.strip().strip('"').strip("'")
                         break
 
         from data_pipeline.classify import classify_query, make_default_client
@@ -197,7 +197,7 @@ def main() -> None:
     ap.add_argument("--taskspecs", default="data/taskspecs", help="taskspecs 根目录")
     ap.add_argument("--output", default="datasets/queries.jsonl", help="输出 queries JSONL")
     ap.add_argument("--limit", type=int, default=None, help="只处理前 N 个 task")
-    ap.add_argument("--classify", action="store_true", help="LLM 打桶（需 SUFY_API_KEY 或 BUCKET_CLASSIFIER_* env）")
+    ap.add_argument("--classify", action="store_true", help="LLM 打桶（需 TOKENHUB_API_KEY 或 BUCKET_CLASSIFIER_* env）")
     args = ap.parse_args()
 
     stats = convert(Path(args.taskspecs), Path(args.output), args.limit, classify=args.classify)

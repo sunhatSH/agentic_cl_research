@@ -84,7 +84,7 @@ actor_rollout_ref:
     fsdp_config:
       param_offload: true
 
-# verl reward_model worker 不启用（judge 走外部 sufy 服务）
+# verl reward_model worker 不启用（judge 走外部 tokenhub 服务）
 reward:
   reward_model:
     enable: false

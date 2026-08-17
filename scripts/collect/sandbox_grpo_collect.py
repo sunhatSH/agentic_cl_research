@@ -10,7 +10,7 @@ the 8-way GRPO collection loop the design calls for (doc/Sandbox_管理调度指
          (hermes calls the model endpoint over the network, executes tool actions
          in that sandbox); each slot produces a Trajectory
       3. dev-side reward judge scores each trajectory (anthropic/claude-4.8-opus
-         via sufy, three-dim completion/safety/robustness)
+         via tokenhub, three-dim completion/safety/robustness)
       4. GRPO advantage + select_winner -> winner固化
       5. sync_to_winner: loser slots align to winner's disk state + history
       6. winner messages appended to session_history (next query's prefix)
@@ -19,12 +19,12 @@ the 8-way GRPO collection loop the design calls for (doc/Sandbox_管理调度指
 Model-call topology (IMPORTANT — two distinct paths):
   - ACTOR (in-sandbox hermes): hermes runs inside the Tencent sandbox and calls
     the model endpoint configured by the runtime env vars AGENT_MODEL_BASE /
-    AGENT_MODEL_KEY / AGENT_MODEL_NAME. The sandbox reaches sufy directly,
-    AGENT_MODEL_BASE = https://openai.sufy.com/v1. (The dev machine is NOT used
+    AGENT_MODEL_KEY / AGENT_MODEL_NAME. The sandbox reaches tokenhub directly,
+    AGENT_MODEL_BASE = https://tokenhub.sensetime.com/v1. (The dev machine is NOT used
     as a bridge — the sandbox calls the model directly.)
   - OBSERVER / QUESTIONER / REWARD (dev-side): resolved on the dev machine from
     configs/agents.yaml (openai/gpt-5-mini / anthropic/claude-sonnet-5 rotation /
-    anthropic/claude-4.8-opus), calling sufy directly from the dev side.
+    claude-opus-4-8), calling tokenhub directly from the dev side.
 
 Two actor backends (--actor):
   - hermes   : the real path. Writes ~/.hermes/config.yaml + .env inside the

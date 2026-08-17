@@ -121,8 +121,8 @@ def _resolve_providers(role_cfg: dict, temperature: float) -> list[ResolvedProvi
     if providers_cfg:
         for p in providers_cfg:
             base = p.get("api_base", "")
-            key_env = p.get("key_env", "SUFY_API_KEY")
-            api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
+            key_env = p.get("key_env", "TOKENHUB_API_KEY")
+            api_key = _resolve_key(key_env, prefix_env="TOKENHUB_API_KEY")
             eps = [
                 ResolvedEndpoint(base_url=base, model=m, api_key=api_key, temperature=temperature)
                 for m in (p.get("models") or [])
@@ -136,8 +136,8 @@ def _resolve_providers(role_cfg: dict, temperature: float) -> list[ResolvedProvi
     base = role_cfg.get("api_base", "")
     model = role_cfg.get("model", "")
     if base and model:
-        key_env = role_cfg.get("key_env", "SUFY_API_KEY")
-        api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
+        key_env = role_cfg.get("key_env", "TOKENHUB_API_KEY")
+        api_key = _resolve_key(key_env, prefix_env="TOKENHUB_API_KEY")
         ep = ResolvedEndpoint(base_url=base, model=model, api_key=api_key, temperature=temperature)
         out.append(ResolvedProvider(name=base, endpoints=[ep]))
         return out
@@ -148,8 +148,8 @@ def _resolve_providers(role_cfg: dict, temperature: float) -> list[ResolvedProvi
         model = entry.get("model", "")
         if not (base and model):
             continue
-        key_env = entry.get("key_env", "SUFY_API_KEY")
-        api_key = _resolve_key(key_env, prefix_env="SUFY_API_KEY")
+        key_env = entry.get("key_env", "TOKENHUB_API_KEY")
+        api_key = _resolve_key(key_env, prefix_env="TOKENHUB_API_KEY")
         ep = ResolvedEndpoint(base_url=base, model=model, api_key=api_key, temperature=temperature)
         out.append(ResolvedProvider(name=entry.get("name", model), endpoints=[ep]))
     return out
@@ -187,13 +187,13 @@ def resolve_role(role: str, config_path: Path | str | None = None) -> ResolvedRo
         env_base = os.environ.get("USERSIM_API_BASE", "").strip()
         env_model = os.environ.get("USERSIM_MODEL", "").strip()
         if env_base and env_model:
-            ep = ResolvedEndpoint(env_base, env_model, os.environ.get("SUFY_API_KEY", "").strip() or "sk-local", temperature)
+            ep = ResolvedEndpoint(env_base, env_model, os.environ.get("TOKENHUB_API_KEY", "").strip() or "sk-local", temperature)
             return ResolvedRole(role, [ResolvedProvider("env", [ep])], rotate_every)
     else:
         env_base = os.environ.get(f"{prefix}_API_BASE", "").strip()
         env_model = os.environ.get(f"{prefix}_MODEL", "").strip()
         if env_base and env_model:
-            ep = ResolvedEndpoint(env_base, env_model, _resolve_key("SUFY_API_KEY", prefix_env="SUFY_API_KEY"), temperature)
+            ep = ResolvedEndpoint(env_base, env_model, _resolve_key("TOKENHUB_API_KEY", prefix_env="TOKENHUB_API_KEY"), temperature)
             return ResolvedRole(role, [ResolvedProvider("env", [ep])], rotate_every)
 
     # ── config-file providers ───────────────────────────────────────────────

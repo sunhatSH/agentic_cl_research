@@ -63,15 +63,15 @@ def _model_tag(actor_model: str) -> str:
 # ── Stage 1: queries generation + LLM classify ──────────────────────────
 
 
-def _ensure_sufy_key() -> None:
-    """Ensure SUFY_API_KEY is set for classify.py (reads AGENT_MODEL_KEY or runtime.env)."""
+def _ensure_tokenhub_key() -> None:
+    """Ensure TOKENHUB_API_KEY is set for classify.py (reads AGENT_MODEL_KEY or runtime.env)."""
     import os
 
-    if os.environ.get("SUFY_API_KEY", "").strip():
+    if os.environ.get("TOKENHUB_API_KEY", "").strip():
         return
     key = os.environ.get("AGENT_MODEL_KEY", "").strip()
     if key:
-        os.environ["SUFY_API_KEY"] = key
+        os.environ["TOKENHUB_API_KEY"] = key
         return
     env_file = _REPO / "docker" / "sandbox" / "runtime.env"
     if env_file.is_file():
@@ -81,7 +81,7 @@ def _ensure_sufy_key() -> None:
                 continue
             k, _, v = line.partition("=")
             if k.strip() == "AGENT_MODEL_KEY" and v.strip().strip('"').strip("'"):
-                os.environ["SUFY_API_KEY"] = v.strip().strip('"').strip("'")
+                os.environ["TOKENHUB_API_KEY"] = v.strip().strip('"').strip("'")
                 return
 
 
@@ -213,7 +213,7 @@ def stage_queries(*, taskspecs_dir: Path | None = None, queries_path: Path | Non
     print(f"  loaded {len(records)} taskspecs with seed_query")
 
     # 1b — classify bucket + persona + runnability (single LLM call per query)
-    _ensure_sufy_key()
+    _ensure_tokenhub_key()
     from data_pipeline.classify import make_default_client
 
     client = make_default_client()
@@ -320,7 +320,7 @@ def stage_collect(*, queries_path: Path, num_queries: int, max_concurrent: int,
     # (each call is stateless per session; LLM clients are thread-safe HTTP).
     observer = questioner = None
     if multi_turn:
-        _ensure_sufy_key()          # observer/questioner resolve SUFY_API_KEY from agents.yaml
+        _ensure_tokenhub_key()          # observer/questioner resolve TOKENHUB_API_KEY from agents.yaml
         from agents.observer import Observer
         from agents.questioner import Questioner
         observer = Observer()       # use_llm defaults True; falls back to deterministic on error

@@ -205,7 +205,7 @@ def resolve_classifier_endpoint(config_path=None):
     if base and model:
         from agents.config import ResolvedEndpoint
 
-        key = os.environ.get("SUFY_API_KEY", "").strip() or "sk-local"
+        key = os.environ.get("TOKENHUB_API_KEY", "").strip() or "sk-local"
         return ResolvedEndpoint(base_url=base, model=model, api_key=key, temperature=0.0)
     return resolve_observer(config_path)
 
