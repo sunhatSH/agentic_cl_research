@@ -42,7 +42,13 @@ actor_rollout_ref:
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
     ppo_mini_batch_size: 32             # =train_batch(全 batch 单更);×n8=256 轨迹 % DP4=0
-    use_dynamic_bsz: true
+    # use_dynamic_bsz=false + micro=1：对齐 b1（不崩）。dynamic_bsz 把多条变长序列按 token
+    # 打包进一个 forward micro-batch → GDN(GatedDeltaNet) 变长 kernel 收到多段 cu_seqlens
+    # + 巨大 packed 长度(NT 极大)时 launch 失败(Triton Error [CUDA]: invalid argument,
+    # qwen3_5.py:626 chunk_gated_delta_rule_fwd_h)。b1 用固定 micro=1(N=1 单序列)从不崩。
+    # 关掉 dynamic_bsz 让每个 forward 只喂一条序列，规避该 kernel 边界(2026-08-17)。
+    use_dynamic_bsz: false
+    ppo_micro_batch_size_per_gpu: 1
     ppo_max_token_len_per_gpu: 32768    # = max_token_length(131072)/SP(4)
     ulysses_sequence_parallel_size: 4   # SP=4 → DP=16÷4=4。16头%4=0
     fsdp_config:
