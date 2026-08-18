@@ -90,11 +90,12 @@ def test_select_replay_rows_is_differentiable_and_weighted():
     log_probs = torch.tensor([[0.0, 0.0], [-1.0, -2.0]], requires_grad=True)
     # replay_response_mask: real span of the replay rows.
     replay_mask = torch.tensor([[True, True], [True, True]])
-    weights = torch.tensor([[0.0, 0.0], [2.0, 1.0]])
+    # Σw = 1（E11 契约：weighting 归一化到 batch 内 sum=1）→ loss = 加权平均 Σ(w·(-lp))/Σ(w·mask)。
+    weights = torch.tensor([[0.0, 0.0], [0.4, 0.6]])
     is_replay = torch.tensor([False, True])
     loss = select_replay_rows(log_probs, replay_mask, weights, is_replay)
-    # -(-1)*2 + -(-2)*1 = 2 + 2 = 4, mean over 2 tokens = 2
-    assert loss.item() == pytest.approx(2.0)
+    # -(-1)*0.4 + -(-2)*0.6 = 0.4 + 1.2 = 1.6; denom = 0.4+0.6 = 1.0 → 1.6
+    assert loss.item() == pytest.approx(1.6)
     loss.backward()
     # gradient must flow into the replay row only
     assert log_probs.grad[0].abs().sum().item() == pytest.approx(0.0)

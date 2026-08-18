@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from agents.observer import Observer
+from agents.observer import Observer, _last_assistant_reply, flatten_trajectory
 from agents.questioner import Questioner  # kept for signature compat; not called in single-turn
 from agents.reward import score_followup
 from agents.schema import ObservationReport, Persona
@@ -101,8 +101,20 @@ def _score_all_slots(
         # scores, it only supplies ground-truth state evidence the judge reads.
         t.meta["observer_report"] = "" if rep is None else (rep.state_diff or "")
         if rep is None or rep.is_empty():
-            # Gated no-effect turn: a real (score 0) outcome, NOT a discard.
-            verdict = {"score": 0.0, "gated": 1.0, "discard": 0.0}
+            # 空 report：不武断判 0。有些任务不改系统状态（QA/纯对话/只读），observer
+            # 无 FS/sys diff 给不出 report，但 agent 可能回答得好——若 actor 有最终回复，
+            # 构造兜底 report（把回复 fold 进 final）交给 judge 用 trajectory 打分；
+            # 只有 agent 真没产出（空轨迹 / 崩溃 / timeout）才判 0。
+            last_reply = _last_assistant_reply(t.messages)
+            if last_reply:
+                rep = ObservationReport(
+                    actor_trajectory=flatten_trajectory(t.messages),
+                    final=[{"path": "(assistant reply)", "kind": "text", "content_excerpt": last_reply}],
+                )
+                verdict = score_followup(query=query, report=rep, judge=reward_judge)
+            else:
+                # agent 真没产出 → 真 0（gated，非 discard）。
+                verdict = {"score": 0.0, "gated": 1.0, "discard": 0.0}
         else:
             verdict = score_followup(query=query, report=rep, judge=reward_judge)
         t.meta["reward_verdict"] = verdict

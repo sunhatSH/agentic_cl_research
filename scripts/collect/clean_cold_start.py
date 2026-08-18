@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -29,6 +30,8 @@ _OUT = ROOT / "datasets" / "cold_start" / "cold_start_1429.cleaned.jsonl"
 
 # validator 拒绝的特殊/控制 token（出现在 content / tool 返回里）。strip 掉不改语义。
 _SPECIAL_TOKENS = ["｜DSML｜", "<think>", "</think>"]
+# 非法控制字符（tool 返回里混入二进制/乱码）：U+007F DEL、U+FFFD 替换符、C0 控制符(除 \t\n\r)。
+_CONTROL_CHARS = re.compile(r"[\x7f�\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
 def _strip_special(text: str) -> str:
@@ -37,7 +40,7 @@ def _strip_special(text: str) -> str:
     for tok in _SPECIAL_TOKENS:
         if tok in text:
             text = text.replace(tok, "")
-    return text
+    return _CONTROL_CHARS.sub("", text)
 
 
 def clean_record(d: dict) -> dict:

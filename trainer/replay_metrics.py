@@ -147,6 +147,60 @@ def compute_replay_current_logprobs(trainer: Any, replay_rows: dict[str, Any]):
     return per_row_masked_mean(log_probs, mask)
 
 
+def compute_replay_current_logprobs_v1(trainer: Any, replay_meta: Any, replay_mask: Any, temperature: float = 1.0):
+    """Current-policy per-row mean log-prob for replay rows (v1 KVBatchMeta path).
+
+    v1 (custom_sync / transfer_queue / KVBatchMeta) 下 replay 行已由
+    ``cl_replay_hook_v1._append_replay_rows_v1`` 写进 tq（train 分区），所以这里走 verl v1
+    原生的 ``actor_rollout_wg.compute_log_prob(KVBatchMeta)`` → ``tq.kv_batch_get`` 读回
+    ``log_probs``（nested 全序列）→ ``response_from_nested`` 按 ``response_mask`` 的长度切出
+    response 段 → dense 后按 ``replay_mask`` 取每行 masked mean。与 verl 的
+    ``_compute_old_log_prob`` / ``_compute_ref_log_prob`` 同一套契约（v0 的 DataProto 路径见
+    ``compute_replay_current_logprobs``，此处是它的 v1 版本）。
+
+    ``replay_mask`` = ``build_replay_rows`` 产出的 dense ``[n, R]`` ``replay_response_mask``
+    （真实 response span）。任一环节失败（verl/tq 不可用、worker 无 compute_log_prob）降级
+    ``None``，不崩训练。
+    """
+    try:
+        import torch
+        import transfer_queue as tq
+        from verl.workers.utils.padding import response_from_nested
+    except ImportError:
+        return None
+    if replay_meta is None or replay_mask is None:
+        return None
+    wg = getattr(trainer, "actor_rollout_wg", None)
+    if wg is None or not hasattr(wg, "compute_log_prob"):
+        return None
+
+    # forward-only 元数据（对齐 verl _compute_ref_log_prob：不算 loss / 不算 entropy）。
+    extra_info = dict(getattr(replay_meta, "extra_info", None) or {})
+    extra_info.update({"calculate_entropy": False, "compute_loss": False, "temperature": temperature})
+    replay_meta.extra_info = extra_info
+
+    try:
+        wg.compute_log_prob(replay_meta)
+        data = tq.kv_batch_get(
+            keys=replay_meta.keys,
+            partition_id=replay_meta.partition_id,
+            select_fields=["log_probs", "response_mask"],
+        )
+        # log_probs 是 nested 全序列（prompt+response）；response_mask 只取 nested 长度切 response 段。
+        log_probs = response_from_nested(data["log_probs"], data["response_mask"])
+        # nested → dense [n, max_resp_len]；与 build_replay_rows 的 replay_mask [n,R] 对齐（同批同 R）。
+        dense_lp = torch.nested.to_padded_tensor(log_probs.float(), padding=0.0)
+        # 防御性宽度对齐（正常同 R 应一致；不一致时不崩，截断/补零后仍算 mean）。
+        w = replay_mask.shape[1]
+        if dense_lp.shape[1] > w:
+            dense_lp = dense_lp[:, :w]
+        elif dense_lp.shape[1] < w:
+            dense_lp = torch.nn.functional.pad(dense_lp, (0, w - dense_lp.shape[1]))
+        return per_row_masked_mean(dense_lp, replay_mask)
+    except Exception:
+        return None
+
+
 # Imported lazily to keep this module importable without trainer.replay_forward
 # pulling torch at module load (mirrors the rest of trainer/).
 from trainer.replay_forward import REPLAY_MASK_KEY  # noqa: E402

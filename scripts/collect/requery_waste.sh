@@ -21,12 +21,13 @@ cd "$ROOT"
 export PYTHONPATH="$ROOT:${PYTHONPATH:-}"
 
 COLD_START="datasets/cold_start/cold_start_1429.jsonl"
-WASTE="datasets/cold_start/waste_requery.jsonl"
+WASTE="${WASTE:-datasets/cold_start/waste_requery.jsonl}"
 REQUERY_QUERIES="datasets/cold_start/requery_queries.jsonl"
 SQLITE="datasets/cold_start/warmup_1429.sqlite"
 OUT_DIR="${OUT_DIR:-/mnt/afs_toolcall/sunhao4/agentic_cl_rollouts/requery}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-32}"
 ACTOR_MODEL="${ACTOR_MODEL:-gpt-5}"
+SLOT_TIMEOUT="${SLOT_TIMEOUT:-1800}"   # 单条 hermes 超时(s)；ops/finance 难任务需 >900
 PY="${PY:-.venv/bin/python}"   # 采集需 e2b/tqdm，用项目 .venv（系统 python3 无 e2b）
 
 echo "=== [requery] 凭证加载 ==="
@@ -34,10 +35,11 @@ source scripts/env/load_tencent_env.sh 2>/dev/null || true
 [ -f .env ] && set -a && source .env && set +a || true
 
 echo "=== [requery] 1/4 转换 waste → requery_queries ==="
-$PY - <<'PY'
+WASTE="$WASTE" $PY - <<'PY'
 import json
+import os
 from pathlib import Path
-inp = Path("datasets/cold_start/waste_requery.jsonl")
+inp = Path(os.environ["WASTE"])
 out = Path("datasets/cold_start/requery_queries.jsonl")
 n = 0
 with open(inp, encoding="utf-8") as f, open(out, "w", encoding="utf-8") as g:
@@ -55,16 +57,20 @@ with open(inp, encoding="utf-8") as f, open(out, "w", encoding="utf-8") as g:
         n += 1
 print(f"  转换 {n} 条 → {out}")
 PY
+N_QUERY=$(wc -l < "$REQUERY_QUERIES")
 
-echo "=== [requery] 2/4 hermes 单轮采集（{MAX_CONCURRENT} 并发，model={ACTOR_MODEL}）==="
+echo "=== [requery] 2/4 hermes 单轮采集（${N_QUERY} 条，${MAX_CONCURRENT} 并发，slot_timeout=${SLOT_TIMEOUT}s，model=${ACTOR_MODEL}）==="
 $PY scripts/collect/run_cold_start.py \
   --queries "$REQUERY_QUERIES" \
-  --num-queries 242 \
+  --num-queries "$N_QUERY" \
   --max-concurrent "$MAX_CONCURRENT" \
   --actor-model "$ACTOR_MODEL" \
+  --actor-impl hermes_structured \
   --backend e2b \
   --template agentic-cl-sandbox \
   --no-usersim \
+  --slot-timeout "$SLOT_TIMEOUT" \
+  --collect-mode overwrite \
   --out-dir "$OUT_DIR" \
   --model-tag requery
 

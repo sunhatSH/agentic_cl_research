@@ -96,11 +96,11 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
         weighting = build_weighting_from_cfg(cl)
 
     from trainer.replay_batch import prepare_replay_rows
-    from trainer.replay_forward import REPLAY_TIDS_KEY
+    from trainer.replay_forward import REPLAY_MASK_KEY, REPLAY_TIDS_KEY
     from trainer.replay_metrics import (
         BufferStatsLogger,
         backfill_forgetting,
-        compute_replay_current_logprobs,
+        compute_replay_current_logprobs_v1,
         flatten_buffer_stats,
     )
 
@@ -169,9 +169,16 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
             buffer.set_step(step)
 
             # ── 3. POST：forgetting_risk 回填（对刚回放的轨迹重算 current-policy logprob）──
+            # v1：走 tq KVBatchMeta 路径（compute_log_prob(replay_meta) → kv_batch_get → response_from_nested），
+            # 不再用 v0 的 DataProto（那在 v1 会 AttributeError: DataProto has no 'keys' 静默失效，见 E10）。
             tids = replay_rows.get(REPLAY_TIDS_KEY) if replay_rows else None
             if tids and forgetting_update_freq > 0 and step % forgetting_update_freq == 0:
-                means = compute_replay_current_logprobs(trainer, replay_rows)
+                means = compute_replay_current_logprobs_v1(
+                    trainer,
+                    replay_meta,
+                    replay_rows.get(REPLAY_MASK_KEY),
+                    temperature=float(((_ar.get("rollout", {}) or {}).get("temperature", 1.0) or 1.0)),
+                )
                 if means is not None:
                     backfill_forgetting(buffer, tids, means)
 

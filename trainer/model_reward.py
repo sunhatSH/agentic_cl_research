@@ -408,9 +408,10 @@ class OpenAIJudgeClient:
         """One judge round-trip. Raises TruncatedOutputError on truncation or an
         unparseable verdict (so the caller can retry / discard).
 
-        Thinking is explicitly ENABLED for all judge models (gemini/deepseek/gpt):
-        the 2026-08-05 sweep showed disabling thinking destabilises scoring
-        (deepseek within-traj std 0.048→0.088 + 15% judge_error). Keep it on.
+        Thinking is enabled via ``reasoning_effort="medium"`` (the only switch the
+        tokenhub gpt-5.6-luna OpenAI-compatible endpoint accepts): the 2026-08-05
+        sweep showed disabling thinking destabilises scoring (deepseek within-traj
+        std 0.048→0.088 + 15% judge_error). Keep it on.
         """
         import httpx
 
@@ -422,12 +423,12 @@ class OpenAIJudgeClient:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
-        # Explicitly enable thinking for models that accept these fields; models
-        # that don't will ignore them. We never send thinking=disabled.
-        body["thinking"] = {"type": "enabled"}
-        body["enable_thinking"] = True
+        # 只保留 reasoning_effort 这一个思考开关。2026-08-18 实测 tokenhub gpt-5.6-luna
+        # 走 OpenAI-compatible /chat/completions：thinking / enable_thinking /
+        # chat_template_kwargs 是 vLLM/deepseek 私有字段，luna 直接 400
+        # "Unknown parameter" → judge_error=1 → reward 全 0（r0 崩溃根因之一）。
+        # luna 认 reasoning_effort（medium 生效），其余一律不传。
         body["reasoning_effort"] = "medium"
-        body["chat_template_kwargs"] = {"enable_thinking": True}
         resp = httpx.post(
             f"{self.base_url}/chat/completions",
             json=body,

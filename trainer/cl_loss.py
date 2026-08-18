@@ -26,6 +26,9 @@ from trainer.replay_forward import (
     IS_REPLAY_KEY,
     REPLAY_MASK_KEY,
     REPLAY_WEIGHTS_KEY,
+    _replay_debug,
+    _replay_debug_enabled,
+    _summarize,
     select_replay_rows,
 )
 
@@ -51,6 +54,17 @@ def _data_get(data, key, default=None):
     return default
 
 
+def _safe_scalar_repr(tensor) -> str:
+    """把布尔/标量张量安全地打成一行诊断（优先 .sum()，失败退回 repr）。"""
+    if tensor is None:
+        return "None"
+    try:
+        s = tensor.sum()
+        return f"sum={int(s.item())}"
+    except Exception:  # noqa: BLE001 -- 诊断兜底
+        return repr(tensor)
+
+
 def compute_replay_loss(model_output, data):
     """Differentiable replay loss over appended replay rows.
 
@@ -73,12 +87,53 @@ def compute_replay_loss(model_output, data):
     replay_mask = _data_get(data, REPLAY_MASK_KEY)
     token_weights = _data_get(data, REPLAY_WEIGHTS_KEY)
 
+    if _replay_debug_enabled():
+        # 密集前 dump：定位「log_probs≈0」还是「mask/weights≈0」，以及 weights 的归一化尺度。
+        _replay_debug(
+            "compute_replay_loss(密集前): is_replay.sum()=%s "
+            "log_probs=%s | replay_mask=%s | token_weights=%s"
+            % (
+                _safe_scalar_repr(is_replay),
+                _summarize(log_probs),
+                _summarize(replay_mask),
+                _summarize(token_weights),
+            )
+        )
+
     # Restore dense [bsz, max_response_len] (same as ppo_loss line 1). On a real
     # verl batch log_probs is a NestedTensor; off-cluster mocks pass a dense
     # tensor, so only convert when the verl helper is importable and the tensor
     # is nested / needs slicing.
     log_probs = _to_dense_response_logprobs(log_probs, data)
+    # 回放行变长后 mask/weights 也是 nested（response 对齐）→ 转 dense 对齐 log_probs。
+    replay_mask = _to_dense_response(replay_mask, log_probs)
+    token_weights = _to_dense_response(token_weights, log_probs)
+
+    if _replay_debug_enabled():
+        _replay_debug(
+            "compute_replay_loss(密集后): log_probs=%s | replay_mask=%s | token_weights=%s"
+            % (
+                _summarize(log_probs),
+                _summarize(replay_mask),
+                _summarize(token_weights),
+            )
+        )
+
     return select_replay_rows(log_probs, replay_mask, token_weights, is_replay)
+
+
+def _to_dense_response(tensor, dense_log_probs):
+    """把 response 对齐的 nested tensor 转 dense [N, max_response_len]（right-pad 0），
+    对齐已转 dense 的 log_probs。非 nested（本机 mock / dense 输入）原样返回。"""
+    import torch
+
+    if tensor is None or not getattr(tensor, "is_nested", False):
+        return tensor
+    n = tensor.size(0)
+    t = dense_log_probs.shape[1] if dense_log_probs is not None and dense_log_probs.dim() == 2 else None
+    if t is None:
+        return tensor
+    return torch.nested.to_padded_tensor(tensor, padding=0, output_size=(n, t))
 
 
 def _to_dense_response_logprobs(log_probs, data):

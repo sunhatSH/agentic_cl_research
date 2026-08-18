@@ -155,9 +155,15 @@ export VERL_USE_EXTERNAL_MODULES="${VERL_USE_EXTERNAL_MODULES:-recipe_custom.boo
 #       有界等待超时放行（CL_PAUSE_MAX_WAIT 默认 180s）。lightllm refcount 泄漏(4卡16卡都有)让
 #       abort_all 僵尸请求回收不掉，16卡每 step 边界 pause 时无限重试→死锁 hang（§59，step6 卡死）。
 #       放行让 16卡泄漏像 4卡一样良性(泄漏但不死)。不改 LightLLM 源码。
-# 三者都必须在 worker 进程生效（patch 目标都在 worker/lightllm 副本），故走 VERL_USE_EXTERNAL_MODULES
+#   · trainer.dataproto_tensordict_patch —— v1 引擎 worker 的 DataProto→TensorDict 系统性修复。
+#       r0 掺回放行后 infer_batch/train_batch/train_mini_batch(engine_workers.py) 的 data 入参
+#       实际收到 DataProto(非函数标注的 TensorDict),函数体用 TensorDict API(data.keys()/data.shape[0]/
+#       tu.pop/tu.assign_non_tensor/tu.make_iterator) 每 step 崩(b1 无 replay 是 TensorDict 不崩)。
+#       在 tqbridge 层统一把 DataProto→to_tensordict(),一处覆盖全部 @register 分发函数(不再逐点
+#       打地鼠);并保留 tu.pop 的 DataProto 兼容作兜底。
+# 都必须在 worker 进程生效（patch 目标都在 worker/lightllm 副本），故走 VERL_USE_EXTERNAL_MODULES
 # 而非 driver-only import。逐个幂等去重。
-for _mod in rollout.e2b_http1_patch trainer.observer_hook_register trainer.pause_generation_bounded_patch; do
+for _mod in rollout.e2b_http1_patch trainer.observer_hook_register trainer.pause_generation_bounded_patch trainer.dataproto_tensordict_patch; do
   case ",$VERL_USE_EXTERNAL_MODULES," in
     *,"$_mod",*) : ;;  # 已含,不重复追加
     *) export VERL_USE_EXTERNAL_MODULES="$VERL_USE_EXTERNAL_MODULES,$_mod" ;;
@@ -409,8 +415,26 @@ _run_single() {
 
 if [ "$NNODES" -le 1 ]; then
   _prewarm_model   # 单机:预热到本地盘(见 _prewarm_model 注释)
-  _run_single ${OVERRIDES[@]+"${OVERRIDES[@]}"}
-  exit 0
+  # 单机也需自起 Ray head——verl run_ppo 写死 ray.init(address='auto'),要求已有集群;
+  # 且必须复用与多机同样的 --num-cpus 名额(§55:CFS quota 低估 → server actor 抢不到
+  # 名额静默 PENDING → init_hybrid 永等 hang)。复现 16 卡崩溃时环境须一致。
+  _RAY_NUM_CPUS="${CL_RAY_NUM_CPUS-$(nproc 2>/dev/null || echo '')}"
+  _RAY_NUM_CPUS_ARG=""
+  [ -n "$_RAY_NUM_CPUS" ] && _RAY_NUM_CPUS_ARG="--num-cpus $_RAY_NUM_CPUS"
+  echo "[train_cl] 单机: Ray num_cpus 名额 = ${_RAY_NUM_CPUS:-(Ray默认探测)}"
+  echo "[train_cl] 单机: ray start --head ... ${_RAY_NUM_CPUS_ARG}"
+  ray start --head --disable-usage-stats ${_RAY_NUM_CPUS_ARG} || { echo "[train_cl] FATAL: ray start --head 失败" >&2; exit 1; }
+  ray status
+  # 捕获训练 exit code:ray stop 始终清理,但脚本退出码必须=训练码(同多机路径,防假成功)。
+  _train_rc=0
+  _run_single ${OVERRIDES[@]+"${OVERRIDES[@]}"} || _train_rc=$?
+  if [ "$_train_rc" -eq 0 ]; then
+    echo "[train_cl] 单机: 训练正常结束 (rc=0)，ray stop"
+  else
+    echo "[train_cl] 单机: !!! 训练失败 rc=$_train_rc（见上方 Traceback）ray stop 清理后以该码退出" >&2
+  fi
+  ray stop --force
+  exit "$_train_rc"
 fi
 
 # ── 多机 ────────────────────────────────────────────────────────────────

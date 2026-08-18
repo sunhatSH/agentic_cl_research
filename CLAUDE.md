@@ -21,7 +21,7 @@ Continual Learning over Agentic LLM 的训练项目。仓库所有者：@孙豪�
 3. **`doc/archive/Plan_训练链路补齐.md`** — 64 卡正式训练前残缺模块的施工规格（Gap A–H）
 4. **`doc/archive/RunLog.md`** — append-only 运行记录
 
-> **硬性规则（来自 `RunLog.md`）**：任何可判定结果的动作（smoke / 训练 / 评测 / bug 复现与修复）都必须向 `doc/archive/RunLog.md` **追加**一条，成功与失败都保留，**禁止删改历史条目**——失败是调试与论文的证据。
+> **硬性规则**：任何可判定结果的动作（smoke / 训练 / 评测 / bug 复现与修复）都必须追加到 `doc/debug/Bug_Fix_精简总表.md`（bug 排障结论，按 A–G 类别归并）或对应调试文档，成功与失败都保留，**禁止删改历史条目**——失败是调试与论文的证据。
 
 ## 开发命令
 

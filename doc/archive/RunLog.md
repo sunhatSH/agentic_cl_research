@@ -2389,3 +2389,106 @@ reward 双峰来自 task_done 0/1 门槛：完成 reward=0.4*correctness+0.4*tra
 
 **难度 6 判断难**：coding/office/ops 里难度 6 仅 3-7 条/step，样本太少；真正判断难度 6 学不学
 得动要看 research/workflow 桶（难度 6 是主力 16-19 条/step）。
+
+---
+## §68 — R0-25K step2 崩：回放注入自造全零 padding 行搅乱 GDN cu_seqlens（2026-08-17）
+
+**现象**：r0-25k 反复修复后仍失败。step 1（buffer 空、无回放）成功，step 2（首次注入回放行）崩：
+`RuntimeError: Triton Error [CUDA]: invalid argument`，调用栈在 `fla/ops/common/chunk_delta_h.py:692`
+`chunk_gated_delta_rule_fwd_kernel_h_blockdim64`（Gated DeltaNet 线性注意力 kernel，训练前向）。
+伴随 `SavedTensorHooks.cpp:69` assert（checkpoint 栈被前向异常冲垮的次生症状）。
+
+**根因**：`cl_replay_hook_v1._append_replay_rows_v1` 为了满足 `make_iterator` 的
+`batch_size % mini_batch_size == 0`，掺完回放行后自造 padding 行补齐（r0 掺 32 回放后 288 % 256 = 32
+→ 补 224 行）。自造 padding 用 `torch.zeros((pad, *v.shape[1:]))` —— 每行 `input_ids/attention_mask/
+position_ids` 全是 0、宽 P+R（回放 padded 宽，可达 113K）。这 224 行全零行（约 25M 假 token）写进
+tq 后，remove_padding 打包时 cu_seqlens 记账错乱（全零 attention_mask → seqlen 0 / 假 token），
+GDN kernel 启动失败。而 step 1 无回放不触发此 padding，故不崩；b1 无回放同机制一直成功。
+
+**为何之前的 fix 都没治**：d9987cc 关 use_dynamic_bsz 是误归因（只是换了个崩溃点 num_tokens.to）；
+c46b2c6 修 position_ids [S,T] vs [T] 是另一个崩（nested tensor dim 不匹配），但 GDN kernel 根本
+不用 position_ids（线性注意力无 rope）→ 都没碰到这个全零 padding 的锅。
+
+**修复**：`_append_replay_rows_v1` 弃用自造全零 padding，改调 verl 原生
+`upsample_batch_to_divisible_size(merged, mini_batch_size, eos_token_id)`。它用第一条 rollout 行做
+模板，造最小 [1 prompt,1 response] EOS 序列、`seq_len=2`、`attention_mask=1` 的正确填充行（padding_utils.py
+`construct_minimal_padding_template`），与 verl 自身 `_balance_batch` 的补 padding 语义一致。padding
+keys 并进 replay_meta 随回放一起 kv_clear。改动：`trainer/cl_replay_hook_v1.py`（签名加 `eos_token_id`，
+padding 块替换）。
+
+**状态**：本机 23 个 replay 单测通过、ruff 过；`_append_replay_rows_v1` 依赖 transfer_queue 本机无法端到端
+验证，待集群重跑 r0 确认 step 2 回放非空（replay_empty=0）且不再崩。
+
+**遗留（待验证）**：回放行本身仍是 padded [n,P+R]（build_replay_rows 是 v0 左/右 pad 约定），rollout 行是
+变长。若集群重跑仍崩，下一步把回放行也改成变长（list_of_dict_to_tensordict 的 nested tensor 路径）。
+
+---
+## §69 — R0 回放行变长化：回放行 padded 2D → nested tensor（2026-08-17）
+
+§68 的 padding 修复（verl upsample 替代自造全零行）解决了 224 行全零 padding，但**回放行本身
+仍是固定 2D padded [n,P+R]**（build_replay_rows 是 v0 左/右 pad 约定）。这 32 行回放（每行
+padded 宽可达 113K）与 rollout 的 nested（变长）混在同一个 tq batch 里 → 引擎读 batch 时
+remove_padding 把回放行的 padded 宽 P+R 当成序列长（而非实际长度）→ cu_seqlens 错乱 → 仍是
+GDN kernel "invalid argument" 的隐患。故把回放行也切成变长 nested，与 rollout 完全同构。
+
+**改动（3 文件 + 1 测试）**：
+- `trainer/cl_replay_hook_v1.py`：
+  - `_replay_tensordict` 重写：从 padded `replay_rows` 用 `attention_mask` 恢复每行实际
+    prompt/response 长（左 pad prompt / 右 pad response 约定），切成变长 per-row list，再用
+    自实现的 `_nested_tensor_from_list`（等价 verl `nested_tensor_from_tensor_list`，只依赖
+    torch，本机可测）nested 化；position_ids 广播成 [S,len] 后 ragged_idx=2。新增
+    `_slice_variable_rows` / `_zero_variable_rows` / `_nested_tensordict_from_rows` helper。
+  - `_append_replay_rows_v1` 给 rollout 补 3 个 replay 专属字段（is_replay/replay_response_mask/
+    replay_token_weights）也从固定 [m,R] 零改为 **nested 零**：读 rollout 自己的 response_mask
+    （nested）零化得到同长 nested 零模板，避免再次 mixed nested/2D。
+- `trainer/cl_loss.py`：`compute_replay_loss` 新增 `_to_dense_response`，把回放 mask/weights
+  的 nested tensor 用 `torch.nested.to_padded_tensor` 转 dense [N,max_response_len]（right-pad 0），
+  对齐 `no_padding_2_padding` 产出的 dense log_probs。
+- `tests/test_replay_tensordict.py`：mock 的 attention_mask 改全 1（否则切成 0 长），新增
+  2 个测试验证序列字段是 nested + 变长切分保留每行真实长度。
+
+**验证（本机）**：450 passed + 7 skipped（skip 仍全 verl/GPU）；脚本离线验证 nested 化正确
+（input_ids offsets [0,5,14,16] ↔ 行长 [5,9,2]）、M-RoPE position_ids [S,len] 广播正确、
+CL loss nested→dense 后 loss 值 0.75 与手算一致。
+
+**状态**：待集群重跑 r0 确认 step 2 回放非空（replay_empty=0）且 GDN 不再崩。`compute_replay_current_logprobs`
+（forgetting backfill）仍用 build_replay_rows 的 padded 输出（v0 DataProto 路径），未受影响；
+R0 用 uniform priority，该 backfill 本非关键。
+
+## §70 — R0 replay_loss≈2.4e-8 根因定案：权重 Σw=1 归一化 × mean 聚合分母错配 + forgetting 回填 v1 静默失效（2026-08-18）
+
+### 现象
+r0-25k_16gpu（2×8 卡）跑到 step 9 训练本身健康（reward~0.4、pg_loss/entropy 正常、buffer 每步 +32
+winner），但 `actor/replay_loss ≈ 2.4e-8`（应 O(0.1~1)）、`actor/replay_empty ≈ 0.91`。λ₃·loss≈1e-8 →
+**L_replay 实际空转**，回放防遗忘项对训练零贡献。
+
+### 根因一（E11）：权重归一化 × 聚合方式错配（非 v1 字段丢失）
+- `replay_buffer/weighting.py::_clip_and_normalize` 把 token 权重按 **batch 内 Σw=1** 归一化
+  （doc `CL_Design.md`「保证 Σw 归一」；64 条 replay × ~2 万 response token → 每 token ~7e-7）。
+- 但 `replay_forward.py::select_replay_rows` 用 **mean 聚合**：分母 = `mask.sum()`（token 数 ~1e6），
+  把 Σw=1 的权重 mass(~1) 再摊到 1e6 token → loss ≈ mean(-logπ)·7e-7 ≈ 2e-8。
+- 设计公式 `L_replay = E[-logπ·w]`，Σw=1 时即加权平均 ≈ mean(-logπ) ≈ 0.3，代码少对齐一步。
+- 判别依据：loss 非精确 0（排除 mask 全丢），RL loss/entropy 正常（排除 log_probs≈0），is_replay
+  存活（replay_empty=0.91<1，排除字段丢失）。
+
+### 根因二：forgetting 回填 v1 静默失效（§69 尾部遗留问题的展开）
+`compute_replay_current_logprobs` 用 v0 `DataProto` 调 `wg.compute_log_prob`，v1（custom_sync /
+KVBatchMeta）下 worker 收到 DataProto → `infer_batch:398 data.keys()` 崩，被 `except Exception:
+return None` 吞掉 → `forgetting_risk` 优先级信号恒 0（train.log 每 step ~8 次 `AttributeError:
+'DataProto' has no 'keys'` 即此）。R0 uniform priority 下无害；R4/R5（依赖 forgetting_risk）有害。
+
+### 修复（共享 trainer/ 代码，b1/k*/r*/c*/s* 全实验自动生效）
+- `replay_forward.py::select_replay_rows`：分母 `mask.sum()` → `Σ(w·mask)`（clamp≥1e-12）→ 加权平均 O(1)。
+- `replay_metrics.py`：新增 `compute_replay_current_logprobs_v1`（走 tq KVBatchMeta，镜像 verl
+  `_compute_old_log_prob`：`compute_log_prob(replay_meta)` → `kv_batch_get` → `response_from_nested`）。
+- `cl_replay_hook_v1.py`：forgetting 回填调用点改走 v1 路径。
+- 加 `CL_REPLAY_DEBUG=1` 诊断 dump（`compute_replay_loss`/`select_replay_rows`，默认关）。
+
+### 验证
+本机 450 passed + 7 skipped（skip 仍全 verl/GPU）；数值模拟：修复前复现 1.6e-8、修复后 loss=0.3（O(0.1~1)）。
+折叠 metrics 快照 `logs/metrics/qwen35_9b_r0-25k_16gpu/metrics-20260818T142306Z.jsonl` + 失败记录
+`failure_replay_loss.md` 已留档。
+
+### 状态
+待集群重跑 r0 验证：replay_loss 回 O(0.1~1)、train.log 无 `AttributeError: 'DataProto' has no 'keys'`、
+`buffer/signal_weight/forgetting_risk` 非 0。

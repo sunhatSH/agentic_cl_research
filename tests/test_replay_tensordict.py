@@ -54,11 +54,13 @@ class _FakeBatch:
 
 
 def _make_replay_rows(n=4, P=10, R=8):
+    # attention_mask 全 1（无 left/right pad），让 _replay_tensordict 能恢复每行实际长度
+    # （否则切成 0 长 nested）。
     return {
         "prompts": torch.zeros((n, P), dtype=torch.long),
         "responses": torch.zeros((n, R), dtype=torch.long),
         "input_ids": torch.zeros((n, P + R), dtype=torch.long),
-        "attention_mask": torch.zeros((n, P + R), dtype=torch.long),
+        "attention_mask": torch.ones((n, P + R), dtype=torch.long),
         "position_ids": torch.zeros((n, P + R), dtype=torch.long),
         "response_mask": torch.zeros((n, R), dtype=torch.long),
         "replay_response_mask": torch.zeros((n, R), dtype=torch.long),
@@ -126,3 +128,52 @@ def test_replay_tensordict_non_tensor_not_none():
         assert not isinstance(v, torch.Tensor), f"{k} 不该是张量"
         vals = list(v) if hasattr(v, "__iter__") else [v]
         assert all(x is not None for x in vals), f"{k} 含 None 值"
+
+
+def test_replay_tensordict_sequence_fields_are_nested():
+    """序列字段必须是 nested（变长），对齐 v1 rollout 的 nested 格式（GDN 崩根因回归）。
+
+    之前回放行写成固定 2D padded，与 rollout 的 nested 混在一起 → remove_padding 把
+    padded 宽当序列长 → cu_seqlens 错乱 → GDN kernel "invalid argument"（r0 step2）。
+    """
+    td = _replay_tensordict(_make_replay_rows(), _FakeBatch())
+    for k in (
+        "prompts",
+        "responses",
+        "response_mask",
+        "loss_mask",
+        "input_ids",
+        "attention_mask",
+        "position_ids",
+        "rollout_log_probs",
+        "rm_scores",
+        "replay_response_mask",
+        "replay_token_weights",
+    ):
+        assert td[k].is_nested, f"{k} 应该是 nested tensor，实际 {td[k].shape}"
+    # 标量字段不该 nested
+    assert not td["is_replay"].is_nested
+    assert not td["num_turns"].is_nested
+
+
+def test_replay_tensordict_variable_lengths_preserved():
+    """变长切分后每行的真实长度保留（左 pad prompt / 右 pad response 被正确去掉）。"""
+    n, P, R = 3, 5, 4
+    rows = _make_replay_rows(n=n, P=P, R=R)
+    # 手动构造不同长度：行0 prompt=3/response=2，行1 全满，行2 prompt=1/response=1。
+    attn = rows["attention_mask"]
+    resp = rows["responses"]
+    for i, (pl, rl) in enumerate([(3, 2), (5, 4), (1, 1)]):
+        attn[i, :P] = 0
+        attn[i, P - pl : P] = 1
+        attn[i, P:] = 0
+        attn[i, P : P + rl] = 1
+        resp[i, :] = 0
+        resp[i, :rl] = 2
+    td = _replay_tensordict(rows, _FakeBatch())
+    # 每行 response 长度 = [2, 4, 1]
+    resp_lens = [r.shape[0] for r in td["responses"].unbind()]
+    assert resp_lens == [2, 4, 1], resp_lens
+    # 每行 input_ids 长度 = prompt+response = [5, 9, 2]
+    seq_lens = [r.shape[0] for r in td["input_ids"].unbind()]
+    assert seq_lens == [5, 9, 2], seq_lens

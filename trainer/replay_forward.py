@@ -40,12 +40,42 @@ tokenizer specific and is validated on the GPU cluster (see doc/Progress.md).
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 IS_REPLAY_KEY = "is_replay"
 REPLAY_WEIGHTS_KEY = "replay_token_weights"
 REPLAY_MASK_KEY = "replay_response_mask"
 REPLAY_TIDS_KEY = "_replay_tids"
+
+
+def _replay_debug_enabled() -> bool:
+    """CL_REPLAY_DEBUG=1 时开启回放 loss 诊断 dump（默认关，仅集群排障用）。"""
+    return os.environ.get("CL_REPLAY_DEBUG", "0") == "1"
+
+
+def _replay_debug(msg: str) -> None:
+    print(f"[cl-replay-debug] {msg}", flush=True)
+
+
+def _summarize(tensor) -> str:
+    """安全地把 tensor（dense 或 nested）浓缩成一行诊断字符串。"""
+    if tensor is None:
+        return "None"
+    try:
+        nested = getattr(tensor, "is_nested", False)
+        if nested:
+            vals = tensor.values()
+            return (
+                f"nested(numel={vals.numel()}, mean={float(vals.float().mean().item()):.4g}, "
+                f"abs_mean={float(vals.float().abs().mean().item()):.4g})"
+            )
+        return (
+            f"dense{tuple(tensor.shape)} mean={float(tensor.float().mean().item()):.4g} "
+            f"abs_mean={float(tensor.float().abs().mean().item()):.4g}"
+        )
+    except Exception as exc:  # noqa: BLE001 -- 诊断兜底，不影响主流程
+        return f"<summarize failed: {exc}>"
 
 
 def align_token_weights(weights_per_traj, num_rows, seq_len, device=None, dtype=None):
@@ -83,12 +113,19 @@ def align_token_weights(weights_per_traj, num_rows, seq_len, device=None, dtype=
 
 
 def select_replay_rows(log_probs, replay_response_mask, token_weights, is_replay):
-    """Compute ``masked_mean(-log_probs * w)`` over replay rows only.
+    """Compute the weighted replay loss over replay rows only.
 
     ``replay_response_mask`` is the REAL response span of the replay rows (NOT
     verl's PPO ``response_mask``, which is 0 for replay rows). All tensors are
     ``[N, T]``; ``is_replay`` is ``[N]`` bool. Returns a scalar tensor with
     gradient flowing through ``log_probs``.
+
+    Weight-normalization contract (bug E11): ``token_weights`` are normalized
+    so ``Σ_t w_t = 1`` across the whole replay batch (``weighting._clip_and_normalize``
+    + ``doc/source/CL_Design.md`` §L_replay 权重 ``保证 batch 内 Σw 归一``).
+    The loss is therefore the *weighted* mean ``Σ(w·(-logπ)·mask) / Σ(w·mask)``,
+    which is O(1). The old denominator ``mask.sum()`` (token count) divided a
+    sum-to-1 weight mass (~1) by ~1e6 tokens, collapsing the loss to ~1e-8.
     """
     import torch
 
@@ -101,13 +138,30 @@ def select_replay_rows(log_probs, replay_response_mask, token_weights, is_replay
         mask = torch.ones_like(lp, dtype=torch.bool)
     else:
         mask = replay_response_mask[rows].to(torch.bool)
+    w = None
     if token_weights is not None:
         w = token_weights[rows].to(dtype=lp.dtype, device=lp.device)
         loss_mat = -lp * w
+        # 加权平均：分母 = 被 mask 位置的权重和（Σw 归一 → O(1)）。
+        denom = (mask.to(w.dtype) * w).sum().clamp(min=1e-12)
     else:
         loss_mat = -lp
+        denom = mask.sum().clamp(min=1)
 
-    denom = mask.sum().clamp(min=1)
+    if _replay_debug_enabled():
+        _replay_debug(
+            "select_replay_rows: is_replay.sum()=%d mask.sum()=%d "
+            "lp=%s | token_weights: %s (sum=%.6g) | denom=%.6g"
+            % (
+                int(rows.sum().item()),
+                int(mask.sum().item()),
+                _summarize(lp),
+                _summarize(w) if w is not None else "None(unweighted)",
+                float(w.sum().item()) if w is not None else float("nan"),
+                float(denom.item()),
+            )
+        )
+
     return (loss_mat * mask).sum() / denom
 
 

@@ -1,4 +1,4 @@
-# 训练排障总表 — 精简无重复版(截至 2026-08-03)
+# 训练排障总表 — 精简无重复版(截至 2026-08-18)
 
 > 本文合并 `doc/debug/` 下四份排障记录,去重后按**类别**归并。每条 = 现象/根因 + 最终解决办法(已被后续推翻的旧假说不再列为独立条目,仅在需要时以「⚠️ 曾误判」标注)。
 > 详细逐条历程仍在源文件,本表只保留**结论**:
@@ -20,6 +20,7 @@
 | A3 | 脚本目录重组后路径断裂;SwanLab 认证失败直接崩训练 | 修路径;SwanLab key 只从 `.env`/env 取,缺失打 WARNING 不崩;AFS 日志全覆盖 + 自动续训 |
 | A4 | `import verl` 崩 `transformer_engine has no attribute 'pytorch'`:镜像 flash_attn 是残缺 shim(只有 bert_padding),megatron→TE 要 `flash_attn.flash_attn_interface` | 给 shim 补 `flash_attn_interface.py`(转发真 FA3 + `__getattr__` 兜底);`_train_impl.sh` PYTHONPATH 前置 shim 目录 |
 | A5 | 数据加载崩 `assert src[-1]` NoneType:v1 `_init_dataloader` 无条件建 val dataset,而 config `val_files: null` | `CLTaskRunnerV1.run` 里 val 空/缺失时 alias 到 `train_files` |
+| A6 | 4卡单机 `ray.init(address='auto')` 崩 `Could not find any running Ray instance`:`scripts/_train_impl.sh` 单机分支(NNODES≤1)从不 `ray start --head`,直接 `_run_single`;verl `run_ppo` 写死 `address='auto'`(只有多机分支才 ray start,单机路径漏覆盖) | 单机分支补 `ray start --head`(复用 §55 的 `--num-cpus $(nproc)` 名额)+ 捕获训练退出码(脚本退出码=训练码,防假成功)+ `ray stop --force` 清理 |
 
 ## B. 显存 / OOM(colocate,16 卡 2 节点 × 8,H800 80G)
 
@@ -62,6 +63,12 @@
 | E5 | `b1_4gpu` step54 崩 `AssertionError: agent_assets batch 4 vs 2`:`cl_agent_dataset.py` `if assets:` 条件写 key,gen-batch 混合有/无输入文件的 record → batch 尺寸断言崩 | `__getitem__` **恒写 key**:无文件时 `agent_assets={}`(下游对空值容忍),batch 内每行字段一致 |
 | E6 | metrics 空目录(16 卡):`VERL_FILE_LOGGER_PATH` 只 export 到 driver shell,FileLogger 在 CLTaskRunnerV1(Ray worker)实例化不继承 → 多机 fallback 到 `agentic-cl/{exp}.jsonl`(4 卡单机同机侥幸继承故没暴露) | `verl_runner.py` `_passthrough` 加 `VERL_FILE_LOGGER_PATH`(下次重启生效) |
 | E7 | **step17 崩(hang 修好后新崩溃)**:纯文本训练混进含图请求打崩 Qwen3.5 多模态 M-RoPE。agent 沙箱工具产出 PNG → Hermes 拼进 chat → gateway 传 image_data → `Qwen35InferStateInfo` 无条件继承 qwen2_vl M-RoPE(`start_idx=None`)→ `RuntimeError: Could not infer dtype of NoneType` → 副本 infer_loop 全崩 → TP 组残缺 → 死锁。**M-RoPE 架构固有,`disable_vision` 管不到**;本项目按设计禁多模态(9 桶去多模态、parquet 无图字段) | 新建 `trainer/gateway_image_drop_patch.py`:patch `GatewayActor._handle_chat_completions`(含图 → 投毒 + 400,图不进 lightllm)+ `SessionManager.finalize_session`(投毒 session 产空轨迹踢出训练);走 `VERL_USE_EXTERNAL_MODULES` 不改 verl;22 config `remote_agent` 加 `all_failed_policy: skip` + `min_group_success_ratio=0.5`。**待上机重启验证越过 step17** |
+| E8 | r0 每步 `infer_batch` 崩 `AssertionError: assert key in self.batch.keys()`(no_lora_adapter):verl 0.8.0 v1 `infer_batch`(engine_workers.py:386)无条件 `tu.pop(data,"no_lora_adapter",default=False)`,函数标注 `data: TensorDict`,但 v1 架构(KVBatchMeta+transfer_queue lazy dispatch)下 worker 实际收到 **DataProto**;`tensordict_utils.pop` 里 `tensordict.pop(key,sentinel)` 对 DataProto 变成 `DataProto.pop(batch_keys=...)`(签名不兼容)硬 assert。无 lora(ref_in_actor=False)时该 key 从不在 batch → 本应走 default 返回 False,但 default 语义被踩爆。r0 掺回放行后 batch 从 TensorDict 变 DataProto 才触发(b1 无 replay 不崩) | 新增 `trainer/tensordict_pop_patch.py`:monkey-patch `tensordict_utils.pop`,检测 DataProto 时手动查 `batch`/`non_tensor_batch`/`meta_info` 三处,key 不存在返回 default;走 `VERL_USE_EXTERNAL_MODULES` 不改 verl |
+| E9 | reward 恒 0 **新根因**(补充 E4):judge 请求带非法 thinking 字段 → tokenhub luna 400。`trainer/model_reward.py` `_call_once` 给 judge 塞 `thinking`/`enable_thinking`/`reasoning_effort`/`chat_template_kwargs` 4 个字段,其中 3 个是 vLLM/deepseek 私有字段,tokenhub gpt-5.6-luna 走 OpenAI-compatible 不认 → 400 "Unknown parameter" → judge_error=1 → discard=1 → reward 全 0。逐字段隔离实测:`thinking`/`enable_thinking`/`chat_template_kwargs` → 400,`reasoning_effort` → 200 | 删掉 3 个非法字段,只留 `reasoning_effort="medium"`(luna 认);本地实测 judge 恢复正常返回 verdict |
+
+| E10 | r0 每步崩 `AttributeError: 'DataProto' object has no attribute 'keys'/'shape'`(E8 同类根因的完整版):verl 0.8.0 v1 `infer_batch`/`train_batch`/`train_mini_batch`(engine_workers.py)函数体全用 TensorDict API(`data.keys()`:398/344、`data.shape[0]`:244、`tu.assign_non_tensor`:399/345、`tu.make_iterator`:264、`maybe_fix_3d_position_ids`:243),但 r0 掺回放行后 data 实际收到 **DataProto**。E8 只打了 `tu.pop`(386) 一个地鼠,其余各点仍会逐次崩 | 新建 `trainer/dataproto_tensordict_patch.py`:在 `tqbridge`(`verl.utils.transferqueue_utils`)层统一把 `@register` 分发函数的 DataProto 入参 `to_tensordict()` 转 TensorDict,一处覆盖全部崩溃点(含未来新增 @register 函数,不打地鼠);原 E8 的 `tu.pop` 兼容并入本模块作兜底(`_patch_tu_pop`),旧 `tensordict_pop_patch.py` 已删。走 `VERL_USE_EXTERNAL_MODULES` 不改 verl。**待集群重跑 r0 验证:data.keys()/no_lora_adapter 崩溃 0 次、训练过 step2、reward~0.3** |
+
+| E11 | **replay_loss ≈ 2.4e-8(应 O(0.1~1)),几乎为 0**:`replay_token_weights` 在 `weighting._clip_and_normalize` 里**按 batch 内 Σw=1 归一化**(doc `CL_Design.md` §L_replay 权重 "保证 batch 内 Σw 归一";64 条 replay × ~2 万 response token → 每 token 权重 ~7e-7),但 `select_replay_rows` 用 **mean 聚合**(分母 = `mask.sum()` = token 数 ~1e6)。于是把 Σw=1 的权重 mass(~1)再摊到 1e6 个 token → loss = mean(-logπ)·7e-7 ≈ 2e-8,λ₃·loss ≈ 1e-8 对训练**零贡献**(L_replay 实际失效)。非 v1 字段丢失:is_replay 存活(replay_empty=0.92<1)、RL loss/entropy 正常(forward 健康)、mask.sum()>0(loss 非精确 0)。`replay_empty≈0.92` 由 `shuffle:false` 回放行拼 batch 尾部、只落最后 1 个 mini-batch 解释(已知预期,非本 bug) | `trainer/replay_forward.py::select_replay_rows` 分母从 `mask.sum()`(token 数)改为 `Σ(w·mask)`(权重 mass,clamp≥1e-12)→ 得 -logπ 的**加权平均** O(1),与 doc "E[-logπ·w] + Σw=1" 自洽;`token_weights=None` 分支仍用 `mask.sum()`(无权重时退 unweighted mean)。加 `CL_REPLAY_DEBUG=1` 诊断 dump(默认关,`compute_replay_loss`/`select_replay_rows` 各一段:is_replay/mask/log_probs/weights 的 sum·mean·abs_mean·denom),上集群前设 env 确认 Σw≈1 且 log_probs 非零即可定位。单测 `test_select_replay_rows_is_differentiable_and_weighted` 权重改 Σw=1 契约 |
 
 ## F. Observer / Reward 审查(反 reward-hacking)
 
@@ -69,6 +76,7 @@
 |---|---|---|
 | F1 | observer 探针 `MAX_FILES=200` 截断 → 假 diff;`max_depth=5` 漏深目录;`.` 开头缓存文件/`*.log`/`*.pid`/`node-compile-cache` 进 diff 噪声 | MAX_FILES→500、depth→7、过滤所有 `.` 开头目录+文件、`_is_runtime_file` 加 `*.log`/`*.pid`、SKIP 名单扩充 |
 | F2 | observer 报告 `str(ObservationReport)` 难读;judge prompt 无交叉核对指令;轨迹不是完整 JSON | `_format_changes` 三段式(BEFORE/AFTER 内容);rubric 加 `## MANDATORY cross-check` 段;轨迹以完整 OpenAI messages JSON 呈现 |
+| F3 | observer 空 report 武断判 0:`rollout/simulated_session.py` `_score_all_slots` 里 `rep is None or rep.is_empty()` 直接 gated 判 0,连 judge 都不调。有些任务不改系统状态(QA/纯对话/只读),observer 无 FS/sys diff,但 agent 可能回答得好 → 整组 GRPO advantage 归零(桶级静默坍缩) | 空 report 时用 `_last_assistant_reply(t.messages)` 判断 agent 是否真有回复:有则构造兜底 report(把回复 fold 进 final)交给 judge;只有真没产出(空轨迹/崩溃/timeout)才判 0 |
 
 ## G. 遗留 / 待办(不阻塞)
 
@@ -77,3 +85,4 @@
 - fla/causal-conv1d torch fallback(GDN kernel 慢,CUDA13 编不出);FlashInferAllReduce disabled(无害 warning)。
 - E7 的 step17 修复待上机重启验证;C4 的 512 崩溃是否随迁移消失待验证。
 - R 系列 buffer 端到端验证;冷启动完整轨迹(`cold_start/train.parquet` 已含 messages 列)等 SFT/replay 阶段启用。
+- 冷启动 warmup 数据补 floor(2026-08-18):coding 29→30、research 52→54 各差 1 条,差的都是 `status=error` 空壳轨迹(messages=[],api_calls=0)。897(引用沙箱不存在的 `@web/index.html`)/1354(引用本地代码库)是脏种子,重采必然稳定失败;1419(自包含)可救。方案:从 seed 池 `_archive/queries_cold.jsonl` 换 2 条干净 query 替换 897/1354 + 复用 1419,requery 重采补到 floor。**数据质量不做额外淘汰**——防遗忘目标下 rollout 自然产生的脏数据无所谓,只需达 floor 让 replay 能采到旧桶。
