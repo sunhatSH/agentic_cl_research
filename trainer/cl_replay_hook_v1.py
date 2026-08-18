@@ -337,7 +337,8 @@ def _append_replay_rows_v1(
     n = fields_td.batch_size[0]
     base_step = int(shuffle_seed)
     replay_keys = [f"replay-{base_step}-{i}_{0}_{0}" for i in range(n)]
-    tags = [{"is_padding": False, "is_replay": True, "status": "finished"} for _ in range(n)]
+    tags = [{"is_padding": False, "is_replay": True, "status": "finished",
+             "min_global_steps": base_step, "max_global_steps": base_step} for _ in range(n)]
 
     tq.kv_batch_put(keys=replay_keys, partition_id=_REPLAY_PARTITION, fields=fields_td, tags=tags)
     replay_meta = KVBatchMeta(
