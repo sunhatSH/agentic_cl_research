@@ -65,6 +65,20 @@ def _safe_scalar_repr(tensor) -> str:
         return repr(tensor)
 
 
+def _nested_max_len(tensor):
+    """nested tensor 的最大行长度（dense 取 shape[1]；失败返回 -1）。"""
+    if tensor is None:
+        return -1
+    try:
+        if getattr(tensor, "is_nested", False):
+            return int(tensor.offsets().diff().max().item())
+        if hasattr(tensor, "dim") and tensor.dim() == 2:
+            return int(tensor.shape[1])
+    except Exception:  # noqa: BLE001
+        pass
+    return -1
+
+
 def compute_replay_loss(model_output, data):
     """Differentiable replay loss over appended replay rows.
 
@@ -240,6 +254,22 @@ def make_cl_loss(
                 model_output["log_probs"] if isinstance(model_output, dict) else model_output.get("log_probs")
             )
             return lp.sum() * 0.0, {}
+        if _replay_debug_enabled():
+            # E12 诊断：ppo_loss 崩 "log_prob - old_log_prob 长度错位" 时，dump responses/old_log_probs
+            # 的最大 nested 长度 + is_replay 计数，定位错位行是回放行还是 rollout 行。
+            try:
+                resp = _data_get(data, "responses")
+                olp = _data_get(data, "old_log_probs")
+                is_replay = _data_get(data, IS_REPLAY_KEY)
+                resp_max = _nested_max_len(resp)
+                olp_max = _nested_max_len(olp)
+                _replay_debug(
+                    "_rl_loss(ppo_loss 前): responses.max=%s old_log_probs.max=%s "
+                    "is_replay.sum=%s"
+                    % (resp_max, olp_max, _safe_scalar_repr(is_replay))
+                )
+            except Exception as exc:  # noqa: BLE001 -- 诊断兜底
+                _replay_debug("_rl_loss 诊断失败: %s" % exc)
         return fn(model_output=model_output, data=data, dp_group=dp_group)
 
     def cl_loss_no_replay(model_output, data, dp_group=None):

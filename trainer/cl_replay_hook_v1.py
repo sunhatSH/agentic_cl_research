@@ -169,10 +169,13 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
             buffer.set_step(step)
 
             # ── 3. POST：forgetting_risk 回填（对刚回放的轨迹重算 current-policy logprob）──
-            # v1：走 tq KVBatchMeta 路径（compute_log_prob(replay_meta) → kv_batch_get → response_from_nested），
-            # 不再用 v0 的 DataProto（那在 v1 会 AttributeError: DataProto has no 'keys' 静默失效，见 E10）。
+            # E12：compute_replay_current_logprobs_v1 对回放行做 compute_log_prob 前向会污染 tq
+            # （下一步 ppo_loss 崩 old_log_probs/responses 长度错位，见 E12）。本机无法验证，且
+            # R0 uniform priority 不需要 forgetting_risk，故暂时禁用（forgetting_risk 恒 0）。
+            # 待集群实测定位 tq 污染点后再启用 v1 路径。
             tids = replay_rows.get(REPLAY_TIDS_KEY) if replay_rows else None
-            if tids and forgetting_update_freq > 0 and step % forgetting_update_freq == 0:
+            _backfill_enabled = False  # E12: 禁用（前向污染 tq，未验证）
+            if _backfill_enabled and tids and forgetting_update_freq > 0 and step % forgetting_update_freq == 0:
                 means = compute_replay_current_logprobs_v1(
                     trainer,
                     replay_meta,
