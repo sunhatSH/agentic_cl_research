@@ -113,6 +113,13 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
         replay_rows: dict = {}
         replay_meta = None
 
+        # ── 0. 上游探针（E13）：掺回放行【之前】,逐行校验 tq 里 rollout 行的 responses vs
+        #    response_mask 长度。E13 错位(response_mask 比 responses 长 776)已确认在 rollout 行,
+        #    但静态阅读证明写入链两者恒等长 → 错位出在 tq 存储/传输(写入相等、读回不等)。故在此
+        #    主动扫描【全部】rollout 行(不等 ppo_loss 崩,命中率高),一发现不等立即 dump 行号+两长度,
+        #    直接定位是哪条轨迹、差多少。CL_REPLAY_DEBUG=1 才开(默认关,不影响正常训练)。
+        _probe_rollout_len_mismatch(rl_batch)
+
         # ── 1. PRE：从 9桶 buffer 采旧桶 winner，掺进 tq + 合并 KVBatchMeta ──
         if lambda_replay > 0:
             # 回放量 eff_replay 的动态计算：
@@ -212,6 +219,63 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
     trainer._update_actor = patched_update
     tag = "9桶 buffer + std metrics" if buffer is not None else "std metrics only (no buffer)"
     print(f"[cl] v1: hook 已装 ({tag}, patched _update_actor, KVBatchMeta 适配)", flush=True)
+
+
+def _probe_rollout_len_mismatch(rl_batch: Any) -> None:
+    """E13 上游探针：掺回放行前,逐行校验 tq 里 rollout 行 responses vs response_mask 长度。
+
+    E13 错位(某行 response_mask 比 responses 长,实测 776)已确认在 rollout 行(is_replay.sum=0),
+    但写入链(record_turn 同步 extend + convert 同步截断 + session_worker 逐元素写)静态证明两者
+    恒等长 → 错位出在 tq 存储/传输(nested tensor 跨 Ray actor 序列化?)。此探针直接读回 tq 里的
+    两个 nested 字段,per-row 比长度,一发现不等立即 dump(行号 + responses 长 + response_mask 长 +
+    差值 + 是否 padding 行),不必等 ppo_loss 崩。CL_REPLAY_DEBUG=1 才跑(默认关)。
+
+    读回失败/字段缺失/本机无 tq → 静默返回(纯诊断,绝不影响训练)。
+    """
+    from trainer.replay_forward import _replay_debug, _replay_debug_enabled
+
+    if not _replay_debug_enabled():
+        return
+    try:
+        import transfer_queue as tq
+
+        td = tq.kv_batch_get_by_meta(rl_batch, select_fields=["responses", "response_mask"])
+        if td is None or "responses" not in td or "response_mask" not in td:
+            _replay_debug("E13探针: tq 未取到 responses/response_mask,跳过")
+            return
+        resp = td["responses"]
+        rmask = td["response_mask"]
+        # nested → per-row 长度；dense 退化为 shape[1] 重复。
+        def _lens(t):
+            if getattr(t, "is_nested", False):
+                return [int(x) for x in t.offsets().diff().tolist()]
+            if hasattr(t, "dim") and t.dim() == 2:
+                return [int(t.shape[1])] * int(t.shape[0])
+            return []
+
+        rl = _lens(resp)
+        ml = _lens(rmask)
+        tags = getattr(rl_batch, "tags", None) or []
+        if not rl or len(rl) != len(ml):
+            _replay_debug(
+                "E13探针: 长度列表取不齐(responses=%d rows, response_mask=%d rows),跳过"
+                % (len(rl), len(ml))
+            )
+            return
+        mism = []
+        for i, (a, b) in enumerate(zip(rl, ml, strict=True)):
+            if a != b:
+                is_pad = bool(tags[i].get("is_padding", False)) if i < len(tags) and isinstance(tags[i], dict) else False
+                mism.append(f"row{i}:responses={a},response_mask={b},diff={b - a},padding={is_pad}")
+        if mism:
+            _replay_debug(
+                "[E13 上游错位] tq 里 rollout 行 responses≠response_mask,共 %d 行: %s"
+                % (len(mism), mism[:20])
+            )
+        else:
+            _replay_debug("E13探针: 本 step %d 行 rollout,responses==response_mask 全对齐(无错位)" % len(rl))
+    except Exception as exc:  # noqa: BLE001 -- 纯诊断,任何失败都不影响训练
+        _replay_debug("E13探针失败(不影响训练): %s" % exc)
 
 
 def _merge_buffer_metrics(metrics: dict, stats: Any, flatten_fn) -> None:

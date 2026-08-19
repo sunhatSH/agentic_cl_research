@@ -79,6 +79,20 @@ def _nested_max_len(tensor):
     return -1
 
 
+def _nested_lens(tensor):
+    """nested tensor 的逐行长（dense 退化为 [shape[1]]*shape[0]；失败返回 []）。"""
+    if tensor is None:
+        return []
+    try:
+        if getattr(tensor, "is_nested", False):
+            return [int(x) for x in tensor.offsets().diff().tolist()]
+        if hasattr(tensor, "dim") and tensor.dim() == 2:
+            return [int(tensor.shape[1])] * int(tensor.shape[0])
+    except Exception:  # noqa: BLE001
+        pass
+    return []
+
+
 def compute_replay_loss(model_output, data):
     """Differentiable replay loss over appended replay rows.
 
@@ -255,19 +269,31 @@ def make_cl_loss(
             )
             return lp.sum() * 0.0, {}
         if _replay_debug_enabled():
-            # E12 诊断：ppo_loss 崩 "log_prob - old_log_prob 长度错位" 时，dump responses/old_log_probs
-            # 的最大 nested 长度 + is_replay 计数，定位错位行是回放行还是 rollout 行。
+            # E12/E13 诊断：只在 ppo_loss 要崩「log_prob - old_log_prob 长度错位」时才 dump
+            # （即 responses.max != old_log_probs.max），平时静默避免长跑刷屏。错位时逐行 dump
+            # responses 长度 vs old_log_probs(=response_mask) 长度 + is_replay 标记，定位是哪个
+            # 类型的哪一行错位（同时查 rollout 和回放行，不二选一）。
             try:
                 resp = _data_get(data, "responses")
                 olp = _data_get(data, "old_log_probs")
-                is_replay = _data_get(data, IS_REPLAY_KEY)
                 resp_max = _nested_max_len(resp)
                 olp_max = _nested_max_len(olp)
-                _replay_debug(
-                    "_rl_loss(ppo_loss 前): responses.max=%s old_log_probs.max=%s "
-                    "is_replay.sum=%s"
-                    % (resp_max, olp_max, _safe_scalar_repr(is_replay))
-                )
+                if resp_max >= 0 and olp_max >= 0 and resp_max != olp_max:
+                    is_replay = _data_get(data, IS_REPLAY_KEY)
+                    resp_lens = _nested_lens(resp)
+                    olp_lens = _nested_lens(olp)
+                    irep = is_replay.tolist() if hasattr(is_replay, "tolist") else list(is_replay or [])
+                    mismatch = []
+                    if resp_lens and len(resp_lens) == len(olp_lens):
+                        for i, (rl, ol) in enumerate(zip(resp_lens, olp_lens, strict=True)):
+                            if rl != ol:
+                                row_type = "replay" if (i < len(irep) and irep[i]) else "rollout"
+                                mismatch.append(f"row{i}[{row_type}]:responses={rl},response_mask={ol}")
+                    _replay_debug(
+                        "[E13 错位] responses.max=%s old_log_probs.max=%s is_replay.sum=%s "
+                        "| 错位行数=%d %s"
+                        % (resp_max, olp_max, _safe_scalar_repr(is_replay), len(mismatch), mismatch[:20])
+                    )
             except Exception as exc:  # noqa: BLE001 -- 诊断兜底
                 _replay_debug("_rl_loss 诊断失败: %s" % exc)
         return fn(model_output=model_output, data=data, dp_group=dp_group)

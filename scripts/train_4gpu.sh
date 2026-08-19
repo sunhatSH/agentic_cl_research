@@ -57,4 +57,5 @@ exec bash "$IMPL" \
   --config "$ROOT/$CONFIG" \
   "trainer.experiment_name=$_exp" \
   "trainer.nnodes=1" "trainer.n_gpus_per_node=4" \
+  "trainer.total_training_steps=6" \
   "${@:2}"

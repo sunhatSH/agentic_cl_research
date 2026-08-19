@@ -161,9 +161,14 @@ export VERL_USE_EXTERNAL_MODULES="${VERL_USE_EXTERNAL_MODULES:-recipe_custom.boo
 #       tu.pop/tu.assign_non_tensor/tu.make_iterator) 每 step 崩(b1 无 replay 是 TensorDict 不崩)。
 #       在 tqbridge 层统一把 DataProto→to_tensordict(),一处覆盖全部 @register 分发函数(不再逐点
 #       打地鼠);并保留 tu.pop 的 DataProto 兼容作兜底。
+#   · trainer.image_trajectory_drop_patch —— 含图/视频 trajectory 全过滤(E13):agent 沙箱工具产
+#       PNG 截图 → 含图轨迹进训练 → 视觉 token 展开成 patch,log_probs 与 responses/response_mask
+#       token 数错位 → ppo_loss "size of tensor a != b" 崩(差值=一张图 patch 数如 776)。patch
+#       AgentSessionWorker._is_trainable_trajectory,含图判不可训练→剔除,复用现成 min_group_success_ratio
+#       组过滤(组内含图≤半用剩下纯文本训、>半整组丢)。TEXT_MODEL_ONLY=1 保多模态能力不关视觉,故在此过滤。
 # 都必须在 worker 进程生效（patch 目标都在 worker/lightllm 副本），故走 VERL_USE_EXTERNAL_MODULES
 # 而非 driver-only import。逐个幂等去重。
-for _mod in rollout.e2b_http1_patch trainer.observer_hook_register trainer.pause_generation_bounded_patch trainer.dataproto_tensordict_patch; do
+for _mod in rollout.e2b_http1_patch trainer.observer_hook_register trainer.pause_generation_bounded_patch trainer.dataproto_tensordict_patch trainer.image_trajectory_drop_patch; do
   case ",$VERL_USE_EXTERNAL_MODULES," in
     *,"$_mod",*) : ;;  # 已含,不重复追加
     *) export VERL_USE_EXTERNAL_MODULES="$VERL_USE_EXTERNAL_MODULES,$_mod" ;;
@@ -316,40 +321,45 @@ _prewarm_model() {
   fi
 }
 
-# 把上一 run 的 metrics.jsonl(verl 下次启动会 open("wb") 覆盖它)折叠进永久累积文件
-# metrics.all.jsonl。按 step 去重(同 step 后写为准);resume 续训 step 不与旧重叠,故正常即纯
-# append,去重只防同一 run 内异常重复。metrics.all.jsonl 永不被覆盖 = 完整历史单一来源。
-# 仅在 resume(有 ckpt)时调用。依赖显式 PY(项目铁律,不乱用其他 python),纯标准库无第三方依赖。
-_fold_metrics() {
+# 归档上一 run 的 metrics(metrics.jsonl / metrics.all.jsonl)：重命名加【折叠时刻】UTC 时间戳,
+# 移到 archive/ 子目录。旧数据不丢(带时间戳可追溯)、也不与新 run 的 metrics 混。
+# verl FileLogger 硬编码 open(path,"wb") 每次启动覆盖 metrics.jsonl(tracking.py:420,不改 verl 源码),
+# 故新 run 前必须把旧的挪走(否则被覆盖丢失,2026-08-05 b1_16gpu step-38 丢失事故)。
+# 有 ckpt / 无 ckpt 都调用：模型 checkpoint 是唯一真相源,metrics 一律归档、新 run 重写干净文件。
+# 依赖显式 PY(项目铁律),纯标准库。
+_archive_metrics() {
   local mdir="$1"
-  local cur="$mdir/metrics.jsonl" all="$mdir/metrics.all.jsonl"
-  [ -s "$cur" ] || return 0   # 上一 run 无 metrics(未产出)→ 无需折叠
-  "$PY" - "$cur" "$all" <<'PYEOF'
-import json, os, sys
-cur, allp = sys.argv[1], sys.argv[2]
-by_step = {}
-for p in (allp, cur):          # 先读已有累积,再用当前 run 覆盖同 step
-    if not os.path.exists(p):
-        continue
-    with open(p) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except Exception:
-                continue
-            step = row.get("step")
-            if step is not None:
-                by_step[step] = row
-tmp = allp + ".tmp"
-with open(tmp, "w") as f:
-    for step in sorted(by_step):
-        f.write(json.dumps(by_step[step], ensure_ascii=False) + "\n")
-os.replace(tmp, allp)
-print(f"[train_cl] metrics 折叠: 累积 {len(by_step)} step → {os.path.basename(allp)}")
-PYEOF
+  local ts; ts=$(date -u +%Y%m%dT%H%M%SZ)
+  local adir="$mdir/archive"
+  local moved=0
+  for f in metrics.jsonl metrics.all.jsonl; do
+    if [ -s "$mdir/$f" ]; then
+      mkdir -p "$adir"
+      # 文件名: metrics-<ts>.jsonl / metrics.all-<ts>.jsonl (ts=折叠时刻)
+      local stem="${f%.jsonl}"
+      mv "$mdir/$f" "$adir/${stem}-${ts}.jsonl" 2>/dev/null && moved=$((moved+1)) || true
+    fi
+  done
+  [ "$moved" -gt 0 ] && echo "[train_cl] metrics 归档: $moved 个 → $adir/*-${ts}.jsonl"
+  return 0
+}
+
+# 删掉 buffer_dumps 里 step > 模型 ckpt step 的快照(模型没到的 step,其 buffer 快照是脏的)。
+# 无 ckpt(N=-1)时删该实验全部 buffer_dumps(从头训,旧 buffer 快照作废)。
+_trim_buffer_dumps() {
+  local keep_max="$1"   # 保留 step <= keep_max 的; -1 = 全删
+  local pat="$ROOT_DIR/buffer_dumps/${_exp}-step-"
+  local removed=0
+  for snap in "${pat}"*.sqlite; do
+    [ -e "$snap" ] || continue
+    local s; s=$(basename "$snap" | grep -oP '(?<=-step-)\d+') || s=""
+    [ -n "$s" ] || continue   # 解析不出 step 号 → 跳过(不误删)
+    if [ "$keep_max" -lt 0 ] || [ "$s" -gt "$keep_max" ]; then
+      rm -f "$snap" && removed=$((removed+1))
+    fi
+  done
+  [ "$removed" -gt 0 ] && echo "[train_cl] buffer_dumps 清理: 删 $removed 个 step>${keep_max} 快照"
+  return 0
 }
 
 _run_single() {
@@ -366,26 +376,30 @@ _run_single() {
   #   verl resume_path 会 load_checkpoint + dataloader.load_state_dict(data.pt 存的数据游标,
   #   trainer_base.py:769) → 从上次数据位置续采,不重复用已训过的数据。
   #   ★ 无 ckpt = 全新训练:不 resume、metrics 从头重开(不接旧的)。
+  # auto-resume:模型 checkpoint 是唯一真相源。
+  #   · 有 ckpt(step=N): resume。verl --resume-from 会 load actor 权重 + data.pt(dataloader 游标,
+  #     两者同在 global_step_N/ 目录 → 模型与数据天然对齐到 N),从 N+1 续采、不重复。
+  #     项目侧产物对齐到 N: metrics 归档后重写(新 run 从 N+1 写)、buffer_dumps 删 step>N 的脏快照。
+  #   · 无 ckpt: 从头训。删该实验的数据检查点残留(buffer_dumps 全删),metrics 归档后重开。
   local latest latest_step
   latest=$(ls -dt "$ckpt"/global_step_* 2>/dev/null | head -1) || true
 
   # verl 原生 FileLogger(logger:[...,file] 时生效)每 step 实时写 JSONL(reward/advantage/loss)。
-  # ⚠️ verl FileLogger 硬编码 open(path,"wb") → 每次启动覆盖 metrics.jsonl(tracking.py:420),
-  #   不改 verl 源码(项目铁律)。故:
-  #   · resume(有 ckpt):启动前把上一 run 的 metrics.jsonl 折叠进永久累积 metrics.all.jsonl
-  #     (按 step 去重;续训 step 不与旧重叠,合并无损)。all 永不覆盖、跨 run 连续 = 完整历史。
-  #   · 全新(无 ckpt):启动前**同样**把上一 run 的 metrics.jsonl 折叠进 metrics.all.jsonl
-  #     (不再直接清掉;防止 2026-08-05 的 b1_16gpu step-38 数据丢失事故重现),然后 rm 当前
-  #     metrics.jsonl 让 verl 重写。all 只增不减,跨多次全新训练累积全部 step。
+  # ⚠️ verl FileLogger 硬编码 open(path,"wb") → 每次启动覆盖 metrics.jsonl(tracking.py:420),不改
+  #   verl 源码(项目铁律)。故每次启动前把旧 metrics 归档(带折叠时间戳,见 _archive_metrics):
+  #   旧数据不丢(可追溯)、不与新 run 混、新 run 从 verl 重写的干净文件开始。
+  local _resume_arg=()   # --resume-from 单独存(optional,放 -- 之前);空数组=不 resume
   if [ -n "$latest" ]; then
     latest_step=$(basename "$latest" | grep -oP '\d+')
-    echo "[train_cl] 检测到 checkpoint step=$latest_step → 自动续训(数据游标随 data.pt 续,不重复)"
-    _fold_metrics "$_mdir"
-    set -- "--resume-from" "$latest" "$@"
+    echo "[train_cl] 检测到 checkpoint step=$latest_step → 自动续训(模型+数据游标随 data.pt 对齐到 $latest_step,不重复)"
+    _archive_metrics "$_mdir"
+    _trim_buffer_dumps "$latest_step"        # 删 step>N 的脏 buffer 快照(模型没到那些 step)
+    _resume_arg=("--resume-from" "$latest")
   else
-    echo "[train_cl] 无 checkpoint → 全新训练(不 resume;旧 metrics 先折叠进 .all 再重开)"
-    _fold_metrics "$_mdir"
-    rm -f "$_mdir/metrics.jsonl"
+    echo "[train_cl] 无 checkpoint → 全新训练(删数据检查点残留,metrics 归档后从头)"
+    _archive_metrics "$_mdir"
+    _trim_buffer_dumps -1                     # 无 ckpt: 删该实验全部 buffer_dumps
+    rm -f "$_mdir/metrics.jsonl"              # 归档已挪走,清残留让 verl 重写
   fi
 
   echo "[train_cl] 启动 $_exp → $_LOGDIR"
@@ -406,7 +420,13 @@ _run_single() {
       ;;
     2) ;; # 保持 config 基线(enable_multimodal=false)
   esac
-  "$PY" -m trainer.cl_main --config "$CONFIG" "${_model_ovr[@]}" "$@"
+  # ⚠️ 参数传递用 `--` 分隔符根治 argparse 顺序坑：cl_main 的 overrides 是 nargs="*" positional,
+  #   与 optional(--resume-from)混排时,argparse(py3.11 训练环境)会把 -- 之后本该是 positional 的
+  #   key=value 误判 "unrecognized arguments"(实测两次崩:先 trainer.*、后 actor_rollout_ref.*)。
+  #   `--` 显式终止 optional 解析,其后【全部】当 positional overrides,与 Python 版本/顺序无关。
+  #   所有 optional(--config/--resume-from)在 -- 之前,所有 override(_model_ovr + $@)在 -- 之后。
+  "$PY" -m trainer.cl_main --config "$CONFIG" ${_resume_arg[@]+"${_resume_arg[@]}"} -- \
+    "${_model_ovr[@]}" ${@+"$@"}
 }
 
 # ══════════════════════════════════════════════════════════════════════════
