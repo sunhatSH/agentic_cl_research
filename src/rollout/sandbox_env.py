@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # src/rollout → repo root
 _DEFAULT_JSON = _REPO_ROOT / "configs" / "sandbox_runtime_env.json"
 _DEFAULT_LOCAL = _REPO_ROOT / "docker" / "sandbox" / "runtime.env"
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """taskspec.yaml -> queries.jsonl (data pipeline Stage A).
 
-把上游 taskspec（data/taskspecs/s_<id>/taskspec.yaml）转成 queries JSONL，
+把上游 taskspec（datasources/taskspecs/s_<id>/taskspec.yaml）转成 queries JSONL，
 每行含 record_id + queries + bucket（--classify 时 LLM 打桶）。
 
-Input  : data/taskspecs/s_<id>/taskspec.yaml
+Input  : datasources/taskspecs/s_<id>/taskspec.yaml
 Output : queries.jsonl，每行一个 JSON 对象：
              {"record_id": "<task_id>", "queries": ["<seed>", "<follow_up>", ...],
               "bucket": "ops", "sub_bucket": "operations"}
@@ -194,7 +194,7 @@ def convert(taskspecs_dir: Path, output: Path, limit: int | None, *, classify: b
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--taskspecs", default="data/taskspecs", help="taskspecs 根目录")
+    ap.add_argument("--taskspecs", default="datasources/taskspecs", help="taskspecs 根目录")
     ap.add_argument("--output", default="datasets/queries.jsonl", help="输出 queries JSONL")
     ap.add_argument("--limit", type=int, default=None, help="只处理前 N 个 task")
     ap.add_argument("--classify", action="store_true", help="LLM 打桶（需 TOKENHUB_API_KEY 或 BUCKET_CLASSIFIER_* env）")

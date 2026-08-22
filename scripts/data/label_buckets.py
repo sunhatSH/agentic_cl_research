@@ -25,7 +25,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-TASKSPECS_DIR = ROOT / "data" / "taskspecs"
+TASKSPECS_DIR = ROOT / "datasources" / "taskspecs"
 
 CANONICAL_BUCKETS = [
     "workflow",

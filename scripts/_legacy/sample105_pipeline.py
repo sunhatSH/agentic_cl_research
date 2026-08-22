@@ -4,11 +4,11 @@
 三步（可单独跑，也可串联）：
 
   1. extract   — 从 OpenClaw 采集目录抽每个主会话的首 query
-                 → data/first_queries.jsonl
+                 → datasources/first_queries.jsonl
   2. classify  — LLM 给首 query 分桶 + 子桶
-                 → data/first_queries_classified.jsonl
+                 → datasources/first_queries_classified.jsonl
   3. route     — 按桶把完整轨迹重建入桶
-                 → data/buckets/<bucket>/<record_id>.jsonl
+                 → datasources/buckets/<bucket>/<record_id>.jsonl
 
 典型串联::
 
@@ -18,15 +18,15 @@
 
     # 仅抽首 query（不联网）
     python scripts/pipeline/sample105_pipeline.py extract \\
-        --root /path/to/sample105_v2 --output data/first_queries.jsonl
+        --root /path/to/sample105_v2 --output datasources/first_queries.jsonl
 
     # 仅分桶（需 sufy key / .env；输入是上一步的 jsonl）
     python scripts/pipeline/sample105_pipeline.py classify \\
-        --input data/first_queries.jsonl --output data/first_queries_classified.jsonl
+        --input datasources/first_queries.jsonl --output datasources/first_queries_classified.jsonl
 
     # 仅入桶
     python scripts/pipeline/sample105_pipeline.py route \\
-        --input data/first_queries_classified.jsonl --out-dir data/buckets
+        --input datasources/first_queries_classified.jsonl --out-dir datasources/buckets
 
 凭证：classify 走 sufy（``.env`` 的 SUFY_API_KEY），端点缺省用
 ``configs/agents.yaml`` 的 observer 配置；可用 ``BUCKET_CLASSIFIER_API_BASE /
@@ -191,25 +191,25 @@ def main() -> int:
 
     p_extract = sub.add_parser("extract", help="抽首 query")
     p_extract.add_argument("--root", required=True, help="OpenClaw 采集根目录（含 000XXX/）")
-    p_extract.add_argument("--output", default="data/first_queries.jsonl")
+    p_extract.add_argument("--output", default="datasources/first_queries.jsonl")
     p_extract.add_argument("--limit", type=int, default=None)
     p_extract.set_defaults(func=cmd_extract)
 
     p_classify = sub.add_parser("classify", help="LLM 分桶")
-    p_classify.add_argument("--input", default="data/first_queries.jsonl")
-    p_classify.add_argument("--output", default="data/first_queries_classified.jsonl")
+    p_classify.add_argument("--input", default="datasources/first_queries.jsonl")
+    p_classify.add_argument("--output", default="datasources/first_queries_classified.jsonl")
     p_classify.add_argument("--config", default=None, help="agents.yaml 路径")
     p_classify.add_argument("--max-tokens", type=int, default=256)
     p_classify.set_defaults(func=cmd_classify)
 
     p_route = sub.add_parser("route", help="按桶入完整轨迹")
-    p_route.add_argument("--input", default="data/first_queries_classified.jsonl")
-    p_route.add_argument("--out-dir", default="data/buckets")
+    p_route.add_argument("--input", default="datasources/first_queries_classified.jsonl")
+    p_route.add_argument("--out-dir", default="datasources/buckets")
     p_route.set_defaults(func=cmd_route)
 
     p_sub = sub.add_parser("route-subagents", help="子会话事件流原样转 chat、独立成样本")
     p_sub.add_argument("--root", required=True, help="OpenClaw 采集根目录（含 000XXX/）")
-    p_sub.add_argument("--out-dir", default="data/subagent_trajectories")
+    p_sub.add_argument("--out-dir", default="datasources/subagent_trajectories")
     p_sub.set_defaults(func=cmd_route_subagents)
 
     p_all = sub.add_parser("all", help="extract → classify → route 串联")

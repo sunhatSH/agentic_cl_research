@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """打标 jsonl (label_capability 产物) -> verl rl_dataset parquet。
 
-Input  : data/labeled/taskspecs_labeled.jsonl，每行:
+Input  : datasources/labeled/taskspecs_labeled.jsonl，每行:
            {record_id, bucket, queries:[seed, *follow_ups], hidden_goal,
             persona, available_tools, missing_info_slots, safety_constraints, difficulty}
 Output : train.parquet + val.parquet，verl rl_dataset 列:
@@ -20,11 +20,11 @@ Output : train.parquet + val.parquet，verl rl_dataset 列:
   - bucket=="unknown" 的行跳过(buffer 会 skip,不入训练)。
 
 用法:
-  python scripts/data/labeled_to_parquet.py \
-      --input data/labeled/taskspecs_labeled.jsonl \
+  python scripts/datasources/labeled_to_parquet.py \
+      --input datasources/labeled/taskspecs_labeled.jsonl \
       --out-dir datasets --val-fraction 0.02
   # 测试小批(测完就丢):
-  python scripts/data/labeled_to_parquet.py --input <jsonl> --out-dir /tmp/_pq_test --limit 50
+  python scripts/datasources/labeled_to_parquet.py --input <jsonl> --out-dir /tmp/_pq_test --limit 50
 """
 
 from __future__ import annotations

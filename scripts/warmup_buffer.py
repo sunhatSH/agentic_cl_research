@@ -1,6 +1,6 @@
 """Warm-start the 9-bucket replay buffer from collected rollout JSONL.
 
-Reads cold-collection output (data/mock/rollouts/{actor}/rollouts_*.jsonl, each
+Reads cold-collection output (datasources/mock/rollouts/{actor}/rollouts_*.jsonl, each
 line = one multi-turn session with `trajectories`) and ingests every trajectory
 into the 9-bucket BucketReplayBuffer, then dumps a single sqlite snapshot for the
 trainer to preload (warm-start, anti-forgetting cold start).
@@ -15,8 +15,8 @@ Cold data has no reward/advantage, so buffer priority falls back to its default
 
 Usage:
     python scripts/warmup_buffer.py \
-        --in-dir data/mock/rollouts \
-        --out data/mock/buffer_dumps/warmup.sqlite
+        --in-dir datasources/mock/rollouts \
+        --out datasources/mock/buffer_dumps/warmup.sqlite
 """
 
 from __future__ import annotations
@@ -29,7 +29,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))          # repo root (agents/, datasources/)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))  # 6 库包在 src/
 
 from replay_buffer.bucket import BucketReplayBuffer
 from trainer.domain_tagging import DEFAULT_BUCKETS
@@ -117,11 +118,11 @@ def _mix_by_ratio(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Warm-start 9-bucket buffer from rollout JSONL.")
-    ap.add_argument("--in-dir", default="data/mock/rollouts", help="dir with {actor}/rollouts_*.jsonl")
+    ap.add_argument("--in-dir", default="datasources/mock/rollouts", help="dir with {actor}/rollouts_*.jsonl")
     ap.add_argument("--input", default=None,
                     help="single jsonl to ingest directly (e.g. QC purified *_llmchecked.jsonl); "
                          "bypasses --in-dir glob when set")
-    ap.add_argument("--out", default="data/mock/buffer_dumps/warmup.sqlite")
+    ap.add_argument("--out", default="datasources/mock/buffer_dumps/warmup.sqlite")
     ap.add_argument("--total-capacity", type=int, default=25000)
     ap.add_argument(
         "--ratio-27b",

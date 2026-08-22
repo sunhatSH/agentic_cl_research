@@ -35,7 +35,7 @@ Output : train.parquet + val.parquet（verl rl_dataset 列）：
 
 Usage:
     python scripts/data/trajectory_to_parquet.py \\
-        --input data/mock/rollouts/cold/rollouts_cold.jsonl \\
+        --input datasources/mock/rollouts/cold/rollouts_cold.jsonl \\
         --out-dir datasets \\
         --val-fraction 0.05
     # 多个输入文件：

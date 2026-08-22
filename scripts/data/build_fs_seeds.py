@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build sandbox filesystem seeds from taskspecs (data/taskspecs → docker/sandbox/fs-seeds).
+"""Build sandbox filesystem seeds from taskspecs (datasources/taskspecs → docker/sandbox/fs-seeds).
 
 每个 task 的 ``files/``（初始文件系统）→ ``fs-seeds/<task_id>/``，作为沙箱实例
 启动时铺开的 seed（1 task ↔ 1 seed，1:1）。实例启动按 ``AGENTIC_CL_PERSONA=<task_id>``
@@ -25,7 +25,7 @@
   - buckets 由 LLM 对 seed_query 分桶（复用 data_pipeline.classify）
 
 用法：
-  python scripts/data/build_fs_seeds.py [--taskspecs data/taskspecs] [--out docker/sandbox/fs-seeds] [--no-classify]
+  python scripts/data/build_fs_seeds.py [--taskspecs datasources/taskspecs] [--out docker/sandbox/fs-seeds] [--no-classify]
   --no-classify: 跳过 LLM 分桶（buckets 留空，离线/无网时用）
 """
 
@@ -115,7 +115,7 @@ def classify_buckets(seed_queries: list[str]) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--taskspecs", default="data/taskspecs")
+    ap.add_argument("--taskspecs", default="datasources/taskspecs")
     ap.add_argument("--out", default="docker/sandbox/fs-seeds")
     ap.add_argument("--no-classify", action="store_true", help="跳过 LLM 分桶（buckets 留空）")
     args = ap.parse_args()

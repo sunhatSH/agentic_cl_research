@@ -54,6 +54,18 @@
 
 **Checkpoint 产出：** 0
 
+### 分阶段实验（2026-08-20 更新，详见 `doc/eval/防遗忘评测方案.md` §11）
+
+21 训练（算法 ablation）之外，防遗忘验证改为**分阶段、可裁剪**方案（脚本已就绪，未跑）：
+
+| 阶段 | 脚本 | 数据 | 训练 | 评测 |
+|------|------|------|------|------|
+| 第一步主实验 | `scripts/exp1_two_bucket/run.sh` | `datasets/train_cl.parquet`（coding/research 各 6400） | coding→research 续训 200+200，3 方法（baseline/CLEAR/CL） | 评 base + 2 checkpoint × 9 桶 |
+| 第二步（可选） | `scripts/exp2_nine_bucket/run.sh` | `datasets/train_exp2.parquet`（7 桶，192 step） | 7 桶少量边训边评，3 方法 | 每桶训完评 9 桶 |
+| 评测 runner | `scripts/exp_common/{merge_ckpt,run_eval_cl,run_eval_base}.sh` + `trainer/cl_eval.py` | — | — | 复用训练 RemoteAgentLoopManager 跑 ClawEval + judge 打分 |
+
+**Checkpoint 产出：** 0（第一步训出 `global_step_200` + `global_step_400`）
+
 ---
 
 ## verl 集成验证清单

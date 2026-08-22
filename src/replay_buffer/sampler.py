@@ -100,7 +100,7 @@ class DistanceStrategy:
 
     def __init__(self, coords_path: str | Path | None = None, metric: str = "euclidean"):
         if coords_path is None:
-            coords_path = Path(__file__).resolve().parent.parent / "configs" / "bucket_coords.json"
+            coords_path = Path(__file__).resolve().parent.parent.parent / "configs" / "bucket_coords.json"
         with open(coords_path, encoding="utf-8") as f:
             data = json.load(f)
         self._coords: dict[str, list[float]] = data["coordinates"]

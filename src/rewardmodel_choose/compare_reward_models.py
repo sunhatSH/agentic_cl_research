@@ -37,8 +37,9 @@ from pathlib import Path
 import httpx
 
 # 复用项目正式判分组件:rubric + prompt 组装 + 解析 + 聚合。这样"测的就是训练用的"。
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+ROOT = Path(__file__).resolve().parent.parent.parent  # repo root (src/rewardmodel_choose → repo)
+sys.path.insert(0, str(ROOT))          # agents/ 在仓库根
+sys.path.insert(0, str(ROOT / "src"))  # trainer/ 等 6 包在 src/
 
 from agents.prompts import REWARD_RUBRIC  # noqa: E402
 from trainer.model_reward import (  # noqa: E402

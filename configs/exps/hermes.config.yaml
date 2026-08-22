@@ -1,0 +1,77 @@
+# Static hermes config, referenced from agent_loop_config.yaml via
+# harness.settings.config_path. The HermesHarness merges only its
+# context-derived dynamic block on top at runtime:
+#   model.base_url, model.context_length, model.max_tokens
+#   auxiliary.compression.base_url
+#   delegation.base_url
+# so you do not (and should not) set those fields here.
+#
+# Plugin secrets are configured in sandbox config.yaml
+# and overridable via ~/.hermes/.env for CI deployments.
+
+model:
+  default: custom/model
+  provider: custom
+  api_key: EMPTY
+  api_mode: chat_completions
+
+providers:
+  custom:
+    api_key: EMPTY
+    model: custom/model
+
+auxiliary:
+  compression:
+    provider: custom
+    model: custom/model
+    api_key: EMPTY
+  vision:
+    provider: custom
+    model: custom/model
+    api_key: EMPTY
+
+delegation:
+  model: custom/model
+  api_key: EMPTY
+  api_mode: chat_completions
+
+# web 工具:不用 recipe_custom 的 local-web 插件(它需团队 serper_cache_proxy/fetch_server
+# 代理服务,本项目没有)。改用镜像里 /opt/tools/serper_search.py + jina_read.py 直连脚本
+# (SERPER_API_KEY/JINA_API_KEY 由 harness.env 注入沙箱 ~/.hermes/.env,脚本 os.getenv 读)。
+# 故此处不 enable local-web 插件,也不配 web.local_web(去掉 TODO_proxy 占位避免报错)。
+plugins:
+  enabled: []
+
+compression:
+  enabled: true
+  threshold: 0.5
+  target_ratio: 0.2
+  protect_last_n: 20
+  hygiene_hard_message_limit: 400
+  protect_first_n: 3
+  abort_on_summary_failure: false
+
+security:
+  redact_secrets: false
+
+platform_toolsets:
+  cli:
+    - clarify
+    - code_execution
+    - delegation
+    - file
+    - session_search
+    - skills
+    - terminal
+    - todo
+    - vision
+    - web
+
+skills:
+  external_dirs: ["~/.hermes/skills"]
+  template_vars: true
+  inline_shell: false
+  inline_shell_timeout: 10
+  guard_agent_created: false
+  creation_nudge_interval: 0
+  disabled: []

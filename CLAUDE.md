@@ -184,15 +184,22 @@ flowchart TB
 agentic_cl_research/
 ├── CLAUDE.md                # 本文件，AI 协作指南
 ├── README.md                # 项目入口
-├── pyproject.toml           # 项目元数据与依赖
+├── pyproject.toml           # 项目元数据与依赖（src-layout：src/ + agents/ 双根）
 ├── doc/                     # 设计文档（详见下表）
 ├── paper/                   # 论文产出：drafts/(md 草稿) latex/ assets/ refs/
-├── replay_buffer/           # 9 桶 Buffer 实现（与 verl 解耦的纯 Python 模块）
-├── trainer/                 # CL Loss 与训练入口（基于 verl，零源码改动）
+├── src/                     # ★ 6 个库包（PYTHONPATH 含 src/；包名不变，import 照旧）
+│   ├── trainer/             #   CL Loss + 训练入口 + verl runner（基于 verl，零源码改动）
+│   ├── replay_buffer/       #   9 桶 Buffer（纯 Python，与 verl 解耦）
+│   ├── rollout/             #   采样侧：沙箱客户端 / 会话池 / 轨迹采集 / simulated_session 驱动
+│   ├── inference/           #   单步生成边界（VerlRolloutGenerateFn / HTTP）
+│   ├── eval/                #   ClawEval 评测
+│   └── rewardmodel_choose/  #   reward 模型选型 sweep（一次性分析）
+├── agents/                  # UserSim 三 agent：observer / questioner / reward(judge) + personas（仍在根，import agents.*）
 ├── configs/                 # 实验配置（按 phase 分子目录）
 │   ├── base.yaml            #   共享默认配置
 │   ├── cluster.yaml         #   集群 64 卡引擎层 overlay
 │   ├── _generated_ppo_trainer.yaml  # verl 全量默认（集群 Hydra defaults 基底）
+│   ├── exps/                #   agent_loop_config.yaml + hermes.config.yaml（原 exps/，凭证走 ${oc.env}）
 │   ├── run/                 #   集群可运行配置（base + cluster + 实验语义）
 │   ├── phase1/              #   B1
 │   ├── phase2/              #   K1-K5, K2-R
@@ -200,16 +207,12 @@ agentic_cl_research/
 │   ├── phase4/              #   C1-C4
 │   ├── phase5/              #   S1, S2
 │   └── phase6/              #   X* (按需)
-├── trainer/                 # CL Loss + 训练入口 + verl runner（零源码改动）
-├── replay_buffer/           # 9 桶 Buffer（纯 Python，与 verl 解耦）
-├── rollout/                 # 采样侧：沙箱客户端 / 会话池 / 轨迹采集 / simulated_session 驱动
-├── agents/                  # UserSim 三 agent：observer / questioner / reward(judge) + personas
-├── inference/               # 单步生成边界（VerlRolloutGenerateFn / HTTP）
-├── eval/                    # ClawEval 评测
+├── datasources/            # 原始数据（原 data/：taskspecs / labeled / cleaning.py），gitignored
+├── datasets/               # 训练用 parquet（train_cl / train_exp2 等）
 ├── bin/                     # 独立数据管道工具（clean_zerowidth / detact / pipeline_cpp），ruff/black 排除
-├── scripts/                 # 训练 / 评测 / 沙箱 / 采集脚本（phase1–6）
+├── scripts/                 # 训练 / 评测 / 沙箱 / 采集脚本（仍在根，非库包）
 │   ├── train.sh             #   通用单实验入口（自动 source 训练 env）
-│   ├── eval.sh              #   通用评测入口
+│   ├── run_cl.sh            #   CL 分阶段实验入口（train/eval/stage1/stage2）
 │   ├── phaseN/run.sh        #   启动某 Phase 全部实验 (--only 选单个)
 │   └── ...                  #   sandbox_smoke / serve_reward_model / collect_cold 等
 ├── tests/                   # ~290 单元测试 + verl 兼容性 smoke
@@ -222,6 +225,8 @@ agentic_cl_research/
 ├── wandb/                   # W&B 实验追踪本地目录
 └── eval/results/            # 评测输出结果
 ```
+
+> **src-layout（2026-08-21）**：`replay_buffer/trainer/rollout/inference/eval/rewardmodel_choose` 从仓库根移入 `src/`；`agents/`、`scripts/`、`datasources/` 仍在根。包名未变，`import trainer.xxx` 等照旧——靠 `PYTHONPATH` 同时含 `src/` 和仓库根（`scripts/*.sh` 已设，pytest `pythonpath=["src","."]`）。config 里的文件路径（`path: src/trainer/model_reward.py`、`.../src/trainer/cl_agent_dataset.py`）已同步。
 
 ### 模型存放约定
 

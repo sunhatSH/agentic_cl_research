@@ -21,7 +21,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT))          # agents/, datasources/
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))  # trainer/ 等 6 包
 
 
 def _first_user_task(messages: list) -> str:

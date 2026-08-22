@@ -33,7 +33,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))          # repo root
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))  # 6 库包在 src/
 
 from eval.judge_agreement import evaluate_judge, rank_judges  # noqa: E402
 from trainer.model_reward import OpenAIJudgeClient  # noqa: E402

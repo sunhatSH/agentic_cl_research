@@ -14,6 +14,7 @@
 | [ops/](#ops--运行手册) | 运行手册（含 sandbox/） | 按需更新 |
 | [eval/](#eval--评测) | 评测方案 | 维护 |
 | [debug/](#debug--调试记录) | 训练排障记录 | 追加，结论已并入精简总表 |
+| [tuning/](#tuning--调优方法) | 调优方法论（怎么归因、怎么调） | 追加 |
 | [expr/](#expr--实验) | 实验结论（每实验一子目录） | 追加 |
 | [weekly_report/](#weekly_report--周报) | 周报 | 追加 |
 | [根目录单一信源](#根目录--单一信源) | prompt / refs / 重构指南 | 维护 |
@@ -87,6 +88,14 @@
 | [LightLLM_pause_abort_deadlock_请教.md](debug/LightLLM_pause_abort_deadlock_请教.md) | LightLLM pause/abort 死锁 |
 | [OOM_求助_GPT.md](debug/OOM_求助_GPT.md) | OOM 排查 |
 | [Training_Debug_2026-07-24.md](debug/Training_Debug_2026-07-24.md) | 训练调试记录 |
+
+## tuning/ — 调优方法
+
+> 调优**方法论**（怎么归因、怎么判 prompt/超参、怎么真机验证），区别于 debug/ 的 bug 结论。
+
+| 文档 | 内容 |
+|------|------|
+| [Reward_归因方法与调优经验.md](tuning/Reward_归因方法与调优经验.md) | reward 归因方法链（查得分→归类→低分归因→证伪→真机验证→判超参）+ 9 条可复用经验 |
 
 ## expr/ — 实验
 

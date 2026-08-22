@@ -98,7 +98,7 @@ if [ -f /tmp/borrowed_queries.jsonl ] && [ -s /tmp/borrowed_queries.jsonl ]; the
         --num-queries "$N" --max-concurrent 16 \
         --actor-model openai/gpt-5 --model-tag gpt5_borrow \
         --actor-impl hermes_structured \
-        --taskspecs-dir data/taskspecs_w3 \
+        --taskspecs-dir datasources/taskspecs_w3 \
         --queries /tmp/borrowed_queries.jsonl \
         --max-turns 20 --hermes-max-turns 30 --slot-timeout 900 \
         --collect-mode overwrite

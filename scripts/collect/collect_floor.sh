@@ -14,7 +14,7 @@ source "$ROOT/.env"
 set +a
 
 cd "$ROOT"
-export PYTHONPATH=.
+export PYTHONPATH="./src:.:${PYTHONPATH:-}"
 
 OUT_DIR="${OUT_DIR:-/mnt/afs_toolcall/sunhao4/agentic_cl_rollouts/real/trajectory/claude_struct}"
 TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)

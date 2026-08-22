@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 QUERIES_IN = ROOT / "datasets" / "queries_new.jsonl"
-OUT = ROOT / "data" / "labeled" / "new_trajectories_labeled.jsonl"
+OUT = ROOT / "datasources" / "labeled" / "new_trajectories_labeled.jsonl"
 API_BASE = "https://tokenhub.sensetime.com/v1"
 TARGET = 1280  # per bucket minimum (40 steps × 32)
 BATCH_SIZE = 100  # label this many at a time, then check (incremental reporting)

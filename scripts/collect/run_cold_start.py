@@ -35,7 +35,7 @@ from tqdm import tqdm
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 
-_TASKSPECS_DIR = _REPO / "data" / "taskspecs"
+_TASKSPECS_DIR = _REPO / "datasources" / "taskspecs"
 _QUERIES_PATH = _REPO / "datasets" / "queries.jsonl"
 # Rollout data lives OUTSIDE the repo (gitignored by location), organized as:
 #   <ROOT>/{real,smoke}/trajectory/<model>/grpo_hermes.jsonl + manifest.json
@@ -101,7 +101,7 @@ def _load_one_taskspec(subdir: Path) -> dict[str, Any] | None:
     if not isinstance(seed, str) or not seed.strip():
         return None
     # Front cleaning: strip ZW + drop if any garbled char remains (threshold=0)
-    from data.cleaning import analyze_text, strip_zw
+    from datasources.cleaning import analyze_text, strip_zw
     seed = strip_zw(seed)
     a = analyze_text(seed)
     if a.garble_chars > 0:
@@ -472,7 +472,7 @@ def main() -> None:
     ap.add_argument("--generate", action="store_true",
                     help="(re)generate queries.jsonl from taskspecs (classify + persona)")
     ap.add_argument("--taskspecs-dir", default=None,
-                    help="taskspecs root (default data/taskspecs)")
+                    help="taskspecs root (default datasources/taskspecs)")
     ap.add_argument("--queries", default=None,
                     help="queries JSONL path (default datasets/queries.jsonl)")
     ap.add_argument("--classify-workers", type=int, default=32)
@@ -511,7 +511,7 @@ def main() -> None:
     ap.add_argument("--smoke", action="store_true",
                     help="write under <ROLLOUTS_ROOT>/smoke instead of real/")
     ap.add_argument("--workspace-dir", default=None,
-                    help="workspace files root (default data/taskspecs)")
+                    help="workspace files root (default datasources/taskspecs)")
     args = ap.parse_args()
 
     t0 = time.time()

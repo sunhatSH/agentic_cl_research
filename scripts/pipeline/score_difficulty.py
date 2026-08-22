@@ -7,8 +7,8 @@ from pathlib import Path
 import httpx
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-IN = ROOT / "data" / "labeled" / "new_trajectories_labeled.jsonl"
-CACHE_DIR = ROOT / "data" / "labeled"
+IN = ROOT / "datasources" / "labeled" / "new_trajectories_labeled.jsonl"
+CACHE_DIR = ROOT / "datasources" / "labeled"
 API_BASE = "https://tokenhub.sensetime.com/v1"
 WORKERS = 100
 BATCH = 5000

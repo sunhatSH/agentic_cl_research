@@ -280,7 +280,7 @@ def install_buffer_hooks(trainer: Any, buffer: Any | None, cfg: Any) -> None:
         # 3. Post: GRPO produces 8 trajectories per query for advantage
         #    computation, but only WINNERS (max reward per task_id) go into the
         #    buffer for replay — losers would dilute anti-forgetting quality.
-        from data.cleaning import strip_zw
+        from datasources.cleaning import strip_zw
 
         # Group by task_id to pick winners
         groups: dict[str, list[tuple[Any, str, dict]]] = {}
@@ -886,6 +886,192 @@ class _CLTaskRunnerV1Proxy:
 
 
 CLTaskRunnerV1 = _CLTaskRunnerV1Proxy()
+
+
+# ── 评测版 TaskRunner（复刻 CLTaskRunnerV1 的 init，但不 fit，改跑 ClawEval）─────────
+
+def _make_cl_task_runner_eval():
+    """Build the ``@ray.remote`` CLTaskRunnerEval class（评测版）。
+
+    复刻 CLTaskRunnerV1 的 init 三步(trainer.init → init_agent_loop_manager)，但跳过
+    fit，改跑 ClawEval 任务 + 从 TQ 读 judge 四维打分。eval_tasks 经文件传递
+    (config.cl.eval_tasks_file)，结果写 config.cl.eval_output。延迟到函数内定义，避免
+    import 期依赖 ray。
+    """
+    import ray
+
+    @ray.remote
+    class CLTaskRunnerEval:
+        def __init__(self):
+            self.config = None
+            self.trainer = None
+            self.agent_loop_manager = None
+
+        def init_agent_loop_manager(self):
+            from verl.utils.import_utils import load_class_from_fqn
+
+            fqn = self.config.actor_rollout_ref.rollout.get("agent", {}).get("agent_loop_manager_class")
+            cls = load_class_from_fqn(fqn, "AgentLoopManager") if fqn else None
+            if cls is None:
+                raise RuntimeError("评测需要 agent_loop_manager_class（RemoteAgentLoopManager）")
+            self.agent_loop_manager = cls.create(
+                config=self.config,
+                llm_client=self.trainer.get_llm_client(),
+                teacher_client=self.trainer.get_teacher_client(),
+                reward_loop_worker_handles=self.trainer.get_reward_handles(),
+            )
+
+        def run(self, config):
+            """起 trainer + RemoteAgentLoopManager，跑 ClawEval，结果写文件。"""
+            import json
+            import os as _os
+            from pprint import pprint
+
+            import transfer_queue as tq
+            from omegaconf import OmegaConf
+            from verl.trainer.ppo.v1 import get_trainer_cls
+
+            # 注册 reward manager（让 judge 打分生效，同训练）
+            try:
+                import trainer.observer_reward_manager  # noqa: F401
+            except Exception as exc:  # noqa: BLE001
+                print(f"[cl-eval] observer reward manager 未注册({exc})", flush=True)
+            try:
+                import trainer.observer_hook_register  # noqa: F401
+            except Exception as exc:  # noqa: BLE001
+                print(f"[cl-eval] observer hook patch 未安装({exc})", flush=True)
+
+            trainer_cls = get_trainer_cls(config.trainer.v1.trainer_mode)
+            config.transfer_queue.enable = True
+
+            # val_files alias（v1 硬要求 val dataloader，同 CLTaskRunnerV1）
+            _vf = config.data.get("val_files", None)
+            if not _vf or (isinstance(_vf, str) and not _os.path.exists(_vf)):
+                OmegaConf.update(config, "data.val_files", config.data.train_files, force_add=True)
+
+            pprint(OmegaConf.to_container(config, resolve=True))
+            OmegaConf.resolve(config)
+            self.config = config
+
+            # 读 eval 参数（eval_tasks 文件 + 输出路径 + num_runs，由 run_cl_eval 写入 config.cl）
+            cl_cfg = config.get("cl", {}) or {}
+            tasks_file = cl_cfg.get("eval_tasks_file")
+            output = cl_cfg.get("eval_output")
+            num_runs = int(cl_cfg.get("eval_num_runs", 3))
+            with open(tasks_file) as f:
+                eval_tasks = json.load(f)
+
+            tq.init(config.transfer_queue)
+            try:
+                self.trainer = trainer_cls(config=config)
+                self.trainer.init()
+                self.init_agent_loop_manager()
+
+                results = self._run_eval(eval_tasks, num_runs)
+                with open(output, "w") as f:
+                    json.dump(results, f, indent=2, ensure_ascii=False)
+                print(f"[cl-eval] TaskRunner 完成 {len(results)} 条 → {output}", flush=True)
+            finally:
+                tq.close()
+
+        def _run_eval(self, eval_tasks: list[dict], num_runs: int) -> list[dict]:
+            """构造 ClawEval prompts → generate_sequences → 从 TQ 读 reward 四维。"""
+            from verl.utils import tensordict_utils as tu
+            from verl.utils.tensordict_utils import list_of_dict_to_tensordict
+
+            rows = []
+            for task in eval_tasks:
+                p = task.get("prompt") or task.get("messages")
+                raw = p if isinstance(p, list) else [{"role": "user", "content": p}]
+                for _ in range(num_runs):
+                    rows.append({"raw_prompt": raw, "uid": task["task_id"]})
+
+            prompts = list_of_dict_to_tensordict(rows)
+            # global_steps / validate 是标量（整个 batch 一个），不是 per-sample，
+            # 否则 session worker 里 int(global_steps) 会把 NonTensorStack 当 list 报错。
+            tu.assign_non_tensor_data(prompts, "global_steps", 0)
+            tu.assign_non_tensor_data(prompts, "validate", True)
+
+            self.agent_loop_manager.generate_sequences(prompts)
+
+            from trainer.trajectory_adapter_v1 import extract_trajectories_from_kvbatch
+
+            batch = self.trainer.replay_buffer.sample(
+                global_steps=0, partition_id="val", batch_size=len(rows)
+            )
+            results = []
+            for _traj, _bkt, meta in extract_trajectories_from_kvbatch(batch):
+                results.append(
+                    {
+                        "task_id": meta.get("task_id", ""),
+                        "bucket": meta.get("bucket", ""),
+                        "reward": float(meta.get("reward", 0) or 0),
+                        "task_done": float(meta.get("reward_task_done", 0) or 0),
+                        "correctness": float(meta.get("reward_correctness", 0) or 0),
+                        "trajectory": float(meta.get("reward_trajectory", 0) or 0),
+                        "safety": float(meta.get("reward_safety", 0) or 0),
+                    }
+                )
+            return results
+
+    return CLTaskRunnerEval
+
+
+def run_cl_eval(cfg: Any, eval_tasks: list[dict], num_runs: int) -> list[dict]:
+    """起 Ray，复用 run_ppo 启动，但 task_runner_class = 评测版（跑 ClawEval）。"""
+    import json
+    import os
+    import tempfile
+
+    import ray
+    from omegaconf import OmegaConf
+    from verl.trainer.main_ppo import run_ppo
+
+    cfg = merge_verl_config(cfg)
+
+    # eval_tasks 经临时文件传给 remote runner（ray.put 的对象 ref 在 remote 里不好取）
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(eval_tasks, f, ensure_ascii=False)
+        tasks_file = f.name
+    output = os.environ.get("CL_EVAL_OUTPUT", "/tmp/cl_eval_result.json")
+    OmegaConf.update(cfg, "cl.eval_tasks_file", tasks_file, force_add=True)
+    OmegaConf.update(cfg, "cl.eval_output", output, force_add=True)
+    OmegaConf.update(cfg, "cl.eval_num_runs", num_runs, force_add=True)
+
+    # env 透传：复用 run_cl_ppo 的透传项（评测 worker 同样不继承 driver shell env）。
+    # 这里复刻关键项（PYTHONPATH/VERL_USE_EXTERNAL_MODULES/内存分配器/judge 凭证）。
+    _passthrough = {}
+    _pp = os.environ.get("PYTHONPATH")
+    if _pp:
+        _passthrough["PYTHONPATH"] = _pp
+    _ext = os.environ.get("VERL_USE_EXTERNAL_MODULES")
+    if _ext:
+        _passthrough["VERL_USE_EXTERNAL_MODULES"] = _ext
+    for _mk in ("LD_PRELOAD", "MALLOC_CONF", "MALLOC_ARENA_MAX", "MALLOC_TRIM_THRESHOLD_"):
+        _mv = os.environ.get(_mk)
+        if _mv is not None:
+            _passthrough[_mk] = _mv
+    for _rk in ("TOKENHUB_API_KEY", "REWARD_API_BASE", "REWARD_MODEL", "REWARD_API_KEY", "REWARD_JUDGE_MAX_TOKENS"):
+        _rv = os.environ.get(_rk)
+        if _rv is not None:
+            _passthrough[_rk] = _rv
+    _tmo = os.environ.get("TEXT_MODEL_ONLY")
+    if _tmo is not None:
+        _passthrough["TEXT_MODEL_ONLY"] = _tmo
+    if _passthrough:
+        OmegaConf.update(
+            cfg,
+            "ray_kwargs.ray_init.runtime_env.env_vars",
+            {**(OmegaConf.select(cfg, "ray_kwargs.ray_init.runtime_env.env_vars") or {}), **_passthrough},
+            force_add=True,
+        )
+        print(f"[cl-eval] 透传 env 到 Ray worker: {list(_passthrough)}", flush=True)
+
+    task_runner_cls = _make_cl_task_runner_eval()
+    run_ppo(cfg, task_runner_class=task_runner_cls)
+
+    with open(output) as f:
+        return json.load(f)
 
 
 def build_trainer(cfg: Any, buffer: Any | None = None):

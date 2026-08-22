@@ -45,8 +45,10 @@ dev = [
 #   aliyun = ["wuying-agentbay-sdk"]
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["replay_buffer*", "trainer*", "eval*", "rollout*", "agents*", "inference*"]
+# 6 库包在 src/（replay_buffer/trainer/eval/rollout/inference/rewardmodel_choose），
+# agents/ 仍在仓库根。两个根都纳入发现。
+where = ["src", "."]
+include = ["replay_buffer*", "trainer*", "eval*", "rollout*", "inference*", "rewardmodel_choose*", "agents*"]
 exclude = ["tests*", "doc*", "configs*", "scripts*"]
 
 [tool.ruff]
@@ -68,6 +70,8 @@ extend-exclude = "^/bin/"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# src-layout: 6 库包在 src/，agents/ 在根。两处都上 sys.path，测试无需 PYTHONPATH。
+pythonpath = ["src", "."]
 python_files = "test_*.py"
 addopts = "-ra --strict-markers"
 markers = [

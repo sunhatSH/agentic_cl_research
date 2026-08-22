@@ -421,11 +421,23 @@ REWARD_RUBRIC = (
     "### If the task has no file deliverable (QA, summary, advice):\n"
     "Judge from the final answer — did it give a substantive, on-topic response? "
     "Non-answer, refusal, or off-topic → task_done = 0.\n"
+    "### If the agent asked a clarifying question INSTEAD of finishing:\n"
+    "A clarifying question is NOT automatically a failure. First judge whether it "
+    "was NECESSARY, from the ENVIRONMENT DIFF + task inputs (NOT the agent's excuse):\n"
+    "  - NECESSARY → task_done = 1. The input file/data the task needs is genuinely "
+    "ABSENT from the environment, OR the request is truly ambiguous and cannot be "
+    "executed without the answer. Asking ONE such question is the correct action — "
+    "treat it as completing what could legitimately be done this turn. (Especially a "
+    "FIRST clarifying turn in a multi-turn task is normal and expected.)\n"
+    "  - UNNECESSARY → task_done = 0. The needed information/files ARE present and the "
+    "agent could have proceeded, but it stalled, asked repeatedly, or used a question "
+    "to avoid doing the work.\n"
     "  - 1: Requested deliverable/answer verified present (in diff or response).\n"
     "  - 0: Not produced, truncated, gave up, or only partially attempted without "
     "producing a complete result.\n"
     "Note: 1 means TRULY complete, not 'looks like it tried'. If the agent made an "
-    "effort but the output is incomplete or below the requested standard, it is still 0.\n\n"
+    "effort but the output is incomplete or below the requested standard, it is still 0 "
+    "(EXCEPT a necessary clarifying question, judged as task_done = 1 above).\n\n"
     "## correctness [0,1] — is the output CORRECT?\n"
     "Start at 1.0. Deduct for each issue found. Stop at 0.\n"
     "### When an ANSWER KEY is provided:\n"
@@ -582,7 +594,7 @@ def _load_ground_truth(record_id: str) -> str:
     from pathlib import Path
 
     try:
-        ak_path = Path("data/taskspecs_w3") / record_id / "answer_key.json"
+        ak_path = Path("datasources/taskspecs_w3") / record_id / "answer_key.json"
         if not ak_path.is_file():
             return ""
         ak = json.loads(ak_path.read_text(encoding="utf-8", errors="replace"))

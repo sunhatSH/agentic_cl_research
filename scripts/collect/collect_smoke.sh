@@ -22,7 +22,7 @@ shift $(( $# < 3 ? $# : 3 )) || true   # remaining args pass through to run_cold
 
 PY=.venv/bin/python
 QUERIES=datasets/queries_w3.jsonl
-TASKSPECS=data/taskspecs_w3
+TASKSPECS=datasources/taskspecs_w3
 
 # model short tag: openai/gpt-5 -> gpt5 ; qwen/qwen3.6-27b -> qwen27b
 _short() {

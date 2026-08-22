@@ -1,0 +1,56 @@
+# Agent runner 配置（本项目·hermes 沙箱路线）。拷自 recipe_custom/scripts/e2b_agent/
+# agent_loop_config.yaml，template 改成本项目的 e2b 镜像 `agentic-cl-sandbox`。
+# gitignored（exps/），可填真实值 / 用 ${oc.env:...} 从 docker/sandbox/*.env 取。
+#
+# 用法：debug 先用 single_turn_agent 打通链路；正式训练用 hermes_agent（沙箱工具执行）。
+# dataset 样本的 agent_name 决定路由到哪个 name（缺省 default_agent_loop）。
+
+# ── A. 本地单轮（无沙箱，打通链路用）──────────────────────────────────────────
+- name: single_turn_agent
+  _target_: recipe_custom.agent.runners.local_agent_runners.LocalSingleTurnRunner
+  timeout: 180
+
+# ── B. Hermes 沙箱 agent（正式训练：agent 在沙箱里跑 hermes CLI 做工具执行）──────
+# 你的镜像已装 hermes CLI（原自写 collect.py::make_hermes_agent_fn 能跑即证明）。
+# recipe_custom HermesHarness 启动 `hermes -z '<prompt>'`，config 写 /home/user/.hermes/。
+- name: hermes_agent
+  _target_: recipe_custom.agent.runners.e2b_agent_runners.E2BAgentRunner
+  runtime:
+    e2b_config:
+      api_key: ${oc.env:E2B_API_KEY}          # 从 docker/sandbox/tencent.env
+      domain: ${oc.env:E2B_DOMAIN}
+      template: agentic-cl-sandbox             # ★ 你的 e2b 镜像(sandbox_tool.json ToolName)
+    sandbox_config:
+      cmd_timeout: 1200            # 900→1200:HERMES 单命令超时(r0 大量 900s HERMES_TIMEOUT)
+      lifetime_timeout: 1500       # 1000→1500:必须 >= cmd_timeout,否则沙箱先死
+      val_cmd_timeout: 750
+      val_lifetime_timeout: 800
+  harness:
+    name: hermes
+    model_name: verl/model
+    settings:
+      # init_command：每个 hermes turn 前在沙箱里跑（hermes.py::run 拼在 `hermes -z` 前）。
+      # 修 write_file 写盘失败（真机 e2b 验证 2026-08-22，scripts/verify_write_fix.py）：
+      # Hermes _atomic_write 把临时文件 .hermes-tmp 放在【目标父目录】，父目录不存在就崩。
+      # 沙箱用户 user(uid1000) 默认 cwd=/home/user（可写），故只需在 /home/user 下预建
+      # 常用目录并 cd 过去——不用 sudo（非必要 sudo 是坏味道）。
+      # 原先失败的 /workspace 根路径已从【数据层】改写为 /home/user/workspace（见
+      # scripts/data/rewrite_workspace_path.py），不再需要在根目录 / 下建目录。
+      init_command: "mkdir -p /home/user/workspace /home/user/outputs; cd /home/user"
+      config_path: configs/exps/hermes.config.yaml     # ★ 指向下方拷贝的静态 hermes 配置
+    # web 工具用镜像里的 /opt/tools/serper_search.py + jina_read.py(直连,非 local-web 插件)。
+    # HermesHarness 把 env 写进沙箱 ~/.hermes/.env,脚本 os.getenv 读。key 从 docker/sandbox/
+    # runtime.env 经 load_tencent_env export → ${oc.env:...} 取。
+    env:
+      SERPER_API_KEY: ${oc.env:SERPER_API_KEY}
+      JINA_API_KEY: ${oc.env:JINA_API_KEY}
+    # ── 阶段 F：observer diff 取证 hook（反 reward-hacking，零 LLM）──────────────
+    # prepare 拍沙箱 before 快照、run 拍 after+diff，把确定性证据写进 reward_info
+    # → omni extra_info → judge。name 用 FQN（trainer.observer_hook_register 已 patch
+    # hook factory 认 FQN，不改 verl 源码）。沙箱关闭前当场 diff，结果随 reward_info 带走。
+    hooks:
+      - name: trainer.observer_hook.ObserverDiffHook
+      # per-task 预建【写产出】深层目录（修 write_file 深层路径写盘失败，见 Bug_Fix F8）。
+      # prepare 在 agent 命令前从本任务 instruction 解析 /home/user/{workspace,outputs}/... 的
+      # 父目录并 mkdir -p 一层层建（平均每任务 ~1 个，零污染，不碰 Hermes）。
+      - name: trainer.mkdir_deliverable_hook.MkdirDeliverableHook

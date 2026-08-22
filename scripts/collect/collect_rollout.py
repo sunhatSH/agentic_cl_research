@@ -35,7 +35,7 @@ from agents.base import resolve_observer_client, resolve_questioner_client
 from agents.observer import Observer
 from agents.personas import sample_persona
 from agents.questioner import Questioner
-from data.cleaning import clean_messages, clean_query
+from datasources.cleaning import clean_messages, clean_query
 from inference.generate import HTTPGenerateFn
 from rollout.collect import make_react_agent_fn
 from rollout.session_pool import SessionSandboxPool

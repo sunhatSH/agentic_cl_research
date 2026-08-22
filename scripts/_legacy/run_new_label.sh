@@ -37,7 +37,7 @@ except Exception as e:
 
 # 新打标数据
 new = Counter()
-with open("data/labeled/new_trajectories_labeled.jsonl") as f:
+with open("datasources/labeled/new_trajectories_labeled.jsonl") as f:
     for line in f:
         if not line.strip(): continue
         r = json.loads(line)

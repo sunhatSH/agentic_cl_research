@@ -25,7 +25,7 @@ LIMIT="${LIMIT:-10000}"
 CONCURRENCY="${CONCURRENCY:-8}"
 BACKEND="${BACKEND:-e2b}"
 ACTORS="${ACTORS:-local remote}"
-OUT_BASE="${OUT_BASE:-$ROOT_DIR/data/mock/rollouts}"  # mock = 可行性验证数据，与正式数据隔离
+OUT_BASE="${OUT_BASE:-$ROOT_DIR/datasources/mock/rollouts}"  # mock = 可行性验证数据，与正式数据隔离
 
 # remote API source (tokenhub). REMOTE_KEY/REMOTE_BASE override allowed.
 APODEX_ENV="${APODEX_ENV:-/mnt/afs_toolcall/sunhao4/apodex_research/configs/env_deepseek_v4_pro.env}"
@@ -91,7 +91,7 @@ else
 fi
 
 # ---- python env (vllm overlay) -------------------------------------------
-export PYTHONPATH="$VLLM_OVERLAY:$ROOT_DIR:${PYTHONPATH:-}"
+export PYTHONPATH="$VLLM_OVERLAY:$ROOT_DIR/src:$ROOT_DIR:${PYTHONPATH:-}"
 NVLIBS=$(ls -d /opt/conda/lib/python3.10/site-packages/nvidia/*/lib 2>/dev/null | tr '\n' ':')
 export LD_LIBRARY_PATH="$NVLIBS${LD_LIBRARY_PATH:-}"
 

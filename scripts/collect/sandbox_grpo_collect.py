@@ -324,7 +324,7 @@ def _run_run_code_slot(sb: Any, task: dict[str, Any], timeout: int) -> SlotTraje
 
 # Root directory of taskspec data. Each subdir s_<id>/files/ mirrors the
 # sandbox workspace layout and is uploaded before hermes runs.
-_TASKSPECS_DIR = Path(__file__).resolve().parent.parent / "data" / "taskspecs"
+_TASKSPECS_DIR = Path(__file__).resolve().parent.parent / "datasources" / "taskspecs"
 
 # Files skipped during upload (OS junk / lock files).
 _SKIP_NAMES = frozenset({".DS_Store", "Thumbs.db"})
@@ -333,7 +333,7 @@ _SKIP_NAMES = frozenset({".DS_Store", "Thumbs.db"})
 def _upload_workspace(sb: Any, record_id: str, workspace_dir: str | None = None) -> int:
     """Upload workspace files into the sandbox from ``<workspace_dir>/<record_id>/files/``.
 
-    When ``workspace_dir`` is None, falls back to ``data/taskspecs/``.
+    When ``workspace_dir`` is None, falls back to ``datasources/taskspecs/``.
     Preserves the directory structure (relative paths).  Junk files
     (.DS_Store, Thumbs.db, ~$* lock files) are skipped.  Returns the
     number of files uploaded (0 if the taskspec has no files/ dir).

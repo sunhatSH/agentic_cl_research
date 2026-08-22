@@ -18,7 +18,7 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 # run_cold_start.py 里 `from scripts.collect.xxx` 需 repo root 在 sys.path（其自带
 # sys.path.insert 加的是 scripts/ 不是 repo root，故这里显式补 PYTHONPATH）
-export PYTHONPATH="$ROOT:${PYTHONPATH:-}"
+export PYTHONPATH="$ROOT/src:$ROOT:${PYTHONPATH:-}"
 
 COLD_START="datasets/cold_start/cold_start_1429.jsonl"
 WASTE="${WASTE:-datasets/cold_start/waste_requery.jsonl}"

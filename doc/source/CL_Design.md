@@ -297,6 +297,13 @@ Phase 1 (B1)          建立纯 RL 遗忘基线
 实验总数：**B 系列 1 + K 系列 6 + R 系列 8 + C 系列 4 + S 系列 2 = 21 个独立训练**。Phase 6 X 系列按需触发。冷启动只用 GPT-5，不设来源配比预实验。
 （R 系列 8 = R0-10k, R0-25k, R3, R4, R5, R4-w, R6, R4-K；R0 拆两档隔离"容量 vs 桶结构"。）
 
+> **⚠️ 分阶段执行（2026-08-20 更新）**：上述 21 训练是「CL 算法 ablation」（验证 KL/Replay/Entropy 配置）。
+> **防遗忘效果验证**另走分阶段方案（详见 `doc/eval/防遗忘评测方案.md` §11）：
+> - **第一步（主实验）**：coding → research **续训** 200+200 step，存 2 checkpoint，各评 9 桶 ClawEval；对比 baseline / CLEAR / CL 三方法。
+> - **第二步（可选）**：用第一步定下的最优解，9 桶各训几十 step 循环、模拟线上少量数据；效果不好或没资源就砍。
+> - **关键约束**：训练集只有 5 桶 × 3200 中等难度任务（coding/office/ops/research/workflow），qa/communication 等桶数据量不足；中等难度够 200×32 的桶只有 office/coding/research。
+> - **落地产物（2026-08-20）**：`configs/exp1/cl2r_base.yaml` + `scripts/exp1_two_bucket/run.sh`（第一步）；`scripts/pipeline/build_train_exp2.py` → `datasets/train_exp2.parquet` + `scripts/exp2_nine_bucket/run.sh`（第二步）；评测 `trainer/cl_eval.py` + `scripts/exp_common/{merge_ckpt,run_eval_cl,run_eval_base}.sh`。详见 `doc/eval/防遗忘评测方案.md` §11。
+
 ---
 
 ### 实验数量与成本总览

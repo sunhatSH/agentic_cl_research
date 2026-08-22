@@ -4,7 +4,7 @@
 单层能力桶（无子桶）。桶定义读自 capability_bucket_discovery.py 的产物 buckets.json。
 对每条 taskspec，让 GPT 从固定的能力桶里选【唯一一个】最匹配的能力桶。
 
-Input  : taskspec 目录（每个 s_<id>/taskspec.yaml），默认 data/seed2traj_taskspecs
+Input  : taskspec 目录（每个 s_<id>/taskspec.yaml），默认 datasources/seed2traj_taskspecs
          能力桶定义 runs/_analysis/capability_buckets/buckets.json
 Output : 带桶标 + 训练字段的 JSONL，每行一个任务：
            {"record_id","bucket","queries":[seed, *follow_ups],
@@ -32,9 +32,9 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-TASKSPECS = ROOT / "data" / "seed2traj_taskspecs"
+TASKSPECS = ROOT / "datasources" / "seed2traj_taskspecs"
 BUCKETS_JSON = ROOT / "runs" / "_analysis" / "capability_buckets" / "buckets.json"
-OUT_DIR = ROOT / "data" / "labeled"
+OUT_DIR = ROOT / "datasources" / "labeled"
 API_BASE = os.environ.get("DISCOVERY_API_BASE", "https://tokenhub.sensetime.com/v1")
 
 

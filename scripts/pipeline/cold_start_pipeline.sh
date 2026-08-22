@@ -83,7 +83,7 @@ LOG="$OUT/pipeline.log"
 
 # 凭证 + PYTHONPATH（不带 verl，避免 scripts 命名冲突）
 set -a; source scripts/env/load_tencent_env.sh 2>/dev/null; set +a
-export PYTHONPATH="$ROOT:/mnt/afs_toolcall/sunhao4/workspace/LightLLM"
+export PYTHONPATH="$ROOT/src:$ROOT:/mnt/afs_toolcall/sunhao4/workspace/LightLLM"
 
 # floors 缺省从 base.yaml 读（bucket_floors）
 if [ -z "$FLOORS" ]; then

@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 QUERIES_IN = ROOT / "datasets" / "queries_new.jsonl"
-OUT = ROOT / "data" / "labeled" / "new_trajectories_labeled.jsonl"
+OUT = ROOT / "datasources" / "labeled" / "new_trajectories_labeled.jsonl"
 API_BASE = "https://tokenhub.sensetime.com/v1"
 
 CANONICAL_BUCKETS = ["workflow","ops","qa","finance","office","communication","safety","coding","research"]

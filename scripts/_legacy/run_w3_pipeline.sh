@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # W3 完整冷采集 pipeline (GPT-5 + Qwen3.6-27B 两份)
-# 数据源: data/taskspecs_w3  |  queries: datasets/queries_w3.jsonl
+# 数据源: datasources/taskspecs_w3  |  queries: datasets/queries_w3.jsonl
 # 只跑到 S3 parquet (这台机器不做 S4 warmup / 训练)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-TASKSPECS=data/taskspecs_w3
+TASKSPECS=datasources/taskspecs_w3
 QUERIES=datasets/queries_w3.jsonl
 PY=.venv/bin/python
 SRC=/mnt/afs_toolcall/wujian1/Projects/seed2traj/taskspecs_w3_full

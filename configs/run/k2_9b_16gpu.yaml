@@ -42,7 +42,7 @@ actor_rollout_ref:
       lr: 2.0e-6
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
-    ppo_mini_batch_size: 32             # =train_batch(全 batch 单更);×n8=256 轨迹 % DP4=0
+    ppo_mini_batch_size: 64             # =train_batch(全 batch 单更);×n8=512 轨迹 % DP4=0
     use_dynamic_bsz: true
     ppo_max_token_len_per_gpu: 32768    # = max_token_length(131072)/SP(4)
     ulysses_sequence_parallel_size: 4   # SP=4 → DP=16÷4=4。16头%4=0
@@ -69,7 +69,7 @@ actor_rollout_ref:
     response_length: 65536             # = data.max_response_length
     agent:
       agent_loop_manager_class: recipe_custom.agent.agent_loop_manager.RemoteAgentLoopManager
-      agent_loop_config_path: exps/agent_loop_config.yaml
+      agent_loop_config_path: configs/exps/agent_loop_config.yaml
       default_agent_loop: hermes_agent
     custom:
       remote_agent:
@@ -116,13 +116,13 @@ reward:
 
 # ── 数据（CLAgentDataset fs-seed 注入；长度对齐 b1_9b_16gpu）─────────────────────
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_aligned.parquet
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_cl.parquet
   val_files: null
   custom_cls:
-    path: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/trainer/cl_agent_dataset.py
+    path: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/src/trainer/cl_agent_dataset.py
     name: CLAgentDataset
-  train_batch_size: 32
-  gen_batch_size: 32
+  train_batch_size: 64
+  gen_batch_size: 64
   max_prompt_length: 8196            # 照搬参考 debug_rl_qwen35_9b.sh(wuzehuan)
   max_response_length: 65536         # 照搬参考(与卡数无关);remove_padding 变长打包可扛,§31 修复后原崩溃真因(model_type)已消除
   shuffle: false
@@ -149,7 +149,7 @@ trainer:
   nnodes: 2
   n_gpus_per_node: 8
   total_epochs: 1
-  total_training_steps: 500
+  total_training_steps: 200         # batch64 数据实际步数 2×100=200；warmup=0.03×200=6 步到 2e-6
   save_freq: 25                     # 100->25:更频繁存档(debug 阶段)
   max_actor_ckpt_to_keep: 2       # 只保留最近 2 个 actor ckpt(verl 原生 rotate,超出 shutil.rmtree 最旧)
   max_critic_ckpt_to_keep: 2      # critic 同理(本项目 GRPO 无 critic,留着无害)

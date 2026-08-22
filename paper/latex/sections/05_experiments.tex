@@ -5,9 +5,9 @@
 
 \textbf{Benchmark.} We use the pure-text subset of ClawEval, totaling 195 tasks grouped into the same nine capability domains as the buffer (Table~\ref{tab:buckets}). Each task is additionally annotated with a $1$--$10$ difficulty score by two frozen LLM annotators (Section~\ref{sec:difficulty}), enabling difficulty-stratified analysis. Scoring follows the Pass$^3$ protocol---a task passes only if all three independent runs succeed---giving a binary per-task outcome and a per-bucket pass rate.
 
-\textbf{Training protocol.} Training proceeds \textbf{sequentially by bucket}: the model trains on one capability domain, then moves to the next, mimicking the online deployment constraint that data for all capabilities is rarely available at once. Within each bucket, task order is randomized. The base model is Qwen3.5-9B, trained with fully-asynchronous policy-separated deployment (inference and training on separate GPUs), BF16 throughout.
+\textbf{Training protocol.} Training proceeds \textbf{sequentially by bucket}: the model trains on one capability domain, then moves to the next, mimicking the online deployment constraint that data for all capabilities is rarely available at once. Within each bucket, task order is randomized. We organize the evaluation into \textbf{two stages} trading signal strength against breadth. \emph{Stage~1 (strong signal):} a two-bucket \emph{continued} run, coding $\rightarrow$ research, 200 steps each, with enough medium-difficulty data to expose forgetting cleanly; the checkpoint after each bucket is saved and evaluated. \emph{Stage~2 (breadth, optional):} a sweep over the remaining buckets with a small number of steps each, evaluating after every bucket, to exhibit the online continual-learning shape under scarce data. The base model is Qwen3.5-9B, trained with fully-asynchronous policy-separated deployment (inference and training on separate GPUs), BF16 throughout.
 
-\textbf{Data organization.} The training data is sorted by bucket, and each bucket's row count is truncated to a multiple of the batch size (\texttt{train\_batch\_size}=32), removing at most 31 trailing rows per bucket ($<0.5\%$ total). After truncation, every training step draws all its queries from a single bucket — no step mixes capability domains. This enables clean per-bucket tracking of reward and loss, and precise measurement of cross-bucket forgetting.
+\textbf{Data organization.} The training data is sorted by bucket, and each bucket's row count is truncated to a multiple of the batch size (\texttt{train\_batch\_size}=32), removing at most 31 trailing rows per bucket ($<0.5\%$ total). Stage~1 uses the coding and research buckets (6{,}400 rows each); Stage~2 uses the remaining seven buckets, capped at 1{,}600 rows each (fewer for the scarce domains), so the two stages share no training instance. Every training step draws all its queries from a single bucket, enabling clean per-bucket tracking of reward and loss and precise measurement of cross-bucket forgetting.
 
 Two capability domains, qa (question answering/retrieval) and communication (writing/translation/rewriting), have extremely limited training data (2 and 9 original trajectories respectively). This stems from two factors: first, users rarely use agent harnesses for simple Q\&A or text polishing, preferring free websites; second, the \textbf{user demographic itself is skewed}---agent harness users are predominantly developers, DevOps engineers, and data analysts, whose tasks naturally concentrate in coding, ops, and office domains rather than creative writing or marketing content. These two domains are virtually absent from the continual training stream; they remain in the replay buffer and evaluation benchmark but serve solely as \textbf{auxiliary evaluation domains} for observing retention under severe data scarcity.
 
@@ -15,23 +15,20 @@ Two capability domains, qa (question answering/retrieval) and communication (wri
 
 \subsection{Anti-Forgetting Evaluation Protocol}
 
-We evaluate \textbf{once} after all buckets have been trained (no intermediate evaluation, saving compute):
+We evaluate the \textbf{checkpoint saved after each bucket} on the full benchmark, so that the per-bucket score can be traced across the training sequence. Concretely:
 
 \begin{enumerate}
-  \item Evaluate the final policy $\pi_K$ on the full benchmark.
-  \item Group evaluation results by the same nine buckets, aligned to the training order. Record per-bucket scores $S_i = S(\pi_K, b_i)$.
-  \item Apply a post-hoc \textbf{decay weighting} $w_i$ by training recency: buckets trained earlier receive larger weights, reflecting that forgetting is heavier the longer a capability has been exposed to subsequent updates:
-  \begin{equation}
-    \text{CL-Score} = \sum_{i=1}^{K} w_i\,S_i,\qquad w_i \propto g(i),\;\;g\text{ decreasing}.
-  \end{equation}
-  The decay form (linear vs.\ exponential) is treated as a hyperparameter determined experimentally.
+  \item Evaluate the \textbf{untrained base model} on all nine buckets, yielding the reference capability each domain inherits from pretraining (the ``forgetting-free'' baseline).
+  \item In Stage~1, evaluate the two checkpoints (after coding, after research) on all nine buckets. The coding checkpoint isolates the \emph{generalization drop} on the eight untrained domains; the research checkpoint isolates the \emph{forgetting} of coding caused by the second domain.
+  \item Group results by the same nine buckets, aligned to the training order, recording per-bucket scores $S_i$.
+  \item Optionally apply a post-hoc \textbf{decay weighting} $w_i$ by training recency (buckets trained earlier receive larger weights) to produce an aggregate $\text{CL-Score}=\sum_i w_i S_i$. The decay form (linear vs.\ exponential) is a hyperparameter determined experimentally.
 \end{enumerate}
 
-Because the evaluation is run only once, switching among weighting schemes afterward is purely arithmetic---no re-inference needed. The core signal is whether the CL-equipped model shows \textbf{less per-bucket score degradation on earlier-trained buckets} compared to a same-scale baseline without CL.
+The core signal is whether the CL-equipped model shows \textbf{less per-bucket score degradation on earlier-trained buckets} than a same-scale baseline without CL, while the eight untrained domains degrade only mildly (the cost of restricting updates).
 
 \subsection{Comparisons and Ablations}
 
-\textbf{Primary comparison:} CL-equipped (nine-bucket replay + composite loss) vs.\ a \textbf{baseline} without any CL mechanism (no replay, $\lambda_3=0$, same sequential training and evaluation). The difference in per-bucket forgetting and aggregate CL-Score quantifies the anti-forgetting benefit.
+\textbf{Primary comparison:} CL-equipped (nine-bucket replay + composite loss) vs.\ a \textbf{baseline} without any CL mechanism (no replay, $\lambda_3=0$, same sequential training and evaluation) vs.\ the \textbf{untrained base model} (the forgetting-free reference). The difference in per-bucket forgetting and aggregate CL-Score quantifies the anti-forgetting benefit.
 
 \textbf{Ablation axes:}
 \begin{itemize}
@@ -42,4 +39,4 @@ Because the evaluation is run only once, switching among weighting schemes after
 
 \subsection{Results}
 
-\todo{Fill after the new-reward 16-GPU formal experiments complete. Expected deliverables: per-bucket raw scores; CL-Score comparison table (CL vs.\ baseline); reward/loss/group-std training curves; ablation bar charts.}
+\todo{Fill after the two-stage experiments complete. Expected deliverables: per-bucket raw scores; CL-Score comparison table (CL vs.\ baseline vs.\ base); reward/loss/group-std training curves; ablation bar charts.}

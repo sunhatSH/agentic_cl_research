@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from data.cleaning import clean_messages
+from datasources.cleaning import clean_messages
 from replay_buffer.bucket import BucketReplayBuffer
 
 

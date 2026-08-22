@@ -2,7 +2,7 @@
 """Adapter: generated_tasks (task.json + inputs/) -> taskspec format (taskspec.yaml + files/).
 
 The subagent task set (tongronglei's generated_tasks, copied to
-data/generated_tasks_hermes/) uses a DIFFERENT layout than our collection pipeline
+datasources/generated_tasks_hermes/) uses a DIFFERENT layout than our collection pipeline
 (run_cold_start / sandbox_grpo_collect) consumes:
 
   source  : <D>/<task_id>/{task.json, answer_key.json, inputs/, usage.json}
@@ -26,7 +26,7 @@ Usage:
   python scripts/data/adapt_generated_tasks.py
   # custom:
   python scripts/data/adapt_generated_tasks.py --per-domain 20 \
-      --src data/generated_tasks_hermes --out data/taskspecs_hermes
+      --src datasources/generated_tasks_hermes --out datasources/taskspecs_hermes
   python scripts/data/adapt_generated_tasks.py --all      # every task (~48k)
 """
 
@@ -109,8 +109,8 @@ def adapt_one(task_dir: Path, out_root: Path) -> str | None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--src", default="data/generated_tasks_hermes")
-    ap.add_argument("--out", default="data/taskspecs_hermes")
+    ap.add_argument("--src", default="datasources/generated_tasks_hermes")
+    ap.add_argument("--out", default="datasources/taskspecs_hermes")
     ap.add_argument("--per-domain", type=int, default=20,
                     help="tasks per D* domain (subset validation). Ignored with --all.")
     ap.add_argument("--all", action="store_true", help="convert every task (~48k)")

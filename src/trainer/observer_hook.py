@@ -29,8 +29,11 @@ from typing import Any
 from recipe_custom.agent.runners.hooks.base import AgentRunHook
 
 # taskspecs 根（与 cl_agent_dataset 同源）：<record_id>/answer_key.json 是 judge ground truth。
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TASKSPECS_ROOT = os.environ.get("CL_TASKSPECS_ROOT", os.path.join(_REPO_ROOT, "data", "taskspecs_w3"))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/trainer → repo
+TASKSPECS_ROOT = os.environ.get("CL_TASKSPECS_ROOT", os.path.join(_REPO_ROOT, "datasources", "taskspecs_w3"))
+# generated_tasks_hermes 根：<D<N>>/<gen_task_id>/answer_key.json 是训练集(unk_* record_id)的
+# judge ground truth。与 cl_agent_dataset.GEN_TASKS_ROOT 同源，靠 extra_info.gen_task_id 定位。
+GEN_TASKS_ROOT = os.environ.get("CL_GEN_TASKS_ROOT", os.path.join(_REPO_ROOT, "datasources", "generated_tasks_hermes"))
 # 沙箱工作区（探针 os.walk 的根）。与 fs-seed 注入的 ./inputs 同一工作目录。
 SANDBOX_WORKSPACE = os.environ.get("CL_SANDBOX_WORKSPACE", ".")
 
@@ -72,17 +75,34 @@ def _record_id_from_ctx(ctx: Any) -> str | None:
     return None
 
 
-def _load_answer_key(record_id: str | None) -> dict | None:
-    if not record_id:
-        return None
-    path = os.path.join(TASKSPECS_ROOT, record_id, "answer_key.json")
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:  # noqa: BLE001
-        return None
+def _gen_task_id_from_ctx(ctx: Any) -> str | None:
+    """从 ctx.extra.extra_info 取 gen_task_id（generated_tasks_hermes 定位用）。"""
+    extra = getattr(ctx, "extra", {}) or {}
+    ei = extra.get("extra_info") or {}
+    if isinstance(ei, dict):
+        tid = ei.get("gen_task_id")
+        if tid:
+            return str(tid)
+    return None
+
+
+def _load_answer_key(record_id: str | None, gen_task_id: str | None = None) -> dict | None:
+    """加载 judge ground truth。优先 gen_task_id → generated_tasks_hermes/<D>/<tid>/answer_key.json
+    （训练集 record_id 是 unk_* 与 taskspecs_w3 不通）；回退 record_id → taskspecs_w3/<rid>/。"""
+    candidates = []
+    if gen_task_id:
+        d_prefix = gen_task_id.split("_", 1)[0]  # D10_k982304_zh → D10
+        candidates.append(os.path.join(GEN_TASKS_ROOT, d_prefix, gen_task_id, "answer_key.json"))
+    if record_id:
+        candidates.append(os.path.join(TASKSPECS_ROOT, record_id, "answer_key.json"))
+    for path in candidates:
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:  # noqa: BLE001
+                continue
+    return None
 
 
 class ObserverDiffHook(AgentRunHook):
@@ -132,7 +152,7 @@ class ObserverDiffHook(AgentRunHook):
         # ground truth 正文（不是 dataclass repr）。judge 靠它核对 actor 自述是否属实。
         state.reward_info["observer_report"] = _format_changes(diff, sys_diff)
         state.reward_info["state_diff"] = diff
-        answer_key = _load_answer_key(_record_id_from_ctx(ctx))
+        answer_key = _load_answer_key(_record_id_from_ctx(ctx), _gen_task_id_from_ctx(ctx))
         if answer_key is not None:
             state.reward_info["answer_key"] = answer_key
         # 交付物计数（judge/completion 参考）：agent 新增/修改的文件数。

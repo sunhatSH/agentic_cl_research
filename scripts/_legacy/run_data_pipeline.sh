@@ -19,9 +19,9 @@
 #   bash scripts/pipeline/run_data_pipeline.sh --limit 50     # 只处理前 50 个 task（调试）
 #
 # 环境变量（可选，覆盖默认路径）：
-#   TASKSPECS_DIR   默认 data/taskspecs
+#   TASKSPECS_DIR   默认 datasources/taskspecs
 #   QUERIES_FILE    默认 datasets/queries.jsonl
-#   ROLLOUT_DIR     默认 data/mock/rollouts
+#   ROLLOUT_DIR     默认 datasources/mock/rollouts
 #   BUFFER_FILE     默认 logs/cold/buffer.sqlite
 #   WARMUP_FILE     默认 buffer_dumps/warmup.sqlite
 #   DATASETS_DIR    默认 datasets
@@ -34,11 +34,11 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT_DIR"
 
 # ---- 路径（与 doc/训练与推理流程.md §6.5 表对齐）--------------------------
-TASKSPECS_DIR="${TASKSPECS_DIR:-$ROOT_DIR/data/taskspecs}"
+TASKSPECS_DIR="${TASKSPECS_DIR:-$ROOT_DIR/datasources/taskspecs}"
 FS_SEEDS_DIR="$ROOT_DIR/docker/sandbox/fs-seeds"
 MANIFEST="$FS_SEEDS_DIR/manifest.json"
 QUERIES_FILE="${QUERIES_FILE:-$ROOT_DIR/datasets/queries.jsonl}"
-ROLLOUT_DIR="${ROLLOUT_DIR:-$ROOT_DIR/data/mock/rollouts}"
+ROLLOUT_DIR="${ROLLOUT_DIR:-$ROOT_DIR/datasources/mock/rollouts}"
 BUFFER_FILE="${BUFFER_FILE:-$ROOT_DIR/logs/cold/buffer.sqlite}"
 WARMUP_FILE="${WARMUP_FILE:-$ROOT_DIR/buffer_dumps/warmup.sqlite}"
 DATASETS_DIR="${DATASETS_DIR:-$ROOT_DIR/datasets}"

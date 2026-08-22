@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 WORKERS = 20
 DIMS = ["knowledge","reasoning","planning","tool_use","environment_action","generation","interaction"]
-DIFF_CACHE = ROOT / "data" / "labeled" / "difficulty_500.json"
+DIFF_CACHE = ROOT / "datasources" / "labeled" / "difficulty_500.json"
 OUT_DIR = ROOT / "configs"
 
 DIFF_PROMPT = '评估该任务的绝对难度，给出 1-10 整数分数。1-2:非常简单 3-4:简单 5-6:中等 7-8:困难 9-10:非常困难。只输出 JSON: {"difficulty": <1-10>}'
@@ -40,8 +40,8 @@ def load_key():
 def load_trajectories():
     by_b = defaultdict(list)
     for name, path in [("cold", "datasets/cold_start/cold_start_1429.jsonl"),
-                        ("old", "data/labeled/taskspecs_labeled.jsonl"),
-                        ("new", "data/labeled/new_trajectories_labeled.jsonl")]:
+                        ("old", "datasources/labeled/taskspecs_labeled.jsonl"),
+                        ("new", "datasources/labeled/new_trajectories_labeled.jsonl")]:
         fp = ROOT / path
         if not fp.is_file(): continue
         for line in fp.read_text().splitlines():

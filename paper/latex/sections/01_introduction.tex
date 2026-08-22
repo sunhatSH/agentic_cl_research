@@ -12,7 +12,7 @@ We design and evaluate a complete training-and-evaluation system for continual R
 
   \item A \textbf{composite continual-learning objective} injected into GRPO with no framework fork: policy gradient, reverse-KL anchor to a reference policy, experience-replay loss, and an always-on entropy regularizer (guarding against policy-diversity collapse~\cite{B4}). Reward comes from a single frozen external LLM judge scoring four dimensions and aggregating multiplicatively, with safety as a binary $\{0,1\}$ gate for consistent evaluation.
 
-  \item A \textbf{bucket-grouped anti-forgetting evaluation protocol}: one evaluation pass after all domains are trained sequentially, with a post-hoc decay weighting by training recency to quantify the core signal---``earlier-trained buckets forget more''---compared against a same-scale baseline without continual learning.
+  \item A \textbf{bucket-grouped anti-forgetting evaluation protocol}: a two-stage protocol that evaluates the checkpoint after each bucket---a two-bucket continued run (coding$\rightarrow$research) for strong signal, and an optional sweep over the remaining buckets under scarce data---with a post-hoc decay weighting by training recency to quantify the core signal---``earlier-trained buckets forget more''---compared against a same-scale baseline without continual learning and the untrained base model.
 \end{enumerate}
 
 We implement and validate the system on a Qwen3.5-9B agent across nine capability domains (the design extends to larger backbones), using a Pass$^3$ benchmark~\cite{C1} to characterize both new-capability acquisition and old-capability forgetting.

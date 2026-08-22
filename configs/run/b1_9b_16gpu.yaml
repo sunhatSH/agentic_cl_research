@@ -47,7 +47,7 @@ actor_rollout_ref:
       lr: 2.0e-6                        # 9B lr
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
-    ppo_mini_batch_size: 32             # =train_batch(全 batch 单次更新);内部 ×n8=256 轨迹 % DP4=0
+    ppo_mini_batch_size: 64             # =train_batch(全 batch 单次更新);内部 ×n8=512 轨迹 % DP4=0
     use_dynamic_bsz: true               # 变长打包:按实际 token 数切 micro(配 remove_padding)
     # ppo_max_token_len = max_token_length / SP = 131072 / 4 = 32768(参考脚本同法)。
     # remove_padding+变长下这是单卡 micro-batch 的 token 预算,激活按真实长度算。超长由 rollout 端
@@ -88,8 +88,8 @@ actor_rollout_ref:
       # ★ v1 入口：RemoteAgentLoopManager（沙箱 harness 那套，参考脚本已验证）。
       # TaskRunnerV1/CLTaskRunnerV1.init_agent_loop_manager 读它选 manager。
       agent_loop_manager_class: recipe_custom.agent.agent_loop_manager.RemoteAgentLoopManager
-      # RemoteAgentLoopManager 读它构建 runner(hermes 沙箱)。指向 gitignored exps/(含 e2b 凭证)。
-      agent_loop_config_path: exps/agent_loop_config.yaml
+      # RemoteAgentLoopManager 读它构建 runner(hermes 沙箱)。凭证全走 ${oc.env:...},无明文。
+      agent_loop_config_path: configs/exps/agent_loop_config.yaml
       # 数据无 agent_name 字段 → 全批用这个默认 runner。正式训练=hermes_agent(沙箱工具执行)。
       default_agent_loop: hermes_agent
     # ── remote_agent：RemoteAgentLoopManager 的 gateway/session 配置（对齐参考 8/8/1000）──
@@ -144,15 +144,15 @@ reward:
 # 单轮化:每 query 一条轨迹,按桶配额采样。baseline shuffle=false 按桶序训(可测遗忘)。
 # 长度照搬参考脚本(与卡数无关):prompt 8196 / response 65536(remove_padding 变长打包能扛)。
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_aligned.parquet
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_cl.parquet
   val_files: null
   # ★ fs-seed 注入(阶段 E)：CLAgentDataset 按 record_id 把 data/taskspecs_w3/<rid>/files
   # 注入沙箱 ./inputs（agent_assets/type=dir）。仍读本地 parquet,不依赖 aoss_client/OSS。
   custom_cls:
-    path: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/trainer/cl_agent_dataset.py
+    path: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/src/trainer/cl_agent_dataset.py
     name: CLAgentDataset
-  train_batch_size: 32                # 32 query/step × n8 = 256 轨迹/step
-  gen_batch_size: 32
+  train_batch_size: 64                # 64 query/step × n8 = 512 轨迹/step（对齐 r0）
+  gen_batch_size: 64
   max_prompt_length: 8196            # 照搬参考 debug_rl_qwen35_9b.sh(wuzehuan)
   max_response_length: 65536         # 照搬参考(与卡数无关);remove_padding 变长打包可扛,§31 修复后原崩溃真因(model_type)已消除
                                        #   累积 total_nnz 过大,触发 SP 切片后 a=2×b 不匹配(transformer_impl.py:1259)。
@@ -186,7 +186,7 @@ trainer:
   nnodes: 2
   n_gpus_per_node: 8
   total_epochs: 1
-  total_training_steps: 500
+  total_training_steps: 200         # batch64 数据实际步数 2×100=200；warmup=0.03×200=6 步到 2e-6
   save_freq: 25                     # 100->25:更频繁存档(debug 阶段)
   max_actor_ckpt_to_keep: 2       # 只保留最近 2 个 actor ckpt(verl 原生 rotate,超出 shutil.rmtree 最旧)
   max_critic_ckpt_to_keep: 2      # critic 同理(本项目 GRPO 无 critic,留着无害)

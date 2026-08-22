@@ -1,6 +1,6 @@
 """Tests for data.cleaning (ZW strip + garble detection + trajectory filter)."""
 
-from data.cleaning import (
+from datasources.cleaning import (
     analyze_text,
     clean_messages,
     clean_query,

@@ -96,7 +96,7 @@ reward:
   reward_manager:
     name: naive
   custom_reward_function:
-    path: trainer/model_reward.py
+    path: src/trainer/model_reward.py
     name: compute_score
   reward_model:
     enable: false                 # judge is served externally, not a verl RM worker

@@ -18,7 +18,7 @@ else
     --num-queries 3706 --max-concurrent 64 \
     --actor-model openai/gpt-5 --model-tag gpt5 \
     --actor-impl hermes_structured \
-    --taskspecs-dir data/taskspecs_w3 \
+    --taskspecs-dir datasources/taskspecs_w3 \
     --queries datasets/queries_buffer.jsonl \
     --max-turns 20 --hermes-max-turns 90 --slot-timeout 900 \
     --collect-mode incremental \
@@ -39,7 +39,7 @@ if [ -f "$BORROWED" ] && [ -s "$BORROWED" ]; then
       --num-queries "$N" --max-concurrent 64 \
       --actor-model openai/gpt-5 --model-tag gpt5 \
       --actor-impl hermes_structured \
-      --taskspecs-dir data/taskspecs_w3 \
+      --taskspecs-dir datasources/taskspecs_w3 \
       --queries "$BORROWED" \
       --max-turns 20 --hermes-max-turns 90 --slot-timeout 900 \
       --collect-mode incremental \

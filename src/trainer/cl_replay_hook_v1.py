@@ -120,6 +120,12 @@ def install_buffer_hooks_v1(trainer: Any, buffer: Any | None, cfg: Any) -> None:
         #    直接定位是哪条轨迹、差多少。CL_REPLAY_DEBUG=1 才开(默认关,不影响正常训练)。
         _probe_rollout_len_mismatch(rl_batch)
 
+        # ── 0b. 手动过滤含图 rollout 行（替代 monkey-patch session_worker，见 _filter_image_rows）。
+        #    含图行剔除后, batch 与 rl_batch 都指向过滤后的 KVBatchMeta：后续掺回放、winner 入库、
+        #    original_update 全基于过滤后 batch,含图轨迹进不了训练 → ppo_loss 不崩。
+        rl_batch = _filter_image_rows(rl_batch)
+        batch = rl_batch
+
         # ── 1. PRE：从 9桶 buffer 采旧桶 winner，掺进 tq + 合并 KVBatchMeta ──
         if lambda_replay > 0:
             # 回放量 eff_replay 的动态计算：
@@ -278,6 +284,124 @@ def _probe_rollout_len_mismatch(rl_batch: Any) -> None:
         _replay_debug("E13探针失败(不影响训练): %s" % exc)
 
 
+def _filter_image_rows(batch: Any) -> Any:
+    """手动剔除含图 rollout 行（替代 monkey-patch session_worker 的方案）。
+
+    在掺回放行【之前】调用：读 tq 里每行的 multi_modal_inputs + responses/response_mask，
+    判定含图行（并集：multi_modal_inputs 非空 OR responses/response_mask 长度不等），剔除后
+    重建 KVBatchMeta（keys/tags 过滤）。含图行不进训练 batch → ppo_loss 不再撞视觉 token 错位。
+
+    为什么不用 patch：monkey-patch session_worker._is_trainable_trajectory 的 import 副作用
+    （提前加载 session_worker → gateway.pool → ...）疑似导致 GatewayActor 起服崩(Ray 2.49.1
+    async actor 检测)。手动过滤在训练入口(晚于起服),无此副作用。
+
+    读 tq 失败/字段缺失/无含图行 → 原样返回(不崩训练)。
+    """
+    try:
+        import transfer_queue as tq
+        from transfer_queue import KVBatchMeta
+    except ImportError:
+        return batch
+
+    keys = list(getattr(batch, "keys", []) or [])
+    tags = list(getattr(batch, "tags", []) or [])
+    if not keys:
+        return batch
+
+    # 分开读 tensor 和 non_tensor 字段（混在同一个 select_fields 里会被 kv_batch_get_by_meta
+    # 静默失败，导致一行都拦不住）。
+    try:
+        td = tq.kv_batch_get_by_meta(batch, select_fields=["responses", "response_mask"])
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cl] 手动过滤诊断: 读 tensor 字段失败({exc}), 跳过过滤", flush=True)
+        return batch
+    if td is None:
+        print("[cl] 手动过滤诊断: td is None, 跳过过滤", flush=True)
+        return batch
+
+    mmi_td = None
+    try:
+        mmi_td = tq.kv_batch_get_by_meta(batch, select_fields=["multi_modal_inputs"])
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cl] 手动过滤诊断: 读 multi_modal_inputs 失败({exc})", flush=True)
+    print(
+        f"[cl] 手动过滤诊断: 读到 {len(keys)} 行, tensor 字段={sorted(list(td.keys()))}, "
+        f"multi_modal_inputs 读没读到={mmi_td is not None and 'multi_modal_inputs' in mmi_td}",
+        flush=True,
+    )
+
+    def _lens(t):
+        if getattr(t, "is_nested", False):
+            return [int(x) for x in t.offsets().diff().tolist()]
+        if hasattr(t, "dim") and t.dim() == 2:
+            return [int(t.shape[1])] * int(t.shape[0])
+        return []
+
+    resp_lens = _lens(td["responses"]) if "responses" in td else []
+    mask_lens = _lens(td["response_mask"]) if "response_mask" in td else []
+
+    drop: list[int] = []
+    for i in range(len(keys)):
+        is_image = False
+        # 信号1：multi_modal_inputs 非空（含图）——从单独读的 mmi_td 取
+        if mmi_td is not None and "multi_modal_inputs" in mmi_td:
+            mmi = mmi_td["multi_modal_inputs"][i]
+            mmi_val = mmi.data if hasattr(mmi, "data") and not hasattr(mmi, "detach") else mmi
+            if isinstance(mmi_val, dict) and mmi_val:
+                is_image = True
+        # 信号2：responses/response_mask 长度不等（E13 崩溃直接症状，双保险）
+        if (
+            not is_image
+            and resp_lens
+            and mask_lens
+            and len(resp_lens) == len(mask_lens)
+            and i < len(resp_lens)
+            and resp_lens[i] != mask_lens[i]
+        ):
+            is_image = True
+        if is_image:
+            drop.append(i)
+
+    # 组过滤（对齐 session_worker 的 min_group_success_ratio=0.5 语义）：按 uid 分组，组内剩余
+    # < ceil(组内原始条数 × 0.5) 就整组删除。n=8 时阈值 = ceil(8×0.5) = 4，即含图/失败 ≥4 条就
+    # 整组丢，剩下的组至少保留 4 条，GRPO 组内方差可靠。
+    uids = []
+    for i in range(len(keys)):
+        tag = tags[i] if tags and i < len(tags) and isinstance(tags[i], dict) else {}
+        uids.append(tag.get("uid") or tag.get("record_id") or tag.get("task_id") or f"row{i}")
+    total: dict[str, int] = {}      # 每组原始条数
+    for i in range(len(keys)):
+        total[uids[i]] = total.get(uids[i], 0) + 1
+    _dropped = set(drop)
+    remaining: dict[str, int] = {}  # 每组剩余条数（非 drop）
+    for i in range(len(keys)):
+        if i not in _dropped:
+            remaining[uids[i]] = remaining.get(uids[i], 0) + 1
+    for i in range(len(keys)):
+        if i not in _dropped:
+            threshold = (total[uids[i]] + 1) // 2  # = ceil(n × 0.5)
+            if remaining[uids[i]] < max(1, threshold):
+                drop.append(i)
+
+    if not drop:
+        return batch
+
+    drop_set = set(drop)
+    keep = [i for i in range(len(keys)) if i not in drop_set]
+    new_keys = [keys[i] for i in keep]
+    new_tags = [tags[i] for i in keep] if len(tags) == len(keys) else None
+    print(
+        f"[cl] 手动过滤含图轨迹: 剔除 {len(drop)} 行(含图+单条组), 保留 {len(keep)} 行", flush=True
+    )
+    return KVBatchMeta(
+        keys=new_keys,
+        tags=new_tags,
+        partition_id=getattr(batch, "partition_id", None),
+        fields=list(getattr(batch, "fields", []) or []),
+        extra_info=getattr(batch, "extra_info", None),
+    )
+
+
 def _merge_buffer_metrics(metrics: dict, stats: Any, flatten_fn) -> None:
     """把扁平化的 buffer stats 并进 v1 fit 的 metrics dict（wandb/file logger 可见）。
 
@@ -292,7 +416,7 @@ def _extract_rollout_groups(rl_batch, bucket_names=None):
 
     返回 {task_id: [(trajectory, bucket, meta), ...]}。bucket_names 为空时（B1/K2 无
     buffer）不按桶过滤，全部抽取。与 buffer 无关，可独立用于 rollout 轨迹记录。"""
-    from data.cleaning import strip_zw
+    from datasources.cleaning import strip_zw
     from trainer.trajectory_adapter_v1 import extract_trajectories_from_kvbatch
 
     default_bucket = bucket_names[0] if bucket_names and len(bucket_names) == 1 else None

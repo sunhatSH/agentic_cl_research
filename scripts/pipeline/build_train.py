@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""Build final train.parquet: 5 buckets × 3200 rows, 4-6/4-7 intersection + gpt fallback."""
+"""Build datasets/train_cl.parquet：第一步训练集 = coding + research 各 6400（400 step）。
+
+coding 取难度 4-6；research 取 4-6，不够从 7 补。难度来自 difficulty_all.jsonl（双模型交集后
+单一值）。训练序按 bucket 空间最大距离（coding→research）。shuffle=false，前 200 step coding、
+后 200 step research。第二步的 7 桶数据集见 build_train_exp2.py（record_id 与本集不重合）。
+"""
 import json, re, math, itertools, random
 from collections import defaultdict, Counter
 from pathlib import Path
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+from path_normalize import normalize_paths, extract_gen_task_id, extract_ws_dir  # 路径归一化 + 抽任务id/ws标识
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-LABELED = ROOT / "data" / "labeled" / "new_trajectories_labeled.jsonl"
-OUT = ROOT / "datasets" / "train_v2.parquet"
+LABELED = ROOT / "datasources" / "labeled" / "new_trajectories_labeled.jsonl"
+OUT = ROOT / "datasets" / "train_cl.parquet"
 
 _REMINDER_RE = re.compile(r"<system-reminder>.*?(?:</system-reminder>|$)", re.DOTALL)
-T = ["coding", "office", "ops", "research", "workflow"]
-PER_BUCKET = 3200
+T = ["coding", "research"]
+PER_BUCKET = 6400  # 200 step × 32 batch
 
 SYSTEM_PROMPT = (
     "You are a capable autonomous agent. Complete the user's task using the available tools. "
@@ -28,76 +36,81 @@ for line in LABELED.read_text().splitlines():
     if "<system-reminder>" in q:
         q = _REMINDER_RE.sub("", q).strip()
         if not q: continue  # skip empty after strip
+    d["_gen_task_id"] = extract_gen_task_id(q)  # 归一化【前】抽 generated_tasks_hermes 任务id
+    d["_ws_dir"] = extract_ws_dir(q)  # 归一化【前】抽 review 任务 workspace 快照标识(F5-review)
+    q = normalize_paths(q)  # Windows E:\hermes\... → ./inputs/ 或 ./outputs/；ws → /home/user/workspace/
     d["_clean_query"] = q
     labeled[d["record_id"]] = d
 
 print(f"labeled: {len(labeled)} non-empty records")
 
-# ── Load model scores (non-empty only) ──
-grok = {}; gpt = {}
-for line in open(ROOT / "data" / "labeled" / "difficulty_grok-4.5.jsonl"):
+# ── Load difficulty (difficulty_all.jsonl 单一值 = 双模型交集后) ──
+diff = {}
+for line in open(ROOT / "datasources" / "labeled" / "difficulty_all.jsonl"):
     d = json.loads(line.strip()); rid = d["record_id"]
     if rid in labeled and d.get("difficulty") is not None:
-        grok[rid] = d["difficulty"]
-for line in open(ROOT / "data" / "labeled" / "difficulty_gpt-5.6-luna.jsonl"):
-    d = json.loads(line.strip()); rid = d["record_id"]
-    if rid in labeled and d.get("difficulty") is not None:
-        gpt[rid] = d["difficulty"]
-
-common = set(grok) & set(gpt)
-print(f"grok {len(grok):,}  gpt {len(gpt):,}  intersection {len(common):,}")
+        diff[rid] = d["difficulty"]
+print(f"difficulty: {len(diff):,} records")
 
 # ── Select records per bucket ──
 selected = {}  # rid -> bucket
+BATCH = 32
 random.seed(42)
 
+
+def _balanced_order(rids, diff_map, seed=42):
+    """把一个桶内的 rids 按难度分层、层内 shuffle、再按比例交错，
+    使每个 batch(32) 的难度配比≈全桶配比（每难度值内部随机）。
+
+    做法：按难度分组→组内 shuffle→用"分数累加"式交错(类似 Bresenham/最大余数)，
+    保证任意前缀里各难度占比都贴近全局占比，故每个连续 32 窗口配比稳定一致。
+    """
+    rng = random.Random(seed)
+    groups = {}
+    for rid in rids:
+        groups.setdefault(diff_map[rid], []).append(rid)
+    for d in groups:
+        rng.shuffle(groups[d])
+    total = len(rids)
+    # 每难度的"发牌速率" = 该难度占比；用累加器决定下一个发哪个难度。
+    diffs = sorted(groups)
+    remaining = {d: len(groups[d]) for d in diffs}
+    idx = {d: 0 for d in diffs}
+    acc = {d: 0.0 for d in diffs}
+    out = []
+    for _ in range(total):
+        # 给每个还有剩余的难度累加其速率，挑累加值最大的发一张（最大余数法）
+        best, best_acc = None, -1.0
+        for d in diffs:
+            if remaining[d] <= 0:
+                continue
+            acc[d] += len(groups[d]) / total
+            if acc[d] > best_acc:
+                best, best_acc = d, acc[d]
+        acc[best] -= 1.0
+        out.append(groups[best][idx[best]])
+        idx[best] += 1
+        remaining[best] -= 1
+    return out
+
+
 for b in T:
-    # Candidates: records in this bucket that both models scored
-    candidates_common = []
-    candidates_gpt_only = []
-    for rid in labeled:
-        if labeled[rid]["bucket"] != b: continue
-        if rid in grok and rid in gpt:
-            candidates_common.append(rid)
-        elif rid in gpt:
-            candidates_gpt_only.append(rid)
+    # Candidates: records in this bucket that have a difficulty label
+    candidates = [rid for rid in labeled if labeled[rid]["bucket"] == b and rid in diff]
 
     pool = []
     strategy = ""
 
-    if b in ("coding", "office", "ops"):
-        # 4-6 intersection
-        for rid in candidates_common:
-            gs, gp = grok[rid], gpt[rid]
-            if 4 <= gs <= 6 and 4 <= gp <= 6:
-                pool.append(rid)
-        strategy = "4-6 intersection"
+    if b == "coding":
+        # 4-6 难度（coding 4-6 充足）
+        pool = [rid for rid in candidates if 4 <= diff[rid] <= 6]
+        strategy = "4-6"
     elif b == "research":
-        # 4-7 intersection
-        for rid in candidates_common:
-            gs, gp = grok[rid], gpt[rid]
-            if 4 <= gs <= 7 and 4 <= gp <= 7:
-                pool.append(rid)
-        strategy = "4-7 intersection"
-    elif b == "workflow":
-        # intersection first, then gpt-only fallback: 5, then 4, 6, 7, 3
-        for rid in candidates_common:
-            gs, gp = grok[rid], gpt[rid]
-            if 4 <= gs <= 7 and 4 <= gp <= 7:
-                pool.append(rid)
-        strategy = "4-7 intersection + gpt fallback"
-        if len(pool) < PER_BUCKET:
-            # gpt-only fallback, priority: 5, 4, 6, 7, 3
-            gpt_fb = []
-            for rid in candidates_gpt_only:
-                gpt_fb.append((rid, gpt[rid]))
-            for priority in [5, 4, 6, 7, 3]:
-                gpt_fb.sort(key=lambda x: (0 if x[1] == priority else abs(x[1] - priority)))
-                for rid, s in gpt_fb:
-                    if rid not in pool:
-                        pool.append(rid)
-                        if len(pool) >= PER_BUCKET: break
-                if len(pool) >= PER_BUCKET: break
+        # 4-6 优先，不够从 7 补
+        pool_46 = [rid for rid in candidates if 4 <= diff[rid] <= 6]
+        pool_7 = [rid for rid in candidates if diff[rid] == 7]
+        pool = pool_46 + pool_7[: max(0, PER_BUCKET - len(pool_46))]
+        strategy = "4-6 + 7 fallback"
 
     random.shuffle(pool)
     taken = pool[:PER_BUCKET]
@@ -122,11 +135,13 @@ print(f"\n训练序: {' → '.join(best_order)}")
 # ── Build rows ──
 rows = []
 for b in best_order:
-    for rid in selected:
-        if selected[rid] != b: continue
+    bucket_rids = [rid for rid in selected if selected[rid] == b]
+    # 难度分层交错：每个 batch(32) 难度配比≈全桶配比，层内随机（用户口径）。
+    ordered_rids = _balanced_order(bucket_rids, diff, seed=42)
+    for rid in ordered_rids:
         rec = labeled[rid]
         q = rec["_clean_query"]
-        gs = grok.get(rid); gp = gpt.get(rid)
+        dd = diff[rid]
         rows.append({
             "prompt": [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -147,8 +162,9 @@ for b in best_order:
                 "available_tools": [],
                 "missing_info_slots": [],
                 "safety_constraints": [],
-                "difficulty_grok": str(gs) if gs else "",
-                "difficulty_gpt": str(gp) if gp else "",
+                "difficulty": str(dd),
+                "gen_task_id": rec.get("_gen_task_id") or "",  # generated_tasks_hermes/<D>/<tid>/ 输入文件+answer_key 定位
+                "ws_dir": rec.get("_ws_dir") or "",  # F5-review：review 任务 workspace 快照标识（datasources/review_ws/<ws_dir>/ws）
             },
         })
 
@@ -161,10 +177,9 @@ assert len(rids) == len(set(rids)), f"DUPLICATES: {len(rids)} vs {len(set(rids))
 # Save
 import pyarrow as pa, pyarrow.parquet as pq
 table = pa.Table.from_pylist(rows)
-pq.write_table(table, OUT)
-pq.write_table(table, str(OUT).replace("train_v2", "train"))
-pq.write_table(table, str(OUT).replace(".parquet", "_aligned.parquet").replace("train_v2", "train"))
-with open(str(OUT).replace(".parquet", ".jsonl").replace("train_v2", "train"), "w") as f:
+pq.write_table(table, OUT)  # train_cl.parquet
+_json_out = str(OUT).replace(".parquet", ".jsonl")
+with open(_json_out, "w") as f:
     for row in rows:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
@@ -172,4 +187,4 @@ c = Counter(r["bucket"] for r in rows)
 print(f"\n✅ {OUT} → {len(rows)} rows ({len(rows)//32} steps), 0 duplicates")
 for b in best_order:
     print(f"  {b}: {c[b]} rows ({c[b]//32} steps)")
-print(f"  train.parquet / train_aligned.parquet / train.jsonl 同步更新")
+print(f"  {_json_out} 同步更新")

@@ -69,7 +69,7 @@ actor_rollout_ref:
     # cl_rollout_manager.AgentLoopManager（与 use_v1 custom_sync + transfer_queue 不自洽）。
     agent:
       agent_loop_manager_class: recipe_custom.agent.agent_loop_manager.RemoteAgentLoopManager
-      agent_loop_config_path: exps/agent_loop_config.yaml
+      agent_loop_config_path: configs/exps/agent_loop_config.yaml
       default_agent_loop: hermes_agent
     custom:
       remote_agent:

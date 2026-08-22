@@ -73,7 +73,7 @@ export PATH="$VENV/bin:$PATH"
 # 让真包(pip 装进 site-packages 的 flash-attn)优先;缺失/残缺才把 shim 前置兜底
 # (PYTHONPATH 整体先于 site-packages,故要真包优先只能"不挂 shim",而非调 shim 在 PYTHONPATH 内位置)。
 _FA_SHIM="$ROOT_DIR/docker/qwen36-lightllm/flash_attn_shim"
-export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$ROOT_DIR:${PYTHONPATH:-}"
+export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$ROOT_DIR/src:$ROOT_DIR:${PYTHONPATH:-}"
 if "$PY" -c "import flash_attn; assert 'flash_attn_shim' not in (getattr(flash_attn,'__file__','') or ''); from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_func; from flash_attn.bert_padding import unpad_input" >/dev/null 2>&1; then
   echo "[train_cl] 真 flash_attn 可用(含 interface+bert_padding),不挂 shim"
 else
@@ -122,6 +122,9 @@ export ULYSSES_SP_SIZE="$ULYSSES_SP" TRAIN_BATCH_SIZE="$TRAIN_BATCH" PPO_MINI_BA
 export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
 export ROLLOUT_GPU_MEM_UTIL="$GPU_MEM_UTIL"
 export HF_DATASETS_CACHE="/tmp/hf_datasets_cache" HF_HOME="/tmp/hf_home"
+# 训练集：默认 train_cl.parquet（coding→research 续训实验，2 桶 × 6400 中等难度，见 scripts/pipeline/build_train.py）。
+# ⚠️ k2 等 5 桶正式实验重启续训时，需显式 TRAIN_FILES=$ROOT_DIR/datasets/train.parquet 覆盖。
+export TRAIN_FILES="${TRAIN_FILES:-$ROOT_DIR/datasets/train_cl.parquet}"
 export VLLM_GDN_PREFILL_BACKEND="${VLLM_GDN_PREFILL_BACKEND:-triton}"
 # ── NCCL cuMem 关闭（防 16卡 lightllm 起服 hang）──────────────────────────────
 # lightllm 开 enable_torch_memory_saver(cuMem VMM 劫持 cudaMalloc) × NCCL 默认
@@ -166,9 +169,15 @@ export VERL_USE_EXTERNAL_MODULES="${VERL_USE_EXTERNAL_MODULES:-recipe_custom.boo
 #       token 数错位 → ppo_loss "size of tensor a != b" 崩(差值=一张图 patch 数如 776)。patch
 #       AgentSessionWorker._is_trainable_trajectory,含图判不可训练→剔除,复用现成 min_group_success_ratio
 #       组过滤(组内含图≤半用剩下纯文本训、>半整组丢)。TEXT_MODEL_ONLY=1 保多模态能力不关视觉,故在此过滤。
+#   · trainer.empty_batch_skip_patch —— 空 batch skip 守卫(E18):all_failed_policy 只在生成阶段
+#       查 num_success_outputs==0 就 skip;但"部分成功、组过滤后又全丢"这条边界会把空 batch 送进
+#       _balance_batch → get_seqlen_balanced_partitions assert "number of items:[0] < k_partitions"
+#       整训练崩(2026-08-21 实测,config 丢文件恢复瞬间触发)。patch CustomPPOTrainerSync._balance_batch
+#       进函数查空→抛 _EmptyBatchSkip,step 捕获→记 rollout/empty_batch_skip 并 return None,复用
+#       fit() 既有 batch is None skip 分支,跳过该步继续而非崩。
 # 都必须在 worker 进程生效（patch 目标都在 worker/lightllm 副本），故走 VERL_USE_EXTERNAL_MODULES
 # 而非 driver-only import。逐个幂等去重。
-for _mod in rollout.e2b_http1_patch trainer.observer_hook_register trainer.pause_generation_bounded_patch trainer.dataproto_tensordict_patch trainer.image_trajectory_drop_patch; do
+for _mod in rollout.e2b_http1_patch trainer.observer_hook_register trainer.pause_generation_bounded_patch trainer.dataproto_tensordict_patch trainer.empty_batch_skip_patch; do
   case ",$VERL_USE_EXTERNAL_MODULES," in
     *,"$_mod",*) : ;;  # 已含,不重复追加
     *) export VERL_USE_EXTERNAL_MODULES="$VERL_USE_EXTERNAL_MODULES,$_mod" ;;
@@ -443,6 +452,10 @@ if [ "$NNODES" -le 1 ]; then
   [ -n "$_RAY_NUM_CPUS" ] && _RAY_NUM_CPUS_ARG="--num-cpus $_RAY_NUM_CPUS"
   echo "[train_cl] 单机: Ray num_cpus 名额 = ${_RAY_NUM_CPUS:-(Ray默认探测)}"
   echo "[train_cl] 单机: ray start --head ... ${_RAY_NUM_CPUS_ARG}"
+  # 清上次残留的 lightllm KV cache 共享内存段(nattch=0 才删,安全)。lightllm 异常退出
+  # (崩溃/kill) 时 shm 段不释放,多次重启累积到百 GB 级,把 256GB cgroup 打满 → host OOM
+  # (08-20 复现:28 个 4GB 段 = 112GB 残留)。每次启动前清干净。
+  ipcs -m 2>/dev/null | awk '$6 == 0 {print $2}' | xargs -r ipcrm -m 2>/dev/null || true
   ray start --head --disable-usage-stats ${_RAY_NUM_CPUS_ARG} || { echo "[train_cl] FATAL: ray start --head 失败" >&2; exit 1; }
   ray status
   # 捕获训练 exit code:ray stop 始终清理,但脚本退出码必须=训练码(同多机路径,防假成功)。
@@ -482,6 +495,8 @@ echo "[train_cl] rank=${RANK:-0}: Ray num_cpus 名额 = ${_RAY_NUM_CPUS:-(Ray默
 # 1. Master 先启动 Ray head
 if [ "${RANK:-0}" = "0" ]; then
   echo "[train_cl] master: ray start --head ... ${_RAY_NUM_CPUS_ARG}"
+  # 清上次残留的 lightllm KV cache 共享内存段(同上,多机 master 也清一次)。
+  ipcs -m 2>/dev/null | awk '$6 == 0 {print $2}' | xargs -r ipcrm -m 2>/dev/null || true
   ray start --head --disable-usage-stats ${_RAY_NUM_CPUS_ARG} || { echo "[train_cl] FATAL: ray start --head 失败" >&2; exit 1; }
   ray status
   echo "[train_cl] master: Ray head 就绪 ($(ray status 2>/dev/null | head -3 | tr '\n' ' '))"

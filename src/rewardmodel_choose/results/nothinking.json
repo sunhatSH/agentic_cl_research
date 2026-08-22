@@ -1,0 +1,126 @@
+{
+  "config": {
+    "n_traj": 20,
+    "repeat": 8,
+    "models": [
+      "deepseek/deepseek-v4-flash-20260731",
+      "openai/gpt-5.6-luna"
+    ],
+    "base": "https://openai.sufy.com/v1",
+    "max_tokens": 16384
+  },
+  "results": {
+    "deepseek/deepseek-v4-flash-20260731": {
+      "reward": {
+        "mean": 0.7419,
+        "std": 0.2613,
+        "min": 0.08,
+        "max": 1.0,
+        "n": 136
+      },
+      "dims": {
+        "task_done": {
+          "mean": 0.8309,
+          "std": 0.3749,
+          "min": 0.0,
+          "max": 1.0,
+          "n": 136
+        },
+        "correctness": {
+          "mean": 0.7184,
+          "std": 0.3205,
+          "min": 0.0,
+          "max": 1.0,
+          "n": 136
+        },
+        "trajectory": {
+          "mean": 0.7434,
+          "std": 0.1784,
+          "min": 0.2,
+          "max": 1.0,
+          "n": 136
+        },
+        "safety": {
+          "mean": 1.0,
+          "std": 0.0,
+          "min": 1.0,
+          "max": 1.0,
+          "n": 136
+        }
+      },
+      "latency_s": {
+        "mean": 2.4033,
+        "std": 0.6798,
+        "min": 1.1941,
+        "max": 5.6663,
+        "n": 160
+      },
+      "within_traj_reward_std_mean": 0.0881,
+      "within_traj_dim_std_mean": {
+        "task_done": 0.0794,
+        "correctness": 0.0757,
+        "trajectory": 0.0831,
+        "safety": 0.0
+      },
+      "judge_error_rate": 0.15,
+      "calls": 160,
+      "errors": 24
+    },
+    "openai/gpt-5.6-luna": {
+      "reward": {
+        "mean": 0.6586,
+        "std": 0.2678,
+        "min": 0.1,
+        "max": 0.96,
+        "n": 160
+      },
+      "dims": {
+        "task_done": {
+          "mean": 0.7688,
+          "std": 0.4216,
+          "min": 0.0,
+          "max": 1.0,
+          "n": 160
+        },
+        "correctness": {
+          "mean": 0.6661,
+          "std": 0.2875,
+          "min": 0.0,
+          "max": 1.0,
+          "n": 160
+        },
+        "trajectory": {
+          "mean": 0.6863,
+          "std": 0.2035,
+          "min": 0.25,
+          "max": 1.0,
+          "n": 160
+        },
+        "safety": {
+          "mean": 1.0,
+          "std": 0.0,
+          "min": 1.0,
+          "max": 1.0,
+          "n": 160
+        }
+      },
+      "latency_s": {
+        "mean": 7.1431,
+        "std": 3.6097,
+        "min": 3.1394,
+        "max": 36.4941,
+        "n": 160
+      },
+      "within_traj_reward_std_mean": 0.0453,
+      "within_traj_dim_std_mean": {
+        "task_done": 0.0382,
+        "correctness": 0.0598,
+        "trajectory": 0.0469,
+        "safety": 0.0
+      },
+      "judge_error_rate": 0.0,
+      "calls": 160,
+      "errors": 0
+    }
+  }
+}
