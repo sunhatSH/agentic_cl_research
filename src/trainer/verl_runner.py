@@ -1077,6 +1077,8 @@ def run_cl_eval(cfg: Any, eval_tasks: list[dict], num_runs: int) -> list[dict]:
     _tmo = os.environ.get("TEXT_MODEL_ONLY")
     if _tmo is not None:
         _passthrough["TEXT_MODEL_ONLY"] = _tmo
+    # 评测恒存完整 conversation（供官方 grader 评分用，见 trajectory_buffer.py）
+    _passthrough["CL_STORE_TRAJECTORY_MESSAGES"] = "1"
     if _passthrough:
         OmegaConf.update(
             cfg,

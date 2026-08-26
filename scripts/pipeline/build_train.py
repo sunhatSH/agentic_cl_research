@@ -119,7 +119,7 @@ for b in T:
     print(f"  {b:>12}: pool={len(pool):,}  taken={len(taken)}  strategy={strategy}")
 
 # ── Training order (max-distance) ──
-with open(ROOT / "configs" / "bucket_coords_final.json") as f:
+with open(ROOT / "configs" / "bucket_coords.json") as f:
     coords = json.load(f)["coordinates"]
 
 def dist(a, b):

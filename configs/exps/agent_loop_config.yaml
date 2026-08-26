@@ -34,8 +34,9 @@
       # Hermes _atomic_write 把临时文件 .hermes-tmp 放在【目标父目录】，父目录不存在就崩。
       # 沙箱用户 user(uid1000) 默认 cwd=/home/user（可写），故只需在 /home/user 下预建
       # 常用目录并 cd 过去——不用 sudo（非必要 sudo 是坏味道）。
-      # 输入输出统一 workspace（2026-08-26 去掉 input/output 区分），只预建 workspace。
-      init_command: "mkdir -p /home/user/workspace; cd /home/user"
+      # 输入输出统一 workspace(2026-08-26 去掉 input/output 区分),cd 到 workspace 让 agent cwd=workspace,
+      # 文件直接注入 cwd,query 里的文件名在脚下即可找到(无需绝对路径)。
+      init_command: "mkdir -p /home/user/workspace; cd /home/user/workspace"
       config_path: configs/exps/hermes.config.yaml     # ★ 指向下方拷贝的静态 hermes 配置
     # web 工具用镜像里的 /opt/tools/serper_search.py + jina_read.py(直连,非 local-web 插件)。
     # HermesHarness 把 env 写进沙箱 ~/.hermes/.env,脚本 os.getenv 读。key 从 docker/sandbox/

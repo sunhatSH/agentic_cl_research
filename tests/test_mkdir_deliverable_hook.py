@@ -27,9 +27,10 @@ def test_dir_reference_without_file():
     assert parse_deliverable_dirs(ins) == ["/home/user/workspace/incident-svc/incident_svc"]
 
 
-def test_outputs_root():
+def test_outputs_not_parsed():
+    # 输入输出统一 workspace(2026-08-26)：/home/user/outputs 不再单独支持
     ins = "dump to /home/user/outputs/sub/metrics.json"
-    assert parse_deliverable_dirs(ins) == ["/home/user/outputs/sub"]
+    assert parse_deliverable_dirs(ins) == []
 
 
 def test_multiple_dedup_sorted():
@@ -55,6 +56,6 @@ def test_no_path_returns_empty():
 
 
 def test_ignores_other_absolute_paths():
-    # 只认 /home/user/{workspace,outputs}；/tmp、/etc 等不碰
-    ins = "write /tmp/scratch/x.txt and /etc/foo/bar.conf"
+    # 只认 /home/user/workspace；/tmp、/etc、/home/user/outputs 等不碰
+    ins = "write /tmp/scratch/x.txt and /etc/foo/bar.conf and /home/user/outputs/y.txt"
     assert parse_deliverable_dirs(ins) == []

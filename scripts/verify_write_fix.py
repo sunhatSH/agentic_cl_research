@@ -24,6 +24,7 @@ def atomic_write_script(target: str, content: str) -> str:
     tmpl = "'.hermes-tmp.XXXXXX'"
     return (
         "set -e; "
+        f"mkdir -p {q_parent}; "   # ← 模拟 write_file 的 mkdir -p 建父目录(一层层建,深层自动拆开)
         f"d={q_parent}; t={q_path}; "
         'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
         '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
@@ -39,17 +40,16 @@ def atomic_write_script(target: str, content: str) -> str:
 
 # 训练里失败的真实目标路径(取自 harness 日志)
 TARGETS = [
-    "/home/user/outputs/corr_matrix.json",  # 相对→绝对可写区(成功案例同类)
-    "/workspace/app.py",                     # write_missing_parent:/workspace 不存在
-    "/compute_correlations.py",              # write_root_noperm:根目录无权限
+    "out.json",                              # 相对路径 → 写 cwd(workspace),应成功
+    "tests/test_x.py",                       # 深层目录(相对)→ mkdir -p 一层层建
+    "/home/user/workspace/deep/dir/out.csv",  # 绝对路径深层 → 应成功
+    "/compute_correlations.py",              # 写根目录 → 应失败(无权限)
 ]
 
-# 拟落地的 init_command(configs/exps/agent_loop_config.yaml)
+# 拟落地的 init_command(configs/exps/agent_loop_config.yaml)——统一 workspace,cd 到 workspace
 INIT_CMD = (
-    "mkdir -p /home/user/outputs /home/user/workspace && "
-    "chmod 777 /home/user 2>/dev/null; "
-    "ln -sfn /home/user/workspace /workspace 2>/dev/null; "
-    "cd /home/user"
+    "mkdir -p /home/user/workspace && "
+    "cd /home/user/workspace"
 )
 
 

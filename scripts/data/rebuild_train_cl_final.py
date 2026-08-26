@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""重构 train_cl.parquet:从 all_tasks_labeled 选 coding/research 各 6400,难度均分。
+"""重构 train_cl.parquet:从 all_tasks_labeled 选 coding/office 各 6400,难度均分。
 
 选题:
-  - coding/research 各 6400
+  - coding/office 各 6400
   - d4-6 优先, 不够 d7 补
   - 桶内每个 step(32 batch)难度配比 ≈ 全桶配比(最大余数法交错, 每个 step 难度均分)
   - 去重 by D_id, 只选有 files/ 的任务(产出型无文件不选)
@@ -60,18 +60,18 @@ def normalize_query(q: str) -> str:
     s = re.sub(r"[A-Za-z]:/hermes[\\/]+runtime[\\/]+(?:bigtasks|winruns)[\\/]+D\d+[\\/]+D[A-Za-z0-9_]+[\\/]+", to_bs, s, flags=re.IGNORECASE)
     s = re.sub(r"[A-Za-z]:/hermes[\\/]+runtime[\\/]+", to_bs, s, flags=re.IGNORECASE)
     s = normalize_paths(s)
-    s = re.sub(r"\./bigtasks\\D\d+\\[^\\]+\\inputs(?:\\|:)", "./inputs/", s, flags=re.IGNORECASE)
-    s = re.sub(r"\./winruns\\D\d+\\[^\\]+\\ws(?:\\|:)", "./outputs/", s, flags=re.IGNORECASE)
-    s = re.sub(r"\./bigtasks\\D\d+\\[^\\]+\\", "./outputs/", s, flags=re.IGNORECASE)
-    s = re.sub(r"\./winruns\\D\d+\\[^\\]+\\", "./outputs/", s, flags=re.IGNORECASE)
-    s = re.sub(r"\./bigtasks\\D\d+\\[^\\]+(?=\s|$|:|,)", "./inputs/", s, flags=re.IGNORECASE)
-    s = re.sub(r"\./winruns\\D\d+\\[^\\]+(?=\s|$|:|,)", "./outputs/", s, flags=re.IGNORECASE)
-    s = re.sub(r"\./winruns\\(?=$|\s|,|;)", "./outputs/", s, flags=re.IGNORECASE)
-    s = re.sub(r"\./bigtasks\\(?=$|\s|,|;)", "./inputs/", s, flags=re.IGNORECASE)
+    s = re.sub(r"\./bigtasks\\D\d+\\[^\\]+\\inputs(?:\\|:)", "/home/user/workspace/", s, flags=re.IGNORECASE)
+    s = re.sub(r"\./winruns\\D\d+\\[^\\]+\\ws(?:\\|:)", "/home/user/workspace/", s, flags=re.IGNORECASE)
+    s = re.sub(r"\./bigtasks\\D\d+\\[^\\]+\\", "/home/user/workspace/", s, flags=re.IGNORECASE)
+    s = re.sub(r"\./winruns\\D\d+\\[^\\]+\\", "/home/user/workspace/", s, flags=re.IGNORECASE)
+    s = re.sub(r"\./bigtasks\\D\d+\\[^\\]+(?=\s|$|:|,)", "/home/user/workspace/", s, flags=re.IGNORECASE)
+    s = re.sub(r"\./winruns\\D\d+\\[^\\]+(?=\s|$|:|,)", "/home/user/workspace/", s, flags=re.IGNORECASE)
+    s = re.sub(r"\./winruns\\(?=$|\s|,|;)", "/home/user/workspace/", s, flags=re.IGNORECASE)
+    s = re.sub(r"\./bigtasks\\(?=$|\s|,|;)", "/home/user/workspace/", s, flags=re.IGNORECASE)
     prev = None
     while prev != s:
         prev = s
-        s = re.sub(r"(\./(?:inputs|outputs)/[^\s\"']*?)\\(?=[A-Za-z0-9_.])", r"\1/", s)
+        s = re.sub(r"(/home/user/workspace/[^\s\"']*?)\\(?=[A-Za-z0-9_.])", r"\1/", s)
     return s
 
 
@@ -126,28 +126,39 @@ def main() -> int:
             tasks[d["D_id"]] = d
     print(f"loaded {len(tasks)} tasks", flush=True)
 
-    # ── 2. 选 coding/research, d4-6 优先 d7 补, 只选有 files 的 ──
+    # ── 2. 选 coding/office, d4-6 优先 d7 补, 再不够 d3/d8 兜底（含 _s 产出型）──
     selected: dict[str, list[str]] = {}  # bucket -> [D_id]
-    for bk in ("coding", "research"):
-        # d4-6 优先
+    for bk in ("coding", "office"):
+        # d4-6 优先 → d7 → d3 → d8 兜底
         pool_46 = [gid for gid, t in tasks.items()
                    if t.get("bucket") == bk and t.get("difficulty") is not None
-                   and 4 <= t["difficulty"] <= 6 and _has_files(gid)]
+                   and 4 <= t["difficulty"] <= 6]
         pool_7 = [gid for gid, t in tasks.items()
-                  if t.get("bucket") == bk and t.get("difficulty") == 7 and _has_files(gid)]
+                  if t.get("bucket") == bk and t.get("difficulty") == 7]
+        pool_3 = [gid for gid, t in tasks.items()
+                  if t.get("bucket") == bk and t.get("difficulty") == 3]
+        pool_8 = [gid for gid, t in tasks.items()
+                  if t.get("bucket") == bk and t.get("difficulty") == 8]
         rng = random.Random(SEED)
-        rng.shuffle(pool_46)
-        rng.shuffle(pool_7)
-        taken = pool_46[:PER_BUCKET] + pool_7[: max(0, PER_BUCKET - len(pool_46))]
-        taken = taken[:PER_BUCKET]
+        for p in (pool_46, pool_7, pool_3, pool_8):
+            rng.shuffle(p)
+        taken = pool_46[:PER_BUCKET]
+        rem = PER_BUCKET - len(taken)
+        taken += pool_7[:rem]
+        rem = PER_BUCKET - len(taken)
+        taken += pool_3[:rem]
+        rem = PER_BUCKET - len(taken)
+        taken += pool_8[:rem]
         selected[bk] = taken
         d46 = sum(1 for gid in taken if tasks[gid]["difficulty"] in (4, 5, 6))
         d7 = sum(1 for gid in taken if tasks[gid]["difficulty"] == 7)
-        print(f"  {bk}: pool d4-6={len(pool_46)} d7={len(pool_7)} taken={len(taken)} (d4-6={d46} d7={d7})", flush=True)
+        d38 = sum(1 for gid in taken if tasks[gid]["difficulty"] in (3, 8))
+        print(f"  {bk}: pool d4-6={len(pool_46)} d7={len(pool_7)} d3={len(pool_3)} d8={len(pool_8)} "
+              f"taken={len(taken)} (d4-6={d46} d7={d7} d3/d8={d38})", flush=True)
 
     # ── 3. 桶内难度均分(最大余数法交错) ──
     ordered: list[str] = []
-    for bk in ("coding", "research"):
+    for bk in ("coding", "office"):
         diff_map = {gid: tasks[gid]["difficulty"] for gid in selected[bk]}
         ordered += _balanced_order(selected[bk], diff_map, seed=SEED)
 
@@ -190,7 +201,7 @@ def main() -> int:
     c = Counter(r["bucket"] for r in rows)
     print(f"\n=== 重构结果 ===", flush=True)
     print(f"  总行数: {len(rows)} ({len(rows)//BATCH} steps)", flush=True)
-    for b in ("coding", "research"):
+    for b in ("coding", "office"):
         print(f"  {b}: {c[b]} rows ({c[b]//BATCH} steps)", flush=True)
         # 难度分布
         dv = Counter(r["extra_info"]["difficulty"] for r in rows if r["bucket"] == b)

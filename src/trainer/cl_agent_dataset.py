@@ -43,12 +43,12 @@ TASKSPECS_ROOT = os.environ.get(
     os.path.join(_REPO_ROOT, "datasources", "taskspecs_w3"),
 )
 # 沙箱内落地目录：输入输出统一 workspace（去掉 input/output 区分，2026-08-26）。
-# query 路径统一 /home/user/workspace/...，文件注入同一目录。
+# init_command cd 到 /home/user/workspace，故文件注入 cwd（sandbox="."），query 文件名在脚下即可找到。
 REVIEW_WS_ROOT = os.environ.get(
     "CL_REVIEW_WS_ROOT",
     os.path.join(_REPO_ROOT, "datasources", "review_ws"),
 )
-SANDBOX_WORKSPACE_DIR = os.environ.get("CL_SANDBOX_WORKSPACE_DIR", "workspace")
+SANDBOX_WORKSPACE_DIR = os.environ.get("CL_SANDBOX_WORKSPACE_DIR", ".")
 
 
 def _load_review_ws_index() -> dict[str, str]:
@@ -157,13 +157,15 @@ def build_agent_assets(
 ) -> dict[str, list[dict[str, str]]]:
     """定位输入文件目录，产出 agent_assets(files/type=dir) 注入沙箱。
 
-    统一 base：gen_task_id(=D_id) → taskspecs_w3/<D_id>/files → 沙箱 ./inputs。
+    统一 base：gen_task_id(=D_id) → taskspecs_w3/<D_id>/files → 沙箱 cwd(workspace)。
+    init_command cd 到 /home/user/workspace，故 sandbox="." 注入 cwd，query 文件名在脚下即可找到。
     无 files/ 目录（产出型任务）→ 不注入（返回空 dict）。
     整树注入用 type=dir，对应 write_agent_assets→write_local_dir 把整个目录拷进沙箱。
+    深层写盘由 Hermes write_file 内置 mkdir -p 自动建父目录（2026-08-26 真机验证），无需预建 hook。
     """
     files: list[dict[str, str]] = []
 
-    # 输入文件 → /home/user/workspace（统一 base：<TASKSPECS_ROOT>/<D_id>/files）
+    # 输入文件 → cwd(workspace)（统一 base：<TASKSPECS_ROOT>/<D_id>/files）
     files_dir = _gen_task_inputs_dir(gen_task_id)
     if files_dir:
         files.append({
@@ -172,7 +174,7 @@ def build_agent_assets(
             "type": "dir",
         })
 
-    # review-ws 完整 workspace 快照 → /home/user/workspace（保留：review 任务用）
+    # review-ws 完整 workspace 快照 → cwd(workspace)（保留：review 任务用）
     ws_dir = _review_ws_dir(record_id)
     if ws_dir:
         files.append({

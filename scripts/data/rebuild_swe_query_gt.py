@@ -98,7 +98,7 @@ def replace_repo(text: str) -> str:
 
     只匹配 /repo 后面跟 /、空白、引号、反引号、标点、结尾的(目录引用),
     不匹配 /report(后面跟 rt)。"""
-    return re.sub(r"/repo(?=[/\s'\"`.,;:)\]}，。；：）】]|$)", "./inputs", text)
+    return re.sub(r"/repo(?=[/\s'\"`.,;:)\]}，。；：）】]|$)", "/home/user/workspace", text)
 
 
 def parse_hint(block: str):
@@ -162,11 +162,11 @@ def add_inputs_prefix(hints_text: str) -> str:
         if not path:
             out.append(block)
             continue
-        # path 加 ./inputs/ 前缀,反引号原样保留(带字段名格式有反引号)
+        # path 加 /home/user/workspace/ 前缀,反引号原样保留(带字段名格式有反引号)
         if "`" in path:
-            path = "`./inputs/" + path.strip("`") + "`"
+            path = "`/home/user/workspace/" + path.strip("`") + "`"
         else:
-            path = "./inputs/" + path.lstrip("/")
+            path = "/home/user/workspace/" + path.lstrip("/")
         # 按原格式重新拼回
         if "Type:" in block or "Name:" in block or "Path:" in block:
             seg = [f"Type: {kind}", f"Name: `{name}`" if name else f"Name: ",
@@ -213,7 +213,7 @@ def build_query(content: str) -> str:
     # hints 的 path 加 ./inputs/ 前缀(相对路径,没有 /repo 前缀,单独处理)
     hints = add_inputs_prefix(hints)
 
-    parts = ["读 ./inputs/ 目录下的代码仓库，实现以下请求的改动：", "", issue]
+    parts = ["读 /home/user/workspace/ 目录下的代码仓库，实现以下请求的改动：", "", issue]
     if hints:
         parts += ["", "Interface hints:", hints]
     if req:
@@ -231,7 +231,7 @@ def parse_interface_hints(text: str) -> list[str]:
         kind, name, path, inp, outp, desc = r
         if not name and not desc:
             continue
-        path = "./inputs/" + path.lstrip("/") if path else ""
+        path = "/home/user/workspace/" + path.lstrip("/") if path else ""
         sig = ""
         if inp or outp:
             sig = f"；签名 Input: {inp}, Output: {outp}" if inp else f"；输出: {outp}"
