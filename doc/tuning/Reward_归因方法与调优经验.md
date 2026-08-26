@@ -118,6 +118,39 @@ Hermes `_atomic_write` 把临时文件 `.hermes-tmp` 建在【目标父目录】
 
 **真机 e2e**：ws 注入沙箱后 agent 按 query 路径 `head /home/user/workspace/app.py` 读到真实代码 ✅。闭环：query 指 workspace ↔ 注入铺 ws 到 workspace ↔ ws 含被 review 的文件。
 
+### 「读不到」的二次归因：不是 900 个，是 1667 个；且 research d4-6 干净池=0（F9 收尾，2026-08-23）
+
+F9 第一轮只修了"有显式 ws 路径"的 67 个（train_cl 内）。但全量核验发现**坏行远不止这些**——用 `_file_ok`（query 引用 `/home/user/workspace` 或 `./inputs` 读文件，但文件源不存在）扫全表，**1667 行缺源**（coding 750 + research 917）。这批 query 里只有 `/workspace/xxx`（无 ws 绝对路径、无 D_xxx id），`extract_ws_dir`/`extract_gen_task_id` 都抽不出关联线索。
+
+**定位过程（怎么查出来的）**：
+1. **先确认"文件到底在不在"**：抽 research d4-6 的 query，引用 `research_brief.md`/`app.py` 等 → 在 tongronglei 的 raw ws 里找 → **文件在**（不缺失）。但 raw 目录是 parent 级（299 个），child 轨迹（34068 行）无任何 id 字段关联到它属于哪个 raw → **无法确定性映射**。
+2. **试从轨迹重建文件**（方案 B）：用 seed_query 文本匹配轨迹会话 → 从 tool 输出拼文件 → 判完整性。跑出 514 个完整、866 不完整、282 锚不到。**但这是不可信的**——定位靠文本匹配（非确定性 id），内容没核验。**废弃**（删 `rebuild_review_ws_from_traj.py` + `_rebuilt/`）。
+3. **查 id 溯源机制**：`extract_new_queries.py` 里 `rid = metadata.session_id or metadata.request_id or f"unk_{行号}"`。非 unk_ 的题（47835 个）有真实 session_id；unk_ 的题（71928 个）轨迹只有 messages+tools、**无任何元数据** → id 不可溯源是采集时就造成的，不是我没找到。
+4. **查"能溯源的题怎么找到文件的"**：发现**全部靠 query 里的路径文本匹配**，不是靠 id。unk_ 题靠 query 里 `E:\hermes\runtime\bigtasks\D10\D10_k982304_zh\inputs\` 抽 gen_task_id；非 unk_ 题靠 `/workspace/user/.cache/cttap/D10_xxx`（但 `extract_gen_task_id` 正则只认 bigtasks/winruns，抽不出 cttap → 非 unk_ 反而找不到文件）。
+
+**关键转折（用户点破）**：research d4-6 的 842 个"引用 workspace"题，精确判定后**真需底稿=0**——它们是产出型（"gather facts for a section in research_brief.md ... Do not edit files. Return JSON"），引用路径只是上下文/产出目标，**不需要预置文件**。我的 `_file_ok` 把"引用 workspace"一刀切判成读文件，误判了产出型。
+
+**但用户最终口径**：即便产出型不需要文件，**缺源的也要换掉**（id 不对、路径不合理的都换），保证"文件能找到"。research d4-6 干净池=0（它们本身就是缺源的那批），所以 research 只能用 d7。
+
+**最终修法（替换，不重建）**：`scripts/data/replace_bad_review_tasks.py`：
+- 坏行判定：`_file_ok`（query 读文件但文件源不存在）= 1667 个。
+- 替换池：`new_trajectories_labeled.jsonl` 同桶 + 不在保留好行 + unique + **文件齐全**（不引入新缺源，加了 `seed2traj_taskspecs/<rid>/files` 第三查找分支）。
+- 优先级：非 unk_ d4-6 → 非 unk_ d7 → unk_ d4-6 → unk_ d7（尽可能用可溯源 id）。
+- 结果：coding 750（31 个非 unk_，难度 d4 为主）、research 917（12 个非 unk_，全 d7，因 research d4-6 干净池=0）。
+- **替换后 0 缺源、0 重复、12800 行结构不变**。
+
+**build_agent_assets 三条查找分支**（让文件能找到）：
+1. `gen_task_id` → `generated_tasks_hermes/<D>/<gid>/inputs`（数据分析任务，query 里 D_xxx 路径）
+2. `record_id` → `taskspecs_w3/<rid>/files`（旧 taskspecs）
+3. `record_id` → `seed2traj_taskspecs/<rid>/files`（dirty.bak 的 s_hash_tN 任务，本轮新增）
+
+**妥协（用户口径"实验，过拟合无所谓，认了"）**：
+- research 917 个全 d7（d4-6 干净池=0，难度偏难）。
+- 可溯源 id 仅 81/12800（research 可溯源题只有 28，不够；用户禁用 dirty.bak 补）。
+- 核心目标"0 缺源、文件能找到"达成。
+
+**最终验证**：12800 行全量核验——9805 不引用路径（产出型，无需文件）+ 2995 引用路径且文件源存在 + **0 缺源**。读文件的题走三条查找分支都能定位到文件。
+
 ---
 
 ## 三、可复用的调优经验（跨实验）
@@ -132,4 +165,9 @@ Hermes `_atomic_write` 把临时文件 `.hermes-tmp` 建在【目标父目录】
 8. **不用非必要 sudo**：能从数据层解决（改路径）就不在沙箱里提权——非必要 sudo 是坏味道。
 9. **反问要分情况**：第一次面对客观缺失/真歧义的反问是**必要**的，不该判 0（否则教模型"宁可瞎编也不问"）；信息齐全仍反问才算失败。
 10. **"读不到"先查文件在不在，别急着判缺失**：seed_query/source_file 里的原始路径是线索；文件常在采集者目录、只是没拷进项目。"存在但没接上"能修，"真没了"才无解——先核对再定性。
+11. **id 溯源 vs 路径文本匹配**：现在"能找到文件"靠的是 query 里的路径文本匹配（抽 gen_task_id/ws_dir），不是靠 record_id。unk_ 行号 id 不起任何作用——id 和文件定位脱节。要"id 能溯源"得有真实 session_id，但采集时没存元数据的题就做不到。这是数据采集阶段的问题，不是重构能补的。
+12. **产出型 vs 读现有要分清**：query 引用 `/workspace/xxx.md` 不一定是读现有文件——可能是产出目标路径（"写到这个文件"）或上下文（"为 brief 的某一节收集资料，Do not edit"）。`_file_ok` 一刀切判"引用 workspace = 读文件"会误判产出型。精确判定要看动词（read/inspect/update vs produce/return json/do not edit）。
+13. **替换池要加"文件齐全"约束**：换进来的题自己不能又缺源，否则替换后仍有坏行（第一次干跑 952 仍缺源就是这个）。替换池必须预筛 `_file_ok`，保证 0 缺源。
+14. **数据源要找对**：用户说"四万多数据源在 datasources 下"，我反复找错（taskspecs_labeled.jsonl 4941、dirty.bak 9321、new_trajectories_labeled 119763）。最终定位：`new_trajectories_labeled.jsonl` 里非 unk_ 的 47835 个就是"四万多可溯源"，但 research 桶可溯源仅 28。**别再乱猜，直接问用户具体文件名**。
+15. **妥协要明确记录**：research d4-6 干净池=0、可溯源 id 不够——这些是硬卡点。用户口径"实验，过拟合无所谓，认了"：接受 research 全 d7、大部分 unk_ id，保"0 缺源、文件能找到"核心目标。
 

@@ -95,8 +95,9 @@ _do_stage1() {  # <method>
   local m="$1" exp="cl2r_${m}"
   _do_train "$m" "$exp" 200
   _do_train "$m" "$exp" 400
-  _do_eval "$ROOT_DIR/ckpts/$exp/global_step_200/actor" "$exp" 200
-  _do_eval "$ROOT_DIR/ckpts/$exp/global_step_400/actor" "$exp" 400
+  # 训完自动评测（Pass^5 + 按桶 + 与 base 对比）
+  bash "$ROOT_DIR/scripts/eval_after_train.sh" "$exp" 200 "$m"
+  bash "$ROOT_DIR/scripts/eval_after_train.sh" "$exp" 400 "$m"
 }
 
 # ── stage2：第二部分 7 桶少量边训边评 ──
@@ -108,7 +109,8 @@ _do_stage2() {  # <method>
     local b="${entry%%:*}" steps="${entry##*:}"
     cum=$((cum + steps))
     _do_train "$m" "$exp" "$cum" data.train_files="$ROOT_DIR/datasets/train_exp2.parquet" trainer.save_freq=1
-    _do_eval "$ROOT_DIR/ckpts/$exp/global_step_$cum/actor" "$exp" "$cum"
+    # 边训边评：每桶训完立即评
+    bash "$ROOT_DIR/scripts/eval_after_train.sh" stage2 "$m"
   done
 }
 

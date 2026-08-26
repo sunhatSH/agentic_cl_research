@@ -37,20 +37,19 @@ except Exception:  # noqa: BLE001 -- recipe_custom absent off-cluster（单测/�
         async def run(self, sandbox: Any, ctx: Any, state: Any) -> None: ...
 
 
-# 只认沙箱内可写根下的绝对路径（数据层已把 /workspace 归一到 /home/user/workspace）。
-# 捕获 /home/user/<root>/<后续>，<root> ∈ {workspace, outputs}。
-_PATH_RE = re.compile(r"/home/user/(?:workspace|outputs)/[\w./\-]+")
-# 沙箱根（init_command 已建），无需重复建。
-_ROOTS = frozenset({"/home/user/workspace", "/home/user/outputs"})
+# 只认沙箱内可写根下的路径（输入输出统一 workspace，2026-08-26）。
+_PATH_RE = re.compile(r"/home/user/workspace/[\w./\-]+")
+# 沙箱根（init_command 已建 /home/user/workspace），无需重复建。
+_ROOTS = frozenset({"/home/user/workspace"})
 
 
 def parse_deliverable_dirs(instruction: str) -> list[str]:
     """从指令解析出需要预建的目录集（去重、剔根、按路径升序）。
 
-    规则：对每个 /home/user/{workspace,outputs}/... 引用——
+    规则：对每个 /home/user/workspace/... 引用——
       - 末段像文件（含 '.' 且不是唯一段）→ 取其父目录；
       - 否则整体当目录。
-    根目录（workspace/outputs 本身）已由 init_command 建，跳过。纯函数，可离线单测。
+    根目录（workspace 本身）已由 init_command 建，跳过。纯函数，可离线单测。
     """
     if not instruction:
         return []
@@ -60,7 +59,7 @@ def parse_deliverable_dirs(instruction: str) -> list[str]:
         if not p or p in _ROOTS:
             continue
         segs = p.split("/")
-        # /home/user/<root>/... → 段 0..2 是 '', 'home', 'user'；root 在段 3
+        # /home/user/workspace/... → 段 0..2 是 '', 'home', 'user'；workspace 在段 3
         tail = segs[-1]
         if "." in tail and len(segs) > 4:
             parent = "/".join(segs[:-1])

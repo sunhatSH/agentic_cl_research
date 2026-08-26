@@ -983,8 +983,27 @@ def _make_cl_task_runner_eval():
             for task in eval_tasks:
                 p = task.get("prompt") or task.get("messages")
                 raw = p if isinstance(p, list) else [{"role": "user", "content": p}]
-                for _ in range(num_runs):
-                    rows.append({"raw_prompt": raw, "uid": task["task_id"]})
+                tid = task["task_id"]
+                bucket = task.get("bucket") or task.get("category") or "Unlabeled"
+                for i in range(num_runs):
+                    # 评测行必须补齐训练行同款字段，否则 omni reward manager 读
+                    # non_tensor_batch["reward_model"] 会 KeyError（session 全 abort）；
+                    # extra_info.bucket/record_id 供 extract 归桶 + Pass^N 分组；uid 唯一化
+                    # 避免 3 次 run 撞 KV key。
+                    rows.append({
+                        "raw_prompt": raw,
+                        "uid": f"{tid}_run{i}",
+                        "data_source": "claw_eval",
+                        "reward_model": {
+                            "ground_truth": "",
+                            "style": "rule",
+                            "reward_fn": {"_function_name": "trainer.model_reward_omni.compute_score"},
+                        },
+                        "extra_info": {
+                            "record_id": tid,
+                            "bucket": bucket,
+                        },
+                    })
 
             prompts = list_of_dict_to_tensordict(rows)
             # global_steps / validate 是标量（整个 batch 一个），不是 per-sample，

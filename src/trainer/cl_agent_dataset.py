@@ -33,30 +33,17 @@ from typing import Any
 
 from verl.utils.dataset.rl_dataset import RLHFDataset
 
-# taskspecs 根目录：每个 <record_id>/ 下有 files/(输入) + answer_key.json + taskspec.yaml。
-# 可用 env 覆盖（集群路径不同）；默认指向仓库内 datasources/taskspecs_w3。
+# 统一文件 base：所有训练任务的输入文件都在 <BASE>/<D_id>/files/ 下。
+# taskspecs_w3 与 generated_tasks_hermes 是同一批 47988 任务（D_id 一一对应），
+# taskspecs_w3/<D_id>/files/ 统一存放输入文件（generated_tasks_hermes 的 inputs/ 同源）。
+# 换数据源路径只改这一个 env，不再多分支回退。
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/trainer → repo
 TASKSPECS_ROOT = os.environ.get(
     "CL_TASKSPECS_ROOT",
     os.path.join(_REPO_ROOT, "datasources", "taskspecs_w3"),
 )
-# generated_tasks_hermes 根：<D<N>>/<task_id>/inputs/ 存真实输入文件（Kaggle CSV/xlsx 等），
-# <D<N>>/<task_id>/answer_key.json 是 judge ground truth。训练行 record_id 是 unk_*，与
-# taskspecs_w3 目录名(D10_b10 式)不通 → 靠 extra_info.gen_task_id(如 D10_k982304_zh)定位。
-# D<N> = task_id 下划线前缀。可 env 覆盖。
-GEN_TASKS_ROOT = os.environ.get(
-    "CL_GEN_TASKS_ROOT",
-    os.path.join(_REPO_ROOT, "datasources", "generated_tasks_hermes"),
-)
-# 沙箱内落地目录（query 文案统一用 ./inputs）。
-SANDBOX_INPUTS_DIR = os.environ.get("CL_SANDBOX_INPUTS_DIR", "inputs")
-
-# ── F5-review：review 任务的 workspace 快照种子（2026-08-22）──────────────────────
-# "读现有代码库"类 review 任务(约 900 个)要 review /home/user/workspace/ 下的 app.py、
-# tests 等，文件是采集时 agent 的完整 workspace 快照，已由 scripts/data/copy_review_ws.py
-# 拷进 datasources/review_ws/<branch>/<D>/<taskdir>/ws，并写 index.json(record_id→ws相对标识)。
-# ws 是一个完整工作目录整体，整树注入沙箱 /home/user/workspace/(不拆 inputs/outputs)——
-# 与 path_normalize 把 ws 路径归一到 /home/user/workspace/ 对齐。
+# 沙箱内落地目录：输入输出统一 workspace（去掉 input/output 区分，2026-08-26）。
+# query 路径统一 /home/user/workspace/...，文件注入同一目录。
 REVIEW_WS_ROOT = os.environ.get(
     "CL_REVIEW_WS_ROOT",
     os.path.join(_REPO_ROOT, "datasources", "review_ws"),
@@ -95,13 +82,17 @@ def _review_ws_dir(record_id: str | None) -> str | None:
 
 
 def _gen_task_inputs_dir(gen_task_id: str | None) -> str | None:
-    """按 gen_task_id 定位 generated_tasks_hermes/<D<N>>/<tid>/inputs 目录（存在且非空才返回）。"""
+    """按 gen_task_id(=D_id) 定位 <TASKSPECS_ROOT>/<D_id>/files 目录（存在且非空才返回）。
+
+    统一 base：所有训练任务的输入文件都在 taskspecs_w3/<D_id>/files/ 下（与
+    generated_tasks_hermes/<D>/<D_id>/inputs/ 同源，taskspecs_w3 是统一入口）。
+    无 files/ 目录（如 _s 后缀产出型任务）→ 返回 None，不注入（正确，产出型无需文件）。
+    """
     if not gen_task_id:
         return None
-    d_prefix = gen_task_id.split("_", 1)[0]  # D10_k982304_zh → D10
-    inputs_dir = os.path.join(GEN_TASKS_ROOT, d_prefix, gen_task_id, "inputs")
-    if os.path.isdir(inputs_dir) and os.listdir(inputs_dir):
-        return inputs_dir
+    files_dir = os.path.join(TASKSPECS_ROOT, gen_task_id, "files")
+    if os.path.isdir(files_dir) and os.listdir(files_dir):
+        return files_dir
     return None
 
 # ── DEBUG：强制产图（验证含图轨迹过滤 E13）。CL_DEBUG_FORCE_SCREENSHOT=1 时，只对
@@ -166,31 +157,22 @@ def build_agent_assets(
 ) -> dict[str, list[dict[str, str]]]:
     """定位输入文件目录，产出 agent_assets(files/type=dir) 注入沙箱。
 
-    优先级：
-      1. gen_task_id → generated_tasks_hermes/<D<N>>/<tid>/inputs → 沙箱 ./inputs
-         （训练集主路径，record_id 是 unk_* 与 taskspecs_w3 不通，靠 gen_task_id 定位）；
-      2. 回退 record_id → taskspecs_w3/<rid>/files → 沙箱 ./inputs（冷启动/旧数据集用）；
-      3. review-ws（F5-review）：record_id → datasources/review_ws/.../ws → 沙箱 workspace
-         （"读现有代码库" review 任务的完整 workspace 快照，整树注入 /home/user/workspace）。
-    (1)/(2) 与 (3) 可并存但训练里互斥（review 任务无 gen_task_id）。都不存在 → 空 dict。
+    统一 base：gen_task_id(=D_id) → taskspecs_w3/<D_id>/files → 沙箱 ./inputs。
+    无 files/ 目录（产出型任务）→ 不注入（返回空 dict）。
     整树注入用 type=dir，对应 write_agent_assets→write_local_dir 把整个目录拷进沙箱。
     """
     files: list[dict[str, str]] = []
 
-    # (1)/(2) 输入文件 → ./inputs
+    # 输入文件 → /home/user/workspace（统一 base：<TASKSPECS_ROOT>/<D_id>/files）
     files_dir = _gen_task_inputs_dir(gen_task_id)
-    if files_dir is None and record_id:
-        cand = os.path.join(root, record_id, "files")
-        if os.path.isdir(cand):
-            files_dir = cand
     if files_dir:
         files.append({
             "source": os.path.abspath(files_dir),
-            "sandbox": SANDBOX_INPUTS_DIR,
+            "sandbox": SANDBOX_WORKSPACE_DIR,
             "type": "dir",
         })
 
-    # (3) review-ws 完整 workspace 快照 → /home/user/workspace
+    # review-ws 完整 workspace 快照 → /home/user/workspace（保留：review 任务用）
     ws_dir = _review_ws_dir(record_id)
     if ws_dir:
         files.append({

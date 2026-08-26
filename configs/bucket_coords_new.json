@@ -1,0 +1,41 @@
+{
+  "dimensions": [
+    "knowledge",
+    "reasoning",
+    "planning",
+    "tool_use",
+    "environment_action",
+    "generation",
+    "interaction"
+  ],
+  "model": "grok-4.5",
+  "coordinates": {
+    "coding": [
+      6.0,
+      7.1,
+      6.8,
+      5.8,
+      4.3,
+      7,
+      2.0
+    ],
+    "office": [
+      5.7,
+      7.0,
+      6.4,
+      5.8,
+      4.1,
+      6.7,
+      1.9
+    ],
+    "research": [
+      6.1,
+      6.8,
+      5.9,
+      5.8,
+      3.2,
+      6.8,
+      1.9
+    ]
+  }
+}

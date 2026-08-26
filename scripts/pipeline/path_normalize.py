@@ -109,44 +109,45 @@ def extract_gen_task_id(text: str) -> str | None:
 
 
 def _slashify(s: str) -> str:
-    """把 ./inputs 或 ./outputs 后残留的反斜杠路径段转正斜杠（多级循环处理）。"""
+    """把 /home/user/workspace/ 后残留的反斜杠路径段转正斜杠（多级循环处理）。"""
     prev = None
     while prev != s:
         prev = s
-        s = re.sub(r"(\./(?:inputs|outputs)/[^\s\"']*?)\\(?=[A-Za-z0-9_.])", r"\1/", s)
+        s = re.sub(r"(/home/user/workspace/[^\s\"']*?)\\(?=[A-Za-z0-9_.])", r"\1/", s)
     return s
 
 
 def normalize_paths(text: str) -> str:
-    """把 query 里 Windows/UNC/外部Linux 绝对路径统一改成沙箱内 ./inputs 或 ./outputs。
+    """把 query 里 Windows/UNC/外部Linux 绝对路径统一改成沙箱内 /home/user/workspace/。
 
     只碰三类明确的"非沙箱路径"族；不误伤 "detail:\\n"（换行伪影）、/home/user、/usr 等
     合法沙箱路径、以及普通含斜杠文本。
+    输入输出统一 workspace（去掉 input/output 区分，2026-08-26）。
     """
     if not text:
         return text
     s = text
     # 1. Windows 盘符
-    s = _INPUTS_RE.sub("./inputs/", s)
-    s = _OUTPUTS_RE.sub("./outputs/", s)
-    s = _INPUTS_FALLBACK.sub("./inputs/", s)
-    s = _OUTPUTS_FALLBACK.sub("./outputs/", s)
-    s = _HERMES_ROOT.sub("./", s)
+    s = _INPUTS_RE.sub("/home/user/workspace/", s)
+    s = _OUTPUTS_RE.sub("/home/user/workspace/", s)
+    s = _INPUTS_FALLBACK.sub("/home/user/workspace/", s)
+    s = _OUTPUTS_FALLBACK.sub("/home/user/workspace/", s)
+    s = _HERMES_ROOT.sub("/home/user/workspace/", s)
     # 2. UNC
-    s = _UNC_INPUTS.sub("./inputs/", s)
-    s = _UNC_OUTPUTS.sub("./outputs/", s)
-    s = _UNC_INPUTS_FB.sub("./inputs/", s)
-    s = _UNC_OUTPUTS_FB.sub("./outputs/", s)
-    s = _UNC_ROOT.sub("./", s)
+    s = _UNC_INPUTS.sub("/home/user/workspace/", s)
+    s = _UNC_OUTPUTS.sub("/home/user/workspace/", s)
+    s = _UNC_INPUTS_FB.sub("/home/user/workspace/", s)
+    s = _UNC_OUTPUTS_FB.sub("/home/user/workspace/", s)
+    s = _UNC_ROOT.sub("/home/user/workspace/", s)
     # 3. 外部 Linux 绝对路径
     # ★ 先处理 review 任务的完整 workspace 快照(tongronglei 采集 ws)：整体归一到
     #   /home/user/workspace/，不拆 inputs/outputs（ws 本就是一个完整工作目录）。
-    #   必须在通用 _LIN_OUTPUTS(.../ws/ → ./outputs/) 之前，否则被误拆。
+    #   必须在通用 _LIN_OUTPUTS(.../ws/ → workspace/) 之前，否则被误拆。
     s = _REVIEW_WS.sub("/home/user/workspace/", s)
-    s = _LIN_INPUTS.sub("./inputs/", s)
-    s = _LIN_OUTPUTS.sub("./outputs/", s)
-    s = _LIN_ROOT_FILE.sub(r"./outputs/\1", s)  # /root/out.json → ./outputs/out.json
-    s = _LIN_ROOT.sub("./", s)
+    s = _LIN_INPUTS.sub("/home/user/workspace/", s)
+    s = _LIN_OUTPUTS.sub("/home/user/workspace/", s)
+    s = _LIN_ROOT_FILE.sub(r"/home/user/workspace/\1", s)  # /root/out.json → /home/user/workspace/out.json
+    s = _LIN_ROOT.sub("/home/user/workspace/", s)
     # bare /workspace → /home/user/workspace（在 _REVIEW_WS 之后：采集 ws 完整路径已先归一）
     s = _BARE_WORKSPACE.sub("/home/user/workspace", s)
     # 反斜杠尾巴转正斜杠

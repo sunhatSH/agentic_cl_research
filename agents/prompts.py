@@ -584,11 +584,19 @@ def _truncate_middle(text: str, limit: int) -> str:
 
 
 def _load_ground_truth(record_id: str) -> str:
-    """Load answer_key.checks for a task and format as a scored checklist.
+    """Load answer_key ground truth and format for the judge.
 
-    Returns "" if no answer_key exists, the checks are empty, or loading fails.
-    Includes explicit completion-score anchors so the judge maps "K/N correct"
-    consistently rather than giving 0 to everything that isn't perfect.
+    支持两种 answer_key 形式(按 record_id / type 分派):
+      1. SWE 任务(record_id 以 SWE_ 开头,或 answer_key.type == "swe"):
+         rubric 形式 → 验收标准清单(行为标准,判"满足多少条")。
+      2. D 类型任务:
+         checks 形式 → question/answer 清单(判"命中多少个 check")。
+         checks 兼容两种数据结构:
+           - list: [{"question": q, "answer": a}, ...]
+           - dict: {q1: a1, q2: a2, ...} (老数据里 697 个任务直接是映射)
+
+    Returns "" if no answer_key exists / empty / loading fails.
+    不截断(2026-08-26: 去掉 2000 截断,原截断丢掉了 7.5% 任务后半段 checks)。
     """
     import json
     from pathlib import Path
@@ -598,10 +606,54 @@ def _load_ground_truth(record_id: str) -> str:
         if not ak_path.is_file():
             return ""
         ak = json.loads(ak_path.read_text(encoding="utf-8", errors="replace"))
+
+        # ── SWE 任务: rubric 形式(行为验收标准) ──
+        if ak.get("type") == "swe" or record_id.startswith("SWE_"):
+            rubric = ak.get("rubric") or []
+            if not rubric:
+                return ""
+            N = len(rubric)
+            lines = [
+                "\n## Ground-truth acceptance criteria (for the CORRECTNESS dimension)",
+                f"The task has {N} acceptance criteria below. Each is a required",
+                "behavior the solution must satisfy — NOT an LLM opinion. Grade the",
+                "CORRECTNESS dimension by how many criteria the agent's solution",
+                "actually satisfies.",
+                "",
+                "### correctness score = fraction of criteria satisfied",
+                f"     0 satisfied                    → correctness 0.0",
+                f"     ≥ {max(1, round(N*0.2))} satisfied (≥20%)  → correctness ≈ 0.2",
+                f"     ≥ {max(1, round(N*0.4))} satisfied (≥40%)  → correctness ≈ 0.4",
+                f"     ≥ {max(1, round(N*0.6))} satisfied (≥60%)  → correctness ≈ 0.6",
+                f"     ≥ {max(1, round(N*0.8))} satisfied (≥80%)  → correctness ≈ 0.8",
+                f"     ALL {N} satisfied              → correctness 1.0",
+                "Interpolate between tiers. task_done, trajectory and safety are scored",
+                "independently per the rubric — this key only informs correctness.",
+                "",
+                "### Acceptance criteria",
+            ]
+            for i, c in enumerate(rubric, 1):
+                lines.append(f"{i}. {str(c).strip()}")
+            return "\n".join(lines)
+
+        # ── D 类型任务: checks 形式(question/answer) ──
         checks = ak.get("checks") or []
         if not checks:
             return ""
-        N = len(checks)
+        # 兼容 list 和 dict 两种 checks 结构
+        pairs: list[tuple[str, str]] = []
+        if isinstance(checks, dict):
+            pairs = [(str(q), str(a)) for q, a in checks.items() if str(q) and str(a)]
+        elif isinstance(checks, list):
+            for c in checks:
+                if isinstance(c, dict):
+                    q = str(c.get("question", "")).strip()
+                    a = str(c.get("answer", "")).strip()
+                    if q and a:
+                        pairs.append((q, a))
+        if not pairs:
+            return ""
+        N = len(pairs)
         lines = [
             "\n## Ground-truth answer key (for the CORRECTNESS dimension)",
             f"The task has {N} verifiable checks below. Each is a known-correct fact",
@@ -621,13 +673,9 @@ def _load_ground_truth(record_id: str) -> str:
             "",
             "### Checks",
         ]
-        for i, c in enumerate(checks, 1):
-            q = str(c.get("question", "")).strip()
-            a = str(c.get("answer", "")).strip()
-            if q and a:
-                lines.append(f"{i}. {q[:120]}  →  {a[:200]}")
-        result = "\n".join(lines)
-        return result if len(result) < 2000 else result[:2000] + "\n…[truncated]"
+        for i, (q, a) in enumerate(pairs, 1):
+            lines.append(f"{i}. {q[:120]}  →  {a[:200]}")
+        return "\n".join(lines)
     except Exception:
         return ""
 
