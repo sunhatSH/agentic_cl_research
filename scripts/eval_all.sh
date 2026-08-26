@@ -95,8 +95,10 @@ eval_model() {
   # merge（FSDP ckpt → HF；base 直接跳过）
   local eval_path="$model_path"
   if [[ "$model_path" != *models* ]] && [ -d "$model_path" ]; then
-    local merged="/tmp/merged_${model_type}"
-    echo "    merging FSDP→HF..."
+    # ★ merge 结果必须放 AFS（跨节点 worker 要加载这个 HF 模型，/tmp 不共享）
+    local merged="$ROOT_DIR/eval/.tmp/merged_${model_type}"
+    mkdir -p "$ROOT_DIR/eval/.tmp"
+    echo "    merging FSDP→HF → $merged ..."
     "$PY" -m verl.model_merger merge --backend fsdp --local_dir "$model_path" --target_dir "$merged"
     eval_path="$merged"
   fi

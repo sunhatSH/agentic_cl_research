@@ -1048,11 +1048,15 @@ def run_cl_eval(cfg: Any, eval_tasks: list[dict], num_runs: int) -> list[dict]:
 
     cfg = merge_verl_config(cfg)
 
-    # eval_tasks 经临时文件传给 remote runner（ray.put 的对象 ref 在 remote 里不好取）
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+    # eval_tasks 经临时文件传给 remote runner（ray.put 的对象 ref 在 remote 里不好取）。
+    # ★ 必须写到 AFS 共享路径（非 /tmp/），否则跨节点 worker 读不到（多机 /tmp 不共享）。
+    _eval_tmpdir = os.environ.get("CL_EVAL_TMPDIR", str(Path(__file__).resolve().parent.parent.parent / "eval" / ".tmp"))
+    os.makedirs(_eval_tmpdir, exist_ok=True)
+    _tmp_fd, tasks_file = tempfile.mkstemp(suffix=".json", dir=_eval_tmpdir)
+    with os.fdopen(_tmp_fd, "w") as f:
         json.dump(eval_tasks, f, ensure_ascii=False)
-        tasks_file = f.name
-    output = os.environ.get("CL_EVAL_OUTPUT", "/tmp/cl_eval_result.json")
+    # ★ output 也是跨节点文件（worker 写、driver 读），同样放 AFS，不能放 /tmp。
+    output = os.environ.get("CL_EVAL_OUTPUT", str(Path(_eval_tmpdir) / "cl_eval_result.json"))
     OmegaConf.update(cfg, "cl.eval_tasks_file", tasks_file, force_add=True)
     OmegaConf.update(cfg, "cl.eval_output", output, force_add=True)
     OmegaConf.update(cfg, "cl.eval_num_runs", num_runs, force_add=True)

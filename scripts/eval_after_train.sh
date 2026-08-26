@@ -43,8 +43,9 @@ _eval_ckpt() {
 
   echo ">>> 评测: $model_type (ckpt=$ckpt_actor)"
 
-  # merge FSDP→HF
-  local merged="/tmp/merged_${model_type}"
+  # merge FSDP→HF（结果放 AFS，跨节点 worker 要加载，/tmp 不共享）
+  local merged="$ROOT_DIR/eval/.tmp/merged_${model_type}"
+  mkdir -p "$ROOT_DIR/eval/.tmp"
   "$PY" -m verl.model_merger merge --backend fsdp --local_dir "$ckpt_actor" --target_dir "$merged"
 
   mkdir -p "$out_dir"
