@@ -56,7 +56,7 @@ def hermes_messages_to_trace_messages(messages: list[dict]) -> list:
     from claw_eval_vendor.models.content import TextBlock
 
     trace_msgs = []
-    for m in messages:
+    for i, m in enumerate(messages):
         role = m.get("role", "user")
         content = m.get("content", "")
         if isinstance(content, list):
@@ -65,7 +65,7 @@ def hermes_messages_to_trace_messages(messages: list[dict]) -> list:
         else:
             text_blocks = [TextBlock(text=str(content))]
         msg = Message(role=role, content=text_blocks)
-        trace_msgs.append(TraceMessage(message=msg))
+        trace_msgs.append(TraceMessage(trace_id=f"t{i}", message=msg))
     return trace_msgs
 
 
