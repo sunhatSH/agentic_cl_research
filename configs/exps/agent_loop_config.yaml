@@ -23,8 +23,8 @@
     sandbox_config:
       cmd_timeout: 1200            # 900→1200:HERMES 单命令超时(r0 大量 900s HERMES_TIMEOUT)
       lifetime_timeout: 1500       # 1000→1500:必须 >= cmd_timeout,否则沙箱先死
-      val_cmd_timeout: 750
-      val_lifetime_timeout: 800
+      val_cmd_timeout: 3000        # 评测单命令超时 3000s(用户口径 2026-08-27;仅评测,训练走上方 cmd_timeout)
+      val_lifetime_timeout: 3100   # 必须 >= val_cmd_timeout,否则沙箱先死(同 lifetime/cmd 约束)
   harness:
     name: hermes
     model_name: verl/model

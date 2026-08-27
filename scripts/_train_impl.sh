@@ -147,42 +147,9 @@ export NCCL_CUMEM_ENABLE="${CL_NCCL_CUMEM:-0}"
 #   0=全多模态(视觉开+不冻结) 1=冻结视觉(视觉开+冻结参数,默认,同事方案) 2=纯文本(视觉关+标准RoPE)
 export TEXT_MODEL_ONLY="${TEXT_MODEL_ONLY:-1}"
 export VERL_USE_EXTERNAL_MODULES="${VERL_USE_EXTERNAL_MODULES:-recipe_custom.bootstrap}"
-# 追加项目侧外部 patch 模块（VERL_USE_EXTERNAL_MODULES 逗号分隔，verl/__init__ 在【每个】
-# verl 进程——含 AgentSessionWorker，即真正跑 AsyncSandbox.create / create_hooks 的进程——
-# import verl 时消费；经 verl_runner.py 的 runtime_env passthrough 传进 Ray worker）：
-#   · rollout.e2b_http1_patch      —— 关 e2b SDK 默认 http2 走 HTTP/1.1，从根上消除腾讯
-#       AGS 网关的 GOAWAY（单 HTTP/2 连接 ~1000 stream 后回收）。CL_E2B_DISABLE_HTTP2=0 可关。
-#   · trainer.observer_hook_register —— monkey-patch recipe_custom hook factory 认 FQN hook
-#       名（如 trainer.observer_hook.ObserverDiffHook），使自定义 hook 无需改 verl 源码即可挂载。
-#   · trainer.pause_generation_bounded_patch —— lightllm pause_generation 的无限 while True 改成
-#       有界等待超时放行（CL_PAUSE_MAX_WAIT 默认 180s）。lightllm refcount 泄漏(4卡16卡都有)让
-#       abort_all 僵尸请求回收不掉，16卡每 step 边界 pause 时无限重试→死锁 hang（§59，step6 卡死）。
-#       放行让 16卡泄漏像 4卡一样良性(泄漏但不死)。不改 LightLLM 源码。
-#   · trainer.dataproto_tensordict_patch —— v1 引擎 worker 的 DataProto→TensorDict 系统性修复。
-#       r0 掺回放行后 infer_batch/train_batch/train_mini_batch(engine_workers.py) 的 data 入参
-#       实际收到 DataProto(非函数标注的 TensorDict),函数体用 TensorDict API(data.keys()/data.shape[0]/
-#       tu.pop/tu.assign_non_tensor/tu.make_iterator) 每 step 崩(b1 无 replay 是 TensorDict 不崩)。
-#       在 tqbridge 层统一把 DataProto→to_tensordict(),一处覆盖全部 @register 分发函数(不再逐点
-#       打地鼠);并保留 tu.pop 的 DataProto 兼容作兜底。
-#   · trainer.image_trajectory_drop_patch —— 含图/视频 trajectory 全过滤(E13):agent 沙箱工具产
-#       PNG 截图 → 含图轨迹进训练 → 视觉 token 展开成 patch,log_probs 与 responses/response_mask
-#       token 数错位 → ppo_loss "size of tensor a != b" 崩(差值=一张图 patch 数如 776)。patch
-#       AgentSessionWorker._is_trainable_trajectory,含图判不可训练→剔除,复用现成 min_group_success_ratio
-#       组过滤(组内含图≤半用剩下纯文本训、>半整组丢)。TEXT_MODEL_ONLY=1 保多模态能力不关视觉,故在此过滤。
-#   · trainer.empty_batch_skip_patch —— 空 batch skip 守卫(E18):all_failed_policy 只在生成阶段
-#       查 num_success_outputs==0 就 skip;但"部分成功、组过滤后又全丢"这条边界会把空 batch 送进
-#       _balance_batch → get_seqlen_balanced_partitions assert "number of items:[0] < k_partitions"
-#       整训练崩(2026-08-21 实测,config 丢文件恢复瞬间触发)。patch CustomPPOTrainerSync._balance_batch
-#       进函数查空→抛 _EmptyBatchSkip,step 捕获→记 rollout/empty_batch_skip 并 return None,复用
-#       fit() 既有 batch is None skip 分支,跳过该步继续而非崩。
-# 都必须在 worker 进程生效（patch 目标都在 worker/lightllm 副本），故走 VERL_USE_EXTERNAL_MODULES
-# 而非 driver-only import。逐个幂等去重。
-for _mod in rollout.e2b_http1_patch trainer.observer_hook_register trainer.pause_generation_bounded_patch trainer.dataproto_tensordict_patch trainer.empty_batch_skip_patch; do
-  case ",$VERL_USE_EXTERNAL_MODULES," in
-    *,"$_mod",*) : ;;  # 已含,不重复追加
-    *) export VERL_USE_EXTERNAL_MODULES="$VERL_USE_EXTERNAL_MODULES,$_mod" ;;
-  esac
-done
+# 项目侧外部 patch 模块清单已抽到共享文件（训练 + 评测共用一份，杜绝漂移）。
+# 各 patch 作用 / 历史坑详见该文件头注释。source 后 VERL_USE_EXTERNAL_MODULES 就位。
+source "$(dirname "${BASH_SOURCE[0]}")/env/verl_external_modules.sh"
 export MODELING_BACKEND="${MODELING_BACKEND:-hf}"
 # (2) agent trace / transfer_queue(照参考脚本 debug_rl_qwen35_9b.sh)
 export VERL_AGENT_TRAINABLE_TRACE_TYPES="${VERL_AGENT_TRAINABLE_TRACE_TYPES:-agent,context_compression}"

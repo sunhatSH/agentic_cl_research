@@ -1011,7 +1011,35 @@ def _make_cl_task_runner_eval():
             tu.assign_non_tensor_data(prompts, "global_steps", 0)
             tu.assign_non_tensor_data(prompts, "validate", True)
 
-            self.agent_loop_manager.generate_sequences(prompts)
+            # ★ 预播种 val 分区（复刻官方 sync_trainer._validate:326-332）：generate_sequences
+            # 【之前】把每个 uid 以 status=pending 写进 val 分区。缺这步则 replay_buffer.sample
+            # (partition_id="val") 死等一个空分区——_has_enough_samples 永远 False → 无限刷
+            # `pending:0 running:0 finished:0 failure:0` 空转不返回（2026-08-27 定位）。
+            # RemoteAgentLoopManager.replay_buffer 恒 None（create 不传），故 running/failure 状态
+            # 全靠 session worker 写回 TQ + 这里的 pending 播种，不是 manager 内部 add。
+            import transfer_queue as tq
+
+            uids = tu.get(prompts, "uid")
+            uid_values = uids.tolist() if hasattr(uids, "tolist") else list(uids)
+            seed_tags = [
+                {"is_prompt": True, "status": "pending", "global_steps": 0}
+                for _ in range(len(uid_values))
+            ]
+            tq.kv_batch_put(keys=[str(u) for u in uid_values], partition_id="val", tags=seed_tags)
+
+            rollout_metrics = self.agent_loop_manager.generate_sequences(prompts) or {}
+
+            # ★ 全失败守卫（复刻官方 _validate:334-340）：num_success_outputs==0 时
+            # generate_sequences 返回 rollout/skipped_step=1，val 分区无任何 terminal key →
+            # 若仍进 sample 会死等。此时直接返回空结果（本 model_type 记 0 条），不阻塞后续 ckpt。
+            if rollout_metrics.get("rollout/skipped_step", 0.0) > 0:
+                print(
+                    f"[cl-eval] ⚠️ 本批 rollout 全失败(skipped_step=1)，"
+                    f"failure_code_counts={ {k: v for k, v in rollout_metrics.items() if 'failure_code' in k} }，"
+                    f"跳过 sample，返回空结果",
+                    flush=True,
+                )
+                return []
 
             from trainer.trajectory_adapter_v1 import extract_trajectories_from_kvbatch
 

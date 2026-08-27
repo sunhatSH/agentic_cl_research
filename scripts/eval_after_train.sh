@@ -24,6 +24,12 @@ VERL_DIR="/mnt/afs_toolcall/sunhao4/dependencies/verl"
 LIGHTLLM_DIR="/mnt/afs_toolcall/sunhao4/workspace/LightLLM"
 export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$ROOT_DIR/src:$ROOT_DIR:${PYTHONPATH:-}"
 
+# ★ 外部 patch 模块清单（与训练同一份）：本脚本有独立的 cl_eval 路径（_eval_ckpt），
+# 评测 rollout 走 AgentSessionWorker，其 create_hook 要认 FQN hook
+# trainer.observer_hook.ObserverDiffHook。不 source 则 worker 每 session ValueError:
+# Unknown post-run hook → 全 abort（2026-08-26 评测全灭根因）。
+source "$ROOT_DIR/scripts/env/verl_external_modules.sh"
+
 NNODES="${NNODES:-2}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-8}"
 NUM_RUNS="${EVAL_NUM_RUNS:-3}"

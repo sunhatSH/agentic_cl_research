@@ -78,6 +78,7 @@ actor_rollout_ref:
         gateway_count: 8
         num_session_workers: 8
         session_timeout: 1000
+        val_session_timeout: 3200  # 仅评测:评测 session 墙钟超时(worker 对 _is_validation_session 用此值,不设则 fallback 到 session_timeout=1000 → 评测长任务 1000s 被杀、num_success_outputs=0、结果空)。略大于 val_cmd_timeout(3000)避免同时触发。训练走上方 session_timeout 不受影响
         harness_log_dir: ${oc.env:HARNESS_LOG_DIR,logs/harness}
         harness_log_save_mode: all
         all_failed_policy: skip   # 整 step 全部 rollout 失败(如都因含图被废,见 gateway_image_drop_patch/§57)时 skip 该 step 而非 raise 崩训练。默认 raise。

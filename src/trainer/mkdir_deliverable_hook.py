@@ -22,18 +22,27 @@ from __future__ import annotations
 
 import re
 import shlex
+from abc import ABC, abstractmethod
 from typing import Any
 
 try:
     from recipe_custom.agent.runners.hooks.base import AgentRunHook
 except Exception:  # noqa: BLE001 -- recipe_custom absent off-cluster（单测/本机）
-    class AgentRunHook:  # type: ignore[no-redef]
-        """Fallback 基类（离集群无 recipe_custom 时可 import + 单测纯函数）。"""
+
+    class AgentRunHook(ABC):  # type: ignore[no-redef]
+        """Fallback 基类（离集群无 recipe_custom 时可 import + 单测纯函数）。
+
+        ★ run 必须与真实基类一样是 @abstractmethod：真实 recipe_custom 基类里 run 是抽象方法，
+        子类不实现则实例化即 TypeError（2026-08-27 MkdirDeliverableHook 缺 run，评测 270+
+        session abort）。fallback 若给 run 默认实现会掩盖此问题——本机实例化不报错、上集群才崩。
+        故 fallback 也标 abstractmethod，让本机冒烟单测就能抓到缺失。
+        """
 
         run_on_agent_error = False
 
         async def prepare(self, sandbox: Any, ctx: Any, state: Any) -> None: ...
 
+        @abstractmethod
         async def run(self, sandbox: Any, ctx: Any, state: Any) -> None: ...
 
 
@@ -91,3 +100,9 @@ class MkdirDeliverableHook(AgentRunHook):
             await sandbox.exec(cmd, timeout=30)
         except Exception:  # noqa: BLE001 -- 预建失败不该拖垮该 rollout
             pass
+
+    async def run(self, sandbox: Any, ctx: Any, state: Any) -> None:
+        # AgentRunHook.run 是 @abstractmethod（集群 recipe_custom 基类），子类必须实现
+        # 否则实例化即 TypeError（2026-08-27 评测 270+ session abort 根因）。本 hook 只在
+        # prepare 阶段建目录、agent 命令【后】无操作，故 run 留空。
+        return None

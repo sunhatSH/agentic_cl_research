@@ -28,6 +28,13 @@ VERL_DIR="/mnt/afs_toolcall/sunhao4/dependencies/verl"
 LIGHTLLM_DIR="/mnt/afs_toolcall/sunhao4/workspace/LightLLM"
 export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$ROOT_DIR/src:$ROOT_DIR:${PYTHONPATH:-}"
 
+# ★ 外部 patch 模块清单（与训练同一份）：评测 rollout 走的也是 AgentSessionWorker，
+# 其 create_hook 要认 FQN hook trainer.observer_hook.ObserverDiffHook（agent_loop_config.yaml
+# 挂的）。不 source 则 worker 不 import observer_hook_register → 每 session ValueError:
+# Unknown post-run hook → 全 abort（2026-08-26 评测全灭根因）。verl_runner.run_cl_eval 会把
+# VERL_USE_EXTERNAL_MODULES 经 runtime_env 透传给所有 Ray worker。
+source "$ROOT_DIR/scripts/env/verl_external_modules.sh"
+
 NUM_RUNS="${1:-3}"   # Pass^N，默认 3（pass@3 + pass^3）
 BASE_MODEL="/mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B"
 CKPTS_DIR="$ROOT_DIR/ckpts"
