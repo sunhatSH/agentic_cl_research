@@ -49,8 +49,10 @@ logs/
 wandb/
 mlruns/
 
-# Eval results
+# Eval results + 运行时产物（含 .tmp 下 merge 的 HF 模型权重，单次可达数十 GB）
 eval/results/
+eval/.tmp/
+eval/
 
 # Buffer dumps (large, regenerated per run)
 buffer_dumps/

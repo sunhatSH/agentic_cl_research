@@ -35,12 +35,17 @@ delegation:
   api_key: EMPTY
   api_mode: chat_completions
 
-# web 工具:不用 recipe_custom 的 local-web 插件(它需团队 serper_cache_proxy/fetch_server
-# 代理服务,本项目没有)。改用镜像里 /opt/tools/serper_search.py + jina_read.py 直连脚本
-# (SERPER_API_KEY/JINA_API_KEY 由 harness.env 注入沙箱 ~/.hermes/.env,脚本 os.getenv 读)。
-# 故此处不 enable local-web 插件,也不配 web.local_web(去掉 TODO_proxy 占位避免报错)。
+# web 工具:Serper(Google 搜索) + Jina(URL 抓取) 包成 hermes web provider 插件
+# (docker/sandbox/hermes_plugins/web/serper),让模型直接 call web_search / web_extract。
+# 之前只把 serper_search.py/jina_read.py 当裸脚本放 /opt/tools,web_search 无 backend →
+# 模型一调就 undefined(评测日志 web_search 37 次全 undefined,2026-08-27)。现启用插件 +
+# 路由 backend=serper。key 由 harness.env 注入沙箱 ~/.hermes/.env(SERPER/JINA)。
 plugins:
-  enabled: []
+  enabled: [web-serper]
+
+web:
+  search_backend: serper     # web_search → SerperWebProvider.search (google.serper.dev)
+  extract_backend: serper    # web_extract → SerperWebProvider.extract (r.jina.ai)
 
 compression:
   enabled: true

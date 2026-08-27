@@ -1,0 +1,7 @@
+name: web-serper
+version: 1.0.0
+description: "Serper (Google Search) + Jina Reader web provider for hermes web_search / web_extract. Search via google.serper.dev, content extraction via r.jina.ai. Requires SERPER_API_KEY (search) and/or JINA_API_KEY (extract)."
+author: agentic-cl
+kind: backend
+provides_web_providers:
+  - serper

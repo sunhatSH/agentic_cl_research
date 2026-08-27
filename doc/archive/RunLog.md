@@ -2492,3 +2492,36 @@ return None` 吞掉 → `forgetting_risk` 优先级信号恒 0（train.log 每 s
 ### 状态
 待集群重跑 r0 验证：replay_loss 回 O(0.1~1)、train.log 无 `AttributeError: 'DataProto' has no 'keys'`、
 `buffer/signal_weight/forgetting_risk` 非 0。
+
+---
+
+## 2026-08-27 数据重构:coding+office 双桶 3200×2 + batch 统一 32
+
+### 背景
+防遗忘评测需干净的双桶数据。原 12800(coding+office 各6400) 里 coding 含大量问题 SWE。
+按新 cold-start 坐标(全轨迹+assistant content 重打)选桶:coding↔office 距离 2.079。
+office 严格检查(路径+文件+GT)后 d4-7 可用 17805(充足);coding 剔 SWE 后仅 ~2827(D类)
++335(LH)+可完成SWE,补不满 6400 → 定 **每桶 3200**(coding d4-6 优先→d7;office 按 coding
+的 d4-6/d7 比例选 d4-7)。
+
+### 关键决策
+- **每桶 3200**(coding 上限所限),coding 优先 d4-6、不足补 d7;office 按 coding 比例选。
+- **每 step(batch32)难度比例≈全桶比例**:`_balanced_order` 最大余数法(F6 同口径)。实测
+  coding/office 每 step d4-6 占比 0.62-0.66(全桶 0.65)。
+- **batch 统一 32**(用户口径:噪声可接受,256 轨迹/step + replay + 熵正则足够稳):
+  收敛到 `configs/base.yaml` 单一信源(train/gen/ppo_mini/replay 全 32),`cl2r_base`/`k2`/
+  `b1_16gpu`/`r0-25k` 四个实验 config 删掉各自 batch 覆盖行、改为继承 base。以后改一处全生效。
+  3200/32=100 步/桶 ×2 = total_training_steps 200(不变)。DP 对齐 32×n8=256 %DP4=0。
+
+### 新增脚本
+- `scripts/data/filter_three_buckets.py`:office/research/ops 四层过滤(桶/难度/路径/文件+GT)。
+- `scripts/data/count_three_buckets_strict.py`:全量严格计数(不 stop-at-target)。
+- `scripts/data/merge_coding_final.py`:合并可完成SWE+D类+LH+generalClaw → coding 清单。
+- `scripts/data/build_3200x2.py`:构建 3200×2 数据集(coding+office,每step难度均衡)。
+- `scripts/data/label_claworiented_coding.py`:generalClaworiented 打桶提 coding(16150→coding 96,量少弃用为主源)。
+- check_files 产出型/粘连修复见 Bug_Fix_精简总表 F13。
+
+### 状态
+- office:严格全过 17805(d4-7),取 3200 就绪。
+- coding:池 ~3180(D2827+LH241+SWE 已跑部分),SWE 全量体检跑完后 ~3586,够 3200。
+- **⏳ 待 SWE 体检(probe_swe_completability)跑完 → `build_3200x2.py --apply` 出终版 3200×2。**

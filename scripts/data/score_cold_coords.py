@@ -61,7 +61,13 @@ def load_key() -> str:
 
 
 def traj_to_text(msgs) -> str:
-    """轨迹 messages → 文本(复用 coords_pipeline.py 的格式)。"""
+    """轨迹 messages → 文本(复用 coords_pipeline.py 的格式)。
+
+    2026-08-27: 补上 assistant 的 content 文本(思考/规划/最终答案);并【去掉所有截断】
+    ——全轨迹发给模型(几十 K 也发),此前逐段截断(user1500/assistant1200/tool_call500/
+    tool_result300)+整体16000 会丢大量执行细节,导致维度信号不全。system 仍不纳入
+    (通用 harness 引导语,不承载任务能力信息、稀释信号)。
+    """
     if isinstance(msgs, str):
         try:
             msgs = json.loads(msgs)
@@ -74,13 +80,16 @@ def traj_to_text(msgs) -> str:
         if not isinstance(m, dict):
             continue
         if m.get("role") == "user":
-            lines.append(f"[user] {(m.get('content','') or '')[:1500]}")
+            lines.append(f"[user] {m.get('content','') or ''}")
         elif m.get("role") == "assistant":
+            content = m.get("content") or ""
+            if content.strip():
+                lines.append(f"[assistant] {content}")
             for tc in (m.get("tool_calls") or []):
                 fn = tc.get("function", {}) if isinstance(tc, dict) else {}
-                lines.append(f"[tool_call:{fn.get('name','?')}] {str(fn.get('arguments',''))[:500]}")
+                lines.append(f"[tool_call:{fn.get('name','?')}] {str(fn.get('arguments',''))}")
         elif m.get("role") == "tool":
-            lines.append(f"[tool_result:{m.get('name','?')}] {(m.get('content','') or '')[:300]}")
+            lines.append(f"[tool_result:{m.get('name','?')}] {m.get('content','') or ''}")
     return "\n".join(lines)
 
 
@@ -113,7 +122,7 @@ def main() -> int:
     if not items:
         sys.exit("ERROR: 无数据")
 
-    client = httpx.Client(headers={"Authorization": f"Bearer {key}"}, timeout=httpx.Timeout(120.0))
+    client = httpx.Client(headers={"Authorization": f"Bearer {key}"}, timeout=httpx.Timeout(300.0))
     per_bucket = defaultdict(lambda: defaultdict(list))
     ok = fail = 0
     t0 = time.time()
@@ -121,13 +130,13 @@ def main() -> int:
     def score_one(item):
         nonlocal ok, fail
         b, traj = item
-        user = f"任务轨迹:\n\n{traj[:16000]}\n\n请评估七维分数，只回 JSON。"
+        user = f"任务轨迹:\n\n{traj}\n\n请评估七维分数，只回 JSON。"
         for attempt in range(3):
             try:
                 resp = client.post(
                     f"{API_BASE}/chat/completions",
                     json={"model": MODEL, "messages": [{"role": "system", "content": COORDS_PROMPT}, {"role": "user", "content": user}], "max_tokens": 256, "temperature": 0.0},
-                    timeout=120.0,
+                    timeout=300.0,
                 )
                 resp.raise_for_status()
                 scores = parse_json(resp.json()["choices"][0]["message"]["content"])

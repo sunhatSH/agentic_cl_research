@@ -47,7 +47,6 @@ actor_rollout_ref:
       lr: 2.0e-6                        # 9B lr
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
-    ppo_mini_batch_size: 64             # =train_batch(全 batch 单次更新);内部 ×n8=512 轨迹 % DP4=0
     use_dynamic_bsz: true               # 变长打包:按实际 token 数切 micro(配 remove_padding)
     # ppo_max_token_len = max_token_length / SP = 131072 / 4 = 32768(参考脚本同法)。
     # remove_padding+变长下这是单卡 micro-batch 的 token 预算,激活按真实长度算。超长由 rollout 端
@@ -151,8 +150,6 @@ data:
   custom_cls:
     path: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/src/trainer/cl_agent_dataset.py
     name: CLAgentDataset
-  train_batch_size: 64                # 64 query/step × n8 = 512 轨迹/step（对齐 r0）
-  gen_batch_size: 64
   max_prompt_length: 8196            # 照搬参考 debug_rl_qwen35_9b.sh(wuzehuan)
   max_response_length: 65536         # 照搬参考(与卡数无关);remove_padding 变长打包可扛,§31 修复后原崩溃真因(model_type)已消除
                                        #   累积 total_nnz 过大,触发 SP 切片后 a=2×b 不匹配(transformer_impl.py:1259)。
@@ -177,7 +174,6 @@ algorithm:
 # running_max_req_size + train_batch×n 决定。CL loss/buffer 语义仍由 cl 段驱动。
 cl:
   lambda_replay: 0.0
-  replay_batch_size: 32           # 回放量(b1 buffer 关不生效;R 系列继承)。base 全局仍 64,只覆盖 b1。
   buffer:
     enabled: false
 

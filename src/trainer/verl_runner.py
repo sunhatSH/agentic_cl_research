@@ -1029,6 +1029,14 @@ def _make_cl_task_runner_eval():
 
             rollout_metrics = self.agent_loop_manager.generate_sequences(prompts) or {}
 
+            # ★ 诊断（2026-08-27 第五层排查）：GS 返回的关键计数显式 print（logger.info 级会被
+            # verl 日志级别/RAY_DEDUP 吞掉，看不到 num_success_outputs 就定位不了数据在哪环丢）。
+            _diag = {k: rollout_metrics.get(k) for k in (
+                "rollout/skipped_step", "rollout/num_success_outputs", "rollout/num_failed_uids",
+                "rollout/num_success_sessions", "rollout/num_group_size_filtered_uids",
+            )}
+            print(f"[cl-eval][diag] generate_sequences 返回: {_diag} | 播种 uid 数={len(uid_values)}", flush=True)
+
             # ★ 全失败守卫（复刻官方 _validate:334-340）：num_success_outputs==0 时
             # generate_sequences 返回 rollout/skipped_step=1，val 分区无任何 terminal key →
             # 若仍进 sample 会死等。此时直接返回空结果（本 model_type 记 0 条），不阻塞后续 ckpt。
@@ -1046,8 +1054,17 @@ def _make_cl_task_runner_eval():
             batch = self.trainer.replay_buffer.sample(
                 global_steps=0, partition_id="val", batch_size=len(rows)
             )
+            # ★ 诊断：sample 返回的 batch key 数（判断 sample 取空 vs extract 丢弃）。
+            _bk = getattr(batch, "keys", None)
+            print(
+                f"[cl-eval][diag] sample 返回 batch: keys 数={len(_bk) if _bk else 0} "
+                f"partition=val batch_size={len(rows)}",
+                flush=True,
+            )
             results = []
-            for _traj, _bkt, meta in extract_trajectories_from_kvbatch(batch):
+            _extracted = extract_trajectories_from_kvbatch(batch)
+            print(f"[cl-eval][diag] extract_trajectories 抽出 {len(_extracted)} 条", flush=True)
+            for _traj, _bkt, meta in _extracted:
                 results.append(
                     {
                         "task_id": meta.get("task_id", ""),

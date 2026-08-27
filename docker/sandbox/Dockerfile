@@ -92,6 +92,14 @@ RUN chmod +x /opt/agentic-cl/bin/*.sh
 COPY tools/ /opt/tools/
 RUN chmod +x /opt/tools/*.py
 
+# 5c. Hermes web provider plugin (Serper 搜索 + Jina 抓取)：把 5b 的 web 能力包成
+#     hermes 原生 web provider，让模型能直接 call web_search / web_extract（原来这两个
+#     函数因无 backend provider 而 undefined，模型只能靠 terminal 调 5b 裸脚本）。
+#     铺到 ~/.hermes/plugins/ 后由 configs/exps/hermes.config.yaml 的
+#     plugins.enabled=[web-serper] + web.search_backend/extract_backend=serper 启用。
+#     ★ HermesHarness.setup() 只 mkdir + 写 config.yaml/.env，不清空 .hermes，故插件保留。
+COPY hermes_plugins/ /home/user/.hermes/plugins/
+
 # 6. (OPTIONAL) Browser tool for ClawEval web tasks. The text-only 195-task
 #    subset does NOT need this; it is heavy (~Chromium). Uncomment if needed.
 # RUN npx -y playwright install --with-deps chromium

@@ -44,7 +44,6 @@ actor_rollout_ref:
       lr: 2.0e-6
       lr_warmup_steps_ratio: 0.03
       lr_scheduler_type: constant
-    ppo_mini_batch_size: 64             # =train_batch(全 batch 单更);×n8=512 轨迹 % DP4=0
     use_dynamic_bsz: true               # 变长打包:按实际 token 数切 micro(配 remove_padding);对齐 b1_16gpu
     ppo_max_token_len_per_gpu: 32768    # = max_token_length(131072)/SP(4)
     ulysses_sequence_parallel_size: 4   # SP=4 → DP=16÷4=4。16头%4=0
@@ -124,8 +123,6 @@ data:
   custom_cls:
     path: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/src/trainer/cl_agent_dataset.py
     name: CLAgentDataset
-  train_batch_size: 64              # 32→64:每步 64 query(×n8=512 轨迹);数据集自适应,6400/64=100 步/桶,桶边界仍整除
-  gen_batch_size: 64
   max_prompt_length: 8196            # 照搬参考 debug_rl_qwen35_9b.sh(wuzehuan)
   max_response_length: 65536         # 照搬参考(与卡数无关);remove_padding 变长打包可扛,§31 修复后原崩溃真因(model_type)已消除
   shuffle: false
@@ -144,7 +141,6 @@ algorithm:
 # ── CL 语义（本实验唯一差异区）──────────────────────────────────────────────────
 cl:
   lambda_replay: 0.5
-  replay_batch_size: 64
   buffer:
     enabled: true
     num_buckets: 1

@@ -34,6 +34,8 @@ export PYTHONPATH="$LIGHTLLM_DIR:$VERL_DIR:$ROOT_DIR/src:$ROOT_DIR:${PYTHONPATH:
 # Unknown post-run hook → 全 abort（2026-08-26 评测全灭根因）。verl_runner.run_cl_eval 会把
 # VERL_USE_EXTERNAL_MODULES 经 runtime_env 透传给所有 Ray worker。
 source "$ROOT_DIR/scripts/env/verl_external_modules.sh"
+# 评测结果有效性判定（_eval_result_nonempty：只有非空 list 才算已评过）
+source "$ROOT_DIR/scripts/env/eval_result_check.sh"
 
 NUM_RUNS="${1:-3}"   # Pass^N，默认 3（pass@3 + pass^3）
 BASE_MODEL="/mnt/afs_toolcall/sunhao4/models/Qwen3.5-9B"
@@ -42,13 +44,23 @@ RESULTS_DIR="$ROOT_DIR/eval/results"
 
 # 多机环境变量（与训练一致：平台注入 SENSECORE_PYTORCH_* → 映射 RANK/MASTER_ADDR）
 source "$ROOT_DIR/scripts/_sensecore_env.sh"
-NNODES="${NNODES:-1}"
-GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
 RANK="${RANK:-0}"
 MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 
+# GPU 规模（16gpu 默认多机 / 4gpu 单机）：
+#   GPU_MODE=4gpu 时强制单机 1×4 + 带 rollout TP/SP/gateway override（对齐 train_4gpu.sh）。
+#   16gpu 时保持原多机逻辑（NNODES 来自平台注入 / _sensecore_env）。
+GPU_MODE="${GPU_MODE:-16gpu}"
+if [ "$GPU_MODE" = "4gpu" ]; then
+  export NNODES=1 GPUS_PER_NODE=4
+  RANK=0   # 4 卡单机无 worker 节点
+fi
+NNODES="${NNODES:-1}"
+GPUS_PER_NODE="${GPUS_PER_NODE:-${N_GPUS_PER_NODE:-8}}"
+source "$ROOT_DIR/scripts/env/eval_gpu_overrides.sh"
+
 echo "============================================"
-echo "  批量评测 (Pass^$NUM_RUNS, ${NNODES}x${GPUS_PER_NODE}GPU, rank=$RANK)"
+echo "  批量评测 (Pass^$NUM_RUNS, ${NNODES}x${GPUS_PER_NODE}GPU, mode=$GPU_MODE, rank=$RANK)"
 echo "============================================"
 
 # 凭证
@@ -89,9 +101,15 @@ eval_model() {
   local out_dir="$RESULTS_DIR/$model_type"
   local per_task="$out_dir/per_task.json"
 
-  if [ -f "$per_task" ] && [ "${FORCE:-0}" != "1" ]; then
-    echo "[$model_type] 已有结果，跳过（FORCE=1 重评）"
+  # 只有【非空】结果才跳过：文件存在且内容是非空 list（>0 条）。
+  # 之前的坑：失败 run 也会产出 per_task.json=[]（空 list，2 字节），旧判断只看
+  # `-f` 文件存在 → 把空失败结果当"已评过"跳过，永远评不出来（2026-08-27）。
+  if [ "${FORCE:-0}" != "1" ] && _eval_result_nonempty "$per_task"; then
+    echo "[$model_type] 已有【非空】结果，跳过（FORCE=1 强制重评）"
     return
+  fi
+  if [ -f "$per_task" ] && [ "${FORCE:-0}" != "1" ]; then
+    echo "[$model_type] 检测到空结果($per_task)，重评"
   fi
 
   echo ""
@@ -118,7 +136,8 @@ eval_model() {
     --num-runs "$NUM_RUNS" \
     actor_rollout_ref.model.path="$eval_path" \
     cl.buffer.enabled=false \
-    trainer.nnodes="$NNODES" trainer.n_gpus_per_node="$GPUS_PER_NODE"
+    trainer.nnodes="$NNODES" trainer.n_gpus_per_node="$GPUS_PER_NODE" \
+    "${EVAL_GPU_OVERRIDES[@]}"
 
   # 聚合（与 base 对比，除非自己就是 base）
   local baseline_flag=""
