@@ -31,12 +31,26 @@ _SEARCH_TIMEOUT = 15
 _EXTRACT_TIMEOUT = 30
 
 
+def _env(key: str) -> str:
+    """读 key：先 os.environ、再 ~/.hermes/.env（hermes get_env_value 同口径）。
+
+    ★ HermesHarness 把 SERPER/JINA 写进 ~/.hermes/.env 但不 export 到 os.environ，
+    只查 os.environ 会漏 → is_available()=False（工具不可见）+ search/extract 报
+    "not set"（2026-08-28 评测 web_search undefined 真根因）。降级回 os.environ。
+    """
+    try:
+        from hermes_cli.config import get_env_value
+        return (get_env_value(key) or "").strip()
+    except Exception:  # noqa: BLE001 — 离线/无 hermes 时降级
+        return os.environ.get(key, "").strip()
+
+
 def _serper_key() -> str:
-    return os.environ.get("SERPER_API_KEY", "").strip()
+    return _env("SERPER_API_KEY")
 
 
 def _jina_key() -> str:
-    return os.environ.get("JINA_API_KEY", "").strip()
+    return _env("JINA_API_KEY")
 
 
 class SerperWebProvider(WebSearchProvider):

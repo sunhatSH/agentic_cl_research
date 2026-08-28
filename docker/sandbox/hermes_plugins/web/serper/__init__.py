@@ -67,13 +67,21 @@ _WEB_FETCH_SCHEMA = {
 def _serper_web_available() -> bool:
     """web 工具可见性门槛（替换内置 check_web_api_key）：serper/jina 任一 key 存在即可用。
 
-    与 SerperWebProvider.is_available() 同口径。廉价、不发网络请求（tool 注册时 +
-    每次 hermes tools 都会调）。
+    ★ 必须走 hermes 的 get_env_value（先 os.environ、再 ~/.hermes/.env 文件）——
+    HermesHarness 把 SERPER/JINA key 写进沙箱 ~/.hermes/.env，但【不】export 到进程
+    os.environ；hermes 内置 check 也用 get_env_value 读两处。若只查 os.environ（旧实现），
+    key 只在 .env 时 → 返回 False → check_fn 假 → web_search 对模型不可见 → undefined
+    （2026-08-28 评测实测 web_search 10/11 次 undefined 的真根因）。get_env_value import
+    失败时降级回 os.environ（本地无 hermes 的单测/离线场景）。廉价、不发网络请求。
     """
-    return bool(
-        os.environ.get("SERPER_API_KEY", "").strip()
-        or os.environ.get("JINA_API_KEY", "").strip()
-    )
+    def _get(key: str) -> str:
+        try:
+            from hermes_cli.config import get_env_value
+            return (get_env_value(key) or "").strip()
+        except Exception:  # noqa: BLE001 — 离线/无 hermes 时降级
+            return os.environ.get(key, "").strip()
+
+    return bool(_get("SERPER_API_KEY") or _get("JINA_API_KEY"))
 
 
 def register(ctx) -> None:
