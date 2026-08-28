@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import os
 
-from plugins.web.serper.provider import SerperWebProvider
+from .provider import SerperWebProvider
 
 # web_fetch 别名的 schema：镜像 hermes 的 WEB_EXTRACT_SCHEMA（tools/web_tools.py），
 # 只把 name 换成 web_fetch，参数（urls / char_limit）保持一致。
