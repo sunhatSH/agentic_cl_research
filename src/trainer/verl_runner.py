@@ -1051,7 +1051,11 @@ def _make_cl_task_runner_eval():
 
             from trainer.trajectory_adapter_v1 import extract_trajectories_from_kvbatch
 
-            batch = self.trainer.replay_buffer.sample(
+            # ★ sample 返回二元组 (KVBatchMeta, drop_metrics)（replay_buffer.py:300-301），
+            #   必须解包——官方训练路径均为 `batch, _ = ...sample(...)`（trainer_base.py:470/925）。
+            #   曾误写 `batch = ...sample(...)` → batch 是 tuple → getattr(tuple,"keys")=None →
+            #   keys 数=0 → extract 抽 0 条 → 585 个成功任务却产出 0 结果（2026-08-28 第五层根因）。
+            batch, _drop_metrics = self.trainer.replay_buffer.sample(
                 global_steps=0, partition_id="val", batch_size=len(rows)
             )
             # ★ 诊断：sample 返回的 batch key 数（判断 sample 取空 vs extract 丢弃）。
