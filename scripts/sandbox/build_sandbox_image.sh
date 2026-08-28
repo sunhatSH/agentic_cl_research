@@ -10,6 +10,10 @@
 #   cp docker/sandbox/image.env.example docker/sandbox/image.env
 #   # edit image.env
 #   bash scripts/sandbox/build_sandbox_image.sh
+#
+#   # 从头构建（不用任何层缓存 + 强制拉新 base）——改了 Dockerfile/插件后想确保生效时用：
+#   BUILD_NO_CACHE=1 bash scripts/sandbox/build_sandbox_image.sh
+#   BUILD_NO_CACHE=1 BUILD_PULL=0 bash scripts/sandbox/build_sandbox_image.sh   # 不拉新 base
 
 set -euo pipefail
 
@@ -47,7 +51,23 @@ fi
 echo "[build_sandbox_image] building ${FULL_TAG} (platform=linux/amd64)"
 echo "[build_sandbox_image] base image: ${SANDBOX_BASE_IMAGE}"
 
+# 从头构建开关：
+#   BUILD_NO_CACHE=1 → --no-cache（不用任何层缓存，每条 RUN/COPY 重跑：clone hermes /
+#     pip install / COPY 插件全部重来。改了 Dockerfile/插件后想确保生效时用）。
+#   BUILD_PULL（默认随 NO_CACHE=1）→ --pull（强制重新拉 base，避免用本地旧 sandbox-code）。
+_BUILD_ARGS=()
+if [[ "${BUILD_NO_CACHE:-0}" == "1" ]]; then
+  _BUILD_ARGS+=(--no-cache)
+  echo "[build_sandbox_image] NO-CACHE 从头构建（每层重跑）"
+fi
+# NO_CACHE=1 时默认也 --pull；可用 BUILD_PULL=0 关掉。独立 BUILD_PULL=1 也生效。
+if [[ "${BUILD_PULL:-${BUILD_NO_CACHE:-0}}" == "1" ]]; then
+  _BUILD_ARGS+=(--pull)
+  echo "[build_sandbox_image] --pull 强制拉新 base 镜像"
+fi
+
 docker build \
+  "${_BUILD_ARGS[@]}" \
   -f "${ROOT}/docker/sandbox/Dockerfile" \
   -t "${FULL_TAG}" \
   --platform=linux/amd64 \
