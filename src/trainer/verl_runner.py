@@ -1057,8 +1057,6 @@ def _make_cl_task_runner_eval():
                 )
                 return []
 
-            from trainer.trajectory_adapter_v1 import extract_trajectories_from_kvbatch
-
             # ★ sample 返回二元组 (KVBatchMeta, drop_metrics)（replay_buffer.py:300-301），
             #   必须解包——官方训练路径均为 `batch, _ = ...sample(...)`（trainer_base.py:470/925）。
             #   曾误写 `batch = ...sample(...)` → batch 是 tuple → getattr(tuple,"keys")=None →
@@ -1066,28 +1064,85 @@ def _make_cl_task_runner_eval():
             batch, _drop_metrics = self.trainer.replay_buffer.sample(
                 global_steps=0, partition_id="val", batch_size=len(rows)
             )
-            # ★ 诊断：sample 返回的 batch key 数（判断 sample 取空 vs extract 丢弃）。
-            _bk = getattr(batch, "keys", None)
+            batch_keys = list(getattr(batch, "keys", None) or [])
             print(
-                f"[cl-eval][diag] sample 返回 batch: keys 数={len(_bk) if _bk else 0} "
+                f"[cl-eval][diag] sample 返回 batch: keys 数={len(batch_keys)} "
                 f"partition=val batch_size={len(rows)}",
                 flush=True,
             )
+
+            # ★ 结果提取【照官方 _validate 的 kv_batch_get 取字段】(trainer_base.py:960-995)，
+            #   不再走 trajectory_adapter_v1.extract_trajectories_from_kvbatch(by_meta)。
+            #   根因(2026-08-28 第六层 E25)：by_meta 依赖 KVBatchMeta.fields,但 sample 组装的
+            #   batch fields=None → kv_batch_get_by_meta failed → 620 key 全取不到字段 → bucket
+            #   None → skipped 620/620 → 0 结果。官方按 key 列表直接 kv_batch_get 取,不依赖
+            #   fields 元数据。session worker 写回 key 格式 {uid}_{session}_{index}(worker.py:1021),
+            #   field 含 rm_scores(总 reward,末 token) + extra_info(我们塞的 record_id/bucket/
+            #   run_idx) + extra_fields.reward_extra_info(judge 四维)(worker.py:1083/1085/1091)。
+            #   多输出 session 取每 session 最高 index 的最终输出(官方 933-950 逻辑)。
             results = []
-            _extracted = extract_trajectories_from_kvbatch(batch)
-            print(f"[cl-eval][diag] extract_trajectories 抽出 {len(_extracted)} 条", flush=True)
-            for _traj, _bkt, meta in _extracted:
-                results.append(
-                    {
-                        "task_id": meta.get("task_id", ""),
-                        "bucket": meta.get("bucket", ""),
-                        "reward": float(meta.get("reward", 0) or 0),
-                        "task_done": float(meta.get("reward_task_done", 0) or 0),
-                        "correctness": float(meta.get("reward_correctness", 0) or 0),
-                        "trajectory": float(meta.get("reward_trajectory", 0) or 0),
-                        "safety": float(meta.get("reward_safety", 0) or 0),
-                    }
+            if batch_keys:
+                # 每 session(uid_session)只留最高 index 的最终输出。
+                session_max: dict[str, tuple[int, int]] = {}
+                for pos, key in enumerate(batch_keys):
+                    parts = key.rsplit("_", 2)
+                    if len(parts) == 3:
+                        skey = f"{parts[0]}_{parts[1]}"
+                        idx = int(parts[2]) if parts[2].isdigit() else 0
+                    else:
+                        skey, idx = key, 0
+                    if skey not in session_max or idx > session_max[skey][0]:
+                        session_max[skey] = (idx, pos)
+                final_keys = [batch_keys[pos] for _, (_, pos) in session_max.items()]
+
+                data = tq.kv_batch_get(
+                    keys=final_keys,
+                    partition_id=batch.partition_id,
+                    select_fields=["rm_scores", "extra_info", "extra_fields"],
                 )
+
+                def _col(name):
+                    v = data.get(name) if hasattr(data, "get") else None
+                    if v is None:
+                        return [None] * len(final_keys)
+                    return v.tolist() if hasattr(v, "tolist") else list(v)
+
+                rm_col = _col("rm_scores")
+                ei_col = _col("extra_info")
+                ef_col = _col("extra_fields")
+
+                for j in range(len(final_keys)):
+                    ei = ei_col[j] if isinstance(ei_col[j], dict) else {}
+                    ef = ef_col[j] if isinstance(ef_col[j], dict) else {}
+                    rei = ef.get("reward_extra_info", {}) if isinstance(ef, dict) else {}
+                    if not isinstance(rei, dict):
+                        rei = {}
+                    # reward 标量：rm_scores 张量 sum（末 token 存分，其余 0）。
+                    rm = rm_col[j]
+                    try:
+                        import torch as _torch
+
+                        if isinstance(rm, _torch.Tensor):
+                            reward = float(rm.float().sum().item())
+                        elif isinstance(rm, (list, tuple)):
+                            reward = float(sum(rm))
+                        else:
+                            reward = float(rm or 0)
+                    except (TypeError, ValueError, RuntimeError):
+                        reward = float(rei.get("score", 0) or 0)
+                    results.append({
+                        "task_id": ei.get("record_id") or ei.get("task_id") or "",
+                        "bucket": ei.get("bucket") or ei.get("category") or "",
+                        "run_idx": ei.get("run_idx", -1),
+                        "reward": reward,
+                        "task_done": float(rei.get("task_done", 0) or 0),
+                        "correctness": float(rei.get("correctness", 0) or 0),
+                        "trajectory": float(rei.get("trajectory", 0) or 0),
+                        "safety": float(rei.get("safety", 0) or 0),
+                    })
+                tq.kv_clear(keys=batch_keys, partition_id=batch.partition_id)
+
+            print(f"[cl-eval][diag] 提取 {len(results)} 条结果", flush=True)
             return results
 
     return CLTaskRunnerEval
