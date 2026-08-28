@@ -171,3 +171,21 @@ F9 第一轮只修了"有显式 ws 路径"的 67 个（train_cl 内）。但全�
 14. **数据源要找对**：用户说"四万多数据源在 datasources 下"，我反复找错（taskspecs_labeled.jsonl 4941、dirty.bak 9321、new_trajectories_labeled 119763）。最终定位：`new_trajectories_labeled.jsonl` 里非 unk_ 的 47835 个就是"四万多可溯源"，但 research 桶可溯源仅 28。**别再乱猜，直接问用户具体文件名**。
 15. **妥协要明确记录**：research d4-6 干净池=0、可溯源 id 不够——这些是硬卡点。用户口径"实验，过拟合无所谓，认了"：接受 research 全 d7、大部分 unk_ id，保"0 缺源、文件能找到"核心目标。
 
+---
+
+## 四、web 工具缺失压低 reward（2026-08-27，评测归因）
+
+**现象**：评测日志里模型大量调 undefined function，`web_search` 97 次、`web` 86 次、`web_fetch` 2 次、`x_search`/`google_search` 8 次。检索类任务（research/qa 桶尤甚）拿不到网页内容 → 做不完 → task_done/correctness 掉 → reward 被系统性压低。**这是继 F4–F9 数据/文件坑之后，又一条"环境能力缺失压 reward"的归因**（不是模型不会，是工具根本不可用）。
+
+**根因**：hermes 的 `web` toolset 原生就该暴露 `web_search` / `web_extract`，但需要一个 web search **provider backend** 才真正注册可用。本项目原来只把 serper/jina 当 `/opt/tools` 裸脚本（靠 terminal 调），`web.search_backend` 为空、无 provider → 这俩函数 undefined → 模型一调就失败。
+
+**修复（需重建镜像才生效）**：`docker/sandbox/hermes_plugins/web/serper/` 写一个 `SerperWebProvider`（search 走 google.serper.dev、extract 走 r.jina.ai），Dockerfile COPY 进 `/home/user/.hermes/plugins/`，`hermes.config.yaml` 启用 `plugins.enabled=[web-serper]` + `web.search_backend/extract_backend=serper`；并把 `web_fetch` 注册成 `web_extract` 的别名（模型习惯叫 web_fetch）。
+
+**⚠️ 未决隐患（check_fn gate）**：hermes 内置 `web_search`/`web_extract` 的 `check_fn=check_web_api_key`，而后者**硬编码只认 exa/tavily/firecrawl/... 8 个 backend、不认 serper、无 registry fallback**（`tools/web_tools.py:852`）→ 返回 False → `registry.py:417` 据此把工具**从模型可见列表剔除**（`continue`）。所以光注册 provider 可能不够：dispatch 时能跑（explicit config wins），但工具对模型不可见。**待办**：用 `register_tool(override=True)` 重注册这俩工具 + 换成认 serper 的自定义 check_fn。或先构建后实测 `hermes tools` 可见性再定。
+
+**判 undefined 三分类的方法（写给未来的自己）**：
+- **真能力缺口**（要修）：hermes 有这功能但没接上 backend → web_search/web_extract。
+- **命名错**（模型能力问题，训练收敛，不用改环境）：hermes 有正确名，模型叫错——`read_file`✓/`ls`✗、`python`✗→`terminal`/`execute_code`、`skill_list`✗→`skills_list`。判定靠对照 `registry.register(name=...)` 的官方名清单。
+- **纯幻觉**（模型编的，hermes 根本没有）：`feishu_doc`/`calendar`/`kanban`/`rss`/`molecular_finder`/`work_order_list` 等——无视。
+- **排除"全局 gate"的证据法**：若某真实工具（如 read_file 16 次 undefined）被怀疑是 check_fn 门禁挂了，先看它 undefined 是否**均匀分布在所有 session**（全局 gate）还是**集中在少数 GatewayActor pid**（模型幻觉）。read_file/search_files 集中在 3 个 pid + 日志无 "Tool xxx unavailable (check failed)" → 判定是幻觉，file toolset 本身是通的。别看到真实工具名 undefined 就断定环境挂了。
+

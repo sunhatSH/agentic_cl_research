@@ -4,10 +4,18 @@
 hermes web provider，让模型能直接 call ``web_search`` / ``web_extract``（原来这两个
 函数因为没配 backend provider 而 undefined，模型只能靠 terminal 调 /opt/tools 裸脚本）。
 
-另注册 ``web_fetch`` 作为 ``web_extract`` 的**别名**（评测日志里模型按通用习惯调过
-``web_fetch``，但 hermes 抓取工具官方名叫 ``web_extract`` → undefined）。别名 handler
-直接转调 hermes 自己的 ``web_extract_tool``（同样经 extract_backend=serper 走 jina），
-schema 与 web_extract 一致，模型两种叫法都命中。
+register() 做三件事：
+  1. 注册 SerperWebProvider（search→serper、extract→jina），供 web_search/web_extract
+     dispatch 时按 web.search_backend=serper 路由到它。
+  2. ★ override=True 重注册 web_search / web_extract，把 check_fn 换成认 serper 的自定义
+     检查。**必须 override**：hermes 内置 check_web_api_key（tools/web_tools.py:852）硬编码
+     只认 exa/tavily/firecrawl/... 8 个 backend、不认 serper、无 registry fallback → 返回
+     False → registry.py:417 据此把 web_search/web_extract 从模型可见工具列表剔除。即
+     provider 注册了、dispatch 能跑（explicit config wins），但工具对模型【不可见】→ 仍
+     undefined。override 换 check_fn 后工具才对模型可见。handler/schema/is_async 逐字照抄
+     内置注册（web_search sync、web_extract async）。
+  3. 注册 web_fetch 作为 web_extract 的别名（模型习惯叫 web_fetch，hermes 官方名是
+     web_extract → 别名让两种叫法都命中）。
 
 启用：configs/exps/hermes.config.yaml
     plugins:
@@ -22,6 +30,8 @@ Env（沙箱镜像 runtime.env 注入 → HermesHarness 写进 ~/.hermes/.env）
 """
 
 from __future__ import annotations
+
+import os
 
 from plugins.web.serper.provider import SerperWebProvider
 
@@ -54,12 +64,66 @@ _WEB_FETCH_SCHEMA = {
 }
 
 
+def _serper_web_available() -> bool:
+    """web 工具可见性门槛（替换内置 check_web_api_key）：serper/jina 任一 key 存在即可用。
+
+    与 SerperWebProvider.is_available() 同口径。廉价、不发网络请求（tool 注册时 +
+    每次 hermes tools 都会调）。
+    """
+    return bool(
+        os.environ.get("SERPER_API_KEY", "").strip()
+        or os.environ.get("JINA_API_KEY", "").strip()
+    )
+
+
 def register(ctx) -> None:
-    """Register the Serper+Jina provider + web_fetch alias with the plugin context."""
+    """Register provider + override web_search/web_extract (serper check_fn) + web_fetch 别名。"""
     ctx.register_web_search_provider(SerperWebProvider())
 
-    # web_fetch 别名 → 转调 hermes 自带的 web_extract_tool（经 extract_backend=serper 走 jina）。
-    # override=False：web_fetch 是新名字，不与内置工具冲突。失败不阻断插件其余注册。
+    # ── override web_search / web_extract，绕过不认 serper 的内置 check_web_api_key ──
+    try:
+        from tools.web_tools import (
+            WEB_EXTRACT_SCHEMA,
+            WEB_SEARCH_SCHEMA,
+            web_extract_tool,
+            web_search_tool,
+        )
+
+        # web_search：sync，handler 逐字照抄内置（tools/web_tools.py 注册处）。
+        ctx.register_tool(
+            name="web_search",
+            toolset="web",
+            schema=WEB_SEARCH_SCHEMA,
+            handler=lambda args, **kw: web_search_tool(
+                args.get("query", ""), limit=args.get("limit", 5)
+            ),
+            check_fn=_serper_web_available,   # ← 换成认 serper 的检查
+            emoji="🔍",
+            override=True,
+        )
+        # web_extract：async，handler + is_async 照抄内置。
+        ctx.register_tool(
+            name="web_extract",
+            toolset="web",
+            schema=WEB_EXTRACT_SCHEMA,
+            handler=lambda args, **kw: web_extract_tool(
+                args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+                "markdown",
+                char_limit=args.get("char_limit"),
+            ),
+            check_fn=_serper_web_available,
+            is_async=True,
+            emoji="📄",
+            override=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — override 失败不该拖垮 provider 注册
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "web_search/web_extract override 失败（工具可能仍被 check_web_api_key gate）: %s", exc
+        )
+
+    # ── web_fetch 别名 → 转调 web_extract_tool（经 extract_backend=serper 走 jina）──
     try:
         from tools.web_tools import web_extract_tool
 
@@ -73,6 +137,7 @@ def register(ctx) -> None:
             toolset="web",
             schema=_WEB_FETCH_SCHEMA,
             handler=_web_fetch_handler,
+            check_fn=_serper_web_available,   # 与 web_extract 同口径，保证可见
             is_async=True,       # web_extract_tool 是 async，与 web_extract 注册一致
             emoji="📄",
             description="Fetch web page content (alias of web_extract).",
