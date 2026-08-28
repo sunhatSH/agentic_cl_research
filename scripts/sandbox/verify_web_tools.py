@@ -76,39 +76,71 @@ def main():
         b64 = base64.b64encode(cfg.encode()).decode()
         run(f"mkdir -p /home/user/.hermes && echo {b64} | base64 -d > /home/user/.hermes/config.yaml")
 
-        print("\n=== 4. ★ hermes 真的加载了 web-serper 插件吗（决定性检查）===", flush=True)
-        pl = run("hermes plugins list 2>&1")
-        loaded = "web-serper" in pl
-        # 打印含 serper 的行（或提示没有）
-        serper_lines = [ln for ln in pl.splitlines() if "serper" in ln.lower()]
-        print("\n".join(serper_lines) if serper_lines else "(hermes plugins list 里无 web-serper)", flush=True)
-        print(f"→ hermes 加载 web-serper: {'✅' if loaded else '❌ 未加载(import 失败/manifest 无效)'}", flush=True)
+        # ★ 决定性检查：直接 in-process 问 hermes 的 PluginManager + ToolRegistry。
+        # ⚠️ 不能用 `hermes plugins list`——它只渲染 standalone 插件，所有 kind:backend 的
+        #    web provider（bundled exa/tavily/... 和我们的 serper）都【不在该列表里】却已加载。
+        #    2026-08-28 踩坑：曾据此误报 ❌"未加载"，实则插件正常工作。
+        # 判定三件事（全 True 才算生效）：
+        #   a. PluginManager 里 web/serper 已 load、enabled、无 error
+        #   b. serper 在 agent.web_search_registry._providers（provider 真注册进 registry）
+        #   c. web_search/web_extract/web_fetch 的 check_fn 在有 SERPER_API_KEY 时返回 True
+        #      （= 对模型可见；HermesHarness 评测/训练时正是注入 SERPER_API_KEY 到 .hermes/.env）
+        probe = (
+            "import os\n"
+            "from hermes_cli.plugins import get_plugin_manager\n"
+            "pm=get_plugin_manager(); pm.discover_and_load(force=True)\n"
+            "lp=pm._plugins.get('web/serper')\n"
+            "loaded = lp is not None and getattr(lp,'enabled',False) and not getattr(lp,'error',None)\n"
+            "import agent.web_search_registry as wsr\n"
+            "in_reg = 'serper' in wsr._providers\n"
+            "from tools.registry import ToolRegistry\n"
+            "import tools.registry as R\n"
+            "reg=None\n"
+            "for a in dir(R):\n"
+            "    o=getattr(R,a)\n"
+            "    if isinstance(o,ToolRegistry): reg=o; break\n"
+            "vis={}\n"
+            "for w in ('web_search','web_extract','web_fetch'):\n"
+            "    e=reg.get_entry(w) if reg else None\n"
+            "    cf=getattr(e,'check_fn',None) if e else None\n"
+            "    vis[w]=(e is not None) and (True if cf is None else bool(cf()))\n"
+            "print('LOADED=',bool(loaded));print('INREG=',bool(in_reg))\n"
+            "for w,v in vis.items(): print(f'VIS_{w}=',bool(v))\n"
+        )
+        pb64 = base64.b64encode(probe.encode()).decode()
+        print("\n=== 4. ★ 决定性检查：PluginManager + ToolRegistry in-process ===", flush=True)
+        # 带 SERPER/JINA key 跑（模拟 HermesHarness 注入），check_fn 才会 True
+        pout = run(f"echo {pb64} | base64 -d > /tmp/_verify_web.py && "
+                   f"SERPER_API_KEY=verify-probe JINA_API_KEY=verify-probe "
+                   f"python3 /tmp/_verify_web.py 2>&1")
+        print(pout.strip(), flush=True)
+        loaded = "LOADED= True" in pout
+        in_reg = "INREG= True" in pout
+        vis_all = all(f"VIS_{w}= True" in pout
+                      for w in ("web_search", "web_extract", "web_fetch"))
+        web_ok = in_reg and vis_all
+        print(f"→ web/serper 加载: {'✅' if loaded else '❌'} | "
+              f"serper 进 registry: {'✅' if in_reg else '❌'} | "
+              f"三工具对模型可见: {'✅' if vis_all else '❌'}", flush=True)
 
-        print("\n=== 5. hermes tools list 里 web toolset 是否 enabled ===", flush=True)
-        tl = run("hermes tools list 2>&1")
-        web_tool = [ln for ln in tl.splitlines() if "web" in ln.lower() and ("enabled" in ln.lower() or "🔍" in ln)]
-        web_ok = bool(web_tool)
-        print("\n".join(web_tool) if web_tool else "(web toolset 未出现在 tools list)", flush=True)
-        print(f"→ web toolset: {'✅ enabled' if web_ok else '❌ 未启用'}", flush=True)
-
-        print("\n=== 6. serper/jina key 是否注入沙箱（评测/训练由 HermesHarness.env 注入 .hermes/.env）===", flush=True)
+        print("\n=== 5. serper/jina key 是否注入沙箱（评测/训练由 HermesHarness.env 注入 .hermes/.env）===", flush=True)
         out_key = run("env | grep -oE '^(SERPER_API_KEY|JINA_API_KEY)=' | sort -u")
         print(out_key.strip() or "(此裸实例未注入——正常，训练/评测时 HermesHarness 注入)", flush=True)
 
         all_ok = has_plugin and has_pkg and writable and loaded and web_ok
         print("\n=== 结论 ===", flush=True)
         if all_ok:
-            print("✅ 全部通过：插件文件齐 + web/__init__.py 在 + .hermes 可写 + hermes 加载 web-serper "
-                  "+ web toolset enabled。web_search/web_extract/web_fetch 对模型可用。", flush=True)
+            print("✅ 全部通过：插件文件齐 + web/__init__.py 在 + .hermes 可写 + web/serper 加载 "
+                  "+ serper 进 provider registry + web_search/web_extract/web_fetch 对模型可见。", flush=True)
         else:
             fails = []
             if not has_plugin: fails.append("插件文件缺")
             if not has_pkg: fails.append("web/__init__.py 缺")
             if not writable: fails.append(".hermes 只读")
-            if not loaded: fails.append("hermes 未加载插件")
-            if not web_ok: fails.append("web toolset 未启用")
+            if not loaded: fails.append("web/serper 未加载")
+            if not web_ok: fails.append("工具对模型不可见/未进 registry")
             print(f"❌ 未通过：{', '.join(fails)}。", flush=True)
-            print("   处理：确认 git pull 最新 → BUILD_NO_CACHE=1 重建 → push → "
+            print("   处理：确认 git pull 最新 → 重建 → push → "
                   "UpdateSandboxTool 刷新 digest（见 doc/ops/sandbox/Sandbox_冒烟指南.md §7）。", flush=True)
         return 0 if all_ok else 1
     finally:
