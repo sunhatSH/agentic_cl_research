@@ -979,6 +979,8 @@ def _make_cl_task_runner_eval():
             from verl.utils import tensordict_utils as tu
             from verl.utils.tensordict_utils import list_of_dict_to_tensordict
 
+            import uuid as _uuid
+
             rows = []
             for task in eval_tasks:
                 p = task.get("prompt") or task.get("messages")
@@ -988,11 +990,16 @@ def _make_cl_task_runner_eval():
                 for i in range(num_runs):
                     # 评测行必须补齐训练行同款字段，否则 omni reward manager 读
                     # non_tensor_batch["reward_model"] 会 KeyError（session 全 abort）；
-                    # extra_info.bucket/record_id 供 extract 归桶 + Pass^N 分组；uid 唯一化
-                    # 避免 3 次 run 撞 KV key。
+                    # extra_info.bucket/record_id 供 extract 归桶 + Pass^N 分组。
+                    # ★ uid 必须【无下划线】：verl ReplayBuffer.sample 用 key.split("_")[0]
+                    #   从轨迹 key 还原 prompt uid（replay_buffer.py:295），硬依赖 uid 无 `_`
+                    #   （官方 uid=uuid4，只有连字符）。曾用 f"{tid}_run{i}"（tid 如
+                    #   C01zh_mortgage_prepay 含多个 `_`）→ split("_")[0] 只取到 "C01zh"、
+                    #   与 selected 里的完整 uid 匹配不上 → 返回 batch keys 恒空 → 585 成功却 0
+                    #   结果（2026-08-28 第五层真根因，E23）。故改 uuid4；tid/run 走 extra_info。
                     rows.append({
                         "raw_prompt": raw,
-                        "uid": f"{tid}_run{i}",
+                        "uid": _uuid.uuid4().hex,
                         "data_source": "claw_eval",
                         "reward_model": {
                             "ground_truth": "",
@@ -1002,6 +1009,7 @@ def _make_cl_task_runner_eval():
                         "extra_info": {
                             "record_id": tid,
                             "bucket": bucket,
+                            "run_idx": i,
                         },
                     })
 
