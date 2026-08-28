@@ -123,6 +123,7 @@ source scripts/env/load_tencent_env.sh && export E2B_VALIDATE_API_KEY=false
 | E2B API 返回 2C/1G | 假值，用 envd `/metrics` 拿真实规格（见概念与术语 §G） |
 | **改了镜像但改动不生效**（如 `web_search` 一直 undefined，但 registry v2 是新的）| Tool 锁了旧 `ImageDigest`；同 tag 覆盖构建后必须 `UpdateSandboxTool` 刷新 digest + 重启评测/训练（见 §7 ★）。用 `scripts/sandbox/verify_web_tools.py` 起新实例确认插件在不在 |
 | `409 image is still preparing` | update digest 后 AGS 后台预拉新镜像（2GB 几分钟），正常，重试即可 |
+| **`Permission denied: /home/user/.hermes/cron`**（每 session 崩） | `COPY ... /home/user/.hermes/plugins/` 让 Docker 以 root 建了 `.hermes`，hermes 以 user(uid1000) 跑写不了 → Dockerfile 该 COPY 后必须 `RUN chown -R 1000:1000 /home/user/.hermes`（2026-08-28 回归，已修）|
 
 ## 9. 相关文件
 

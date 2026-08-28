@@ -98,7 +98,12 @@ RUN chmod +x /opt/tools/*.py
 #     铺到 ~/.hermes/plugins/ 后由 configs/exps/hermes.config.yaml 的
 #     plugins.enabled=[web-serper] + web.search_backend/extract_backend=serper 启用。
 #     ★ HermesHarness.setup() 只 mkdir + 写 config.yaml/.env，不清空 .hermes，故插件保留。
+#     ★★ COPY 会以 root 创建 /home/user/.hermes（Docker 建中间目录默认 root:root），但 hermes
+#        以 user(uid1000) 运行，启动要写 ~/.hermes/cron 等 → Permission denied 每 session 崩
+#        (2026-08-28 回归)。旧镜像 .hermes 是运行时 HermesHarness 以 user 身份 mkdir 建的(user
+#        拥有)。故 COPY 后必须把整个 .hermes chown 回 user，恢复 user 所有权。
 COPY hermes_plugins/ /home/user/.hermes/plugins/
+RUN chown -R 1000:1000 /home/user/.hermes
 
 # 6. (OPTIONAL) Browser tool for ClawEval web tasks. The text-only 195-task
 #    subset does NOT need this; it is heavy (~Chromium). Uncomment if needed.
