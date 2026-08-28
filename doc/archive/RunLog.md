@@ -2525,3 +2525,20 @@ office 严格检查(路径+文件+GT)后 d4-7 可用 17805(充足);coding 剔 SW
 - office:严格全过 17805(d4-7),取 3200 就绪。
 - coding:池 ~3180(D2827+LH241+SWE 已跑部分),SWE 全量体检跑完后 ~3586,够 3200。
 - **⏳ 待 SWE 体检(probe_swe_completability)跑完 → `build_3200x2.py --apply` 出终版 3200×2。**
+
+### 2026-08-27 终版落地 + 端到端验证(6400 行)
+`build_3200x2.py --apply` 落地 train_cl.parquet + jsonl(6400 行)。SWE 体检跑到 1542/2931(停,
+coding 池已够),可完成 SWE 251→入选 196。构成:coding 3200(D2827过检查中选 + LH + 可完成SWE)
+d4-6=2163/d7=1037(68/32);office 3200 同比例;每 step d4-6 占比 0.66-0.69(全桶0.68)。
+
+**验证全过**:
+- 结构:6400 行,batch32 对齐,record_id 全 unique,单 user message,coding/office 各 3200。
+- 文件系统+GT:taskspecs 目录/answer_key 缺失=0,GT 空=0。178 个"缺文件"flag 全是误报
+  (177 LH 源码内嵌 query 自包含 + 1 SWE 引用 cover.png 图片资产,已过完整性体检)。
+- 文件注入:D 类 5230/6027 有 files/ 可注入(其余产出型无需),LH 0(自包含正确),SWE 196/196。
+- **真实沙箱端到端**:D8_k983038 注入 csv 到 /home/user/workspace,agent `find` 见到,
+  query 引用文件名 ↔ 注入文件 ↔ 沙箱可读 三者对齐。✅
+- GT 加载:D=checks / LH=longhorizon(checks+rubric) / SWE=swe(rubric),全 6400 行 0 缺 GT。
+- parquet↔jsonl 行数一致(6400=6400)。
+
+旧集备份 train_cl.parquet.bak_0827。**数据集可直接用于训练(batch32,cl2r_base 继承 base)。**
