@@ -107,7 +107,7 @@ reward:
 
 # ---- 数据：能力桶打标产物(scripts/labeled_to_parquet.py)。TRAIN_FILES/VAL_FILES 可覆盖 ----
 data:
-  train_files: ${oc.env:TRAIN_FILES,/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet}
+  train_files: ${oc.env:TRAIN_FILES,/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_cl.parquet}
   val_files: ${oc.env:VAL_FILES,/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet}
   train_batch_size: ${oc.env:TRAIN_BATCH_SIZE,256}   # base.yaml=256; env 可覆盖
   gen_batch_size: ${oc.env:TRAIN_BATCH_SIZE,256}

@@ -95,7 +95,7 @@ reward:
 # 单轮化（2026-07-23）：训练数据 = queries_train.jsonl 转的 parquet（scripts/queries_to_parquet.py）。
 # 每个 query 一条轨迹（单轮），全量不截断（测不均分布防遗忘）。shuffle=false 按桶序训。
 data:
-  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_aligned.parquet
+  train_files: /mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_cl.parquet
   val_files: null
   train_batch_size: 32               # 32 query × rollout.n8 = 256 轨迹/step（GRPO 统计量下限）
   gen_batch_size: 32

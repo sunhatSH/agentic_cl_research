@@ -71,7 +71,7 @@ actor_rollout_ref:
 # Data
 data:
   # 打标后的训练数据(scripts/labeled_to_parquet.py 产物)。可用 TRAIN_FILES/VAL_FILES 覆盖。
-  train_files: ${oc.env:TRAIN_FILES,/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train.parquet}
+  train_files: ${oc.env:TRAIN_FILES,/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/train_cl.parquet}
   val_files: ${oc.env:VAL_FILES,/mnt/afs_toolcall/sunhao4/workspace/agentic_cl_research/datasets/val.parquet}
   train_batch_size: 32             # 32 query/step ×n8=256 轨迹;3200/桶÷32=100 步/桶。单一信源,实验 config 不再各自覆盖(全改一处)
   gen_batch_size: 32               # rollout 生成 batch(对齐 train)
