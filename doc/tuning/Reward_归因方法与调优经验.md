@@ -191,3 +191,28 @@ F9 第一轮只修了"有显式 ws 路径"的 67 个（train_cl 内）。但全�
 
 **训练也一样缺 web（2026-08-28 核对）**：训练与评测**共用同一沙箱镜像 + `agent_loop_config.yaml` + `hermes.config.yaml`**，所以 web 工具缺失训练 rollout 同样撞。实测训练日志 `cl2r_baseline`/`cl2r_kl` 的 undefined：`web` 2228 / `web_search` 2140 / `web_fetch` 132 / `x_search` 117 / `google_search` 25 / `websearch` 17 / `browser` 153（browser toolset 未启用，属另一类）。**除 web 外无其它真能力缺口**——`read_file`/`write_file`/`search_files`（55/52/142 次）虽是真实工具名，但 undefined 分散在 6 个 GatewayActor pid、每个仅 1-4 次，且训练 reward 正常出（1420 次）、无 "check failed" gate 日志 → 判定为**模型幻觉**（base 没训过这套工具，乱猜名字），file toolset 本身可用。其余 `python`/`run`/`ls`/`delete_file`/`bash`/`echo`/`think` 等均为命名错或幻觉（hermes 官方是 `terminal`/`execute_code`/`read_file`/`write_file`/`patch`）。**结论：训练唯一的环境级工具缺口就是 web（search+fetch），与评测同源同修——serper provider 镜像修好后两边同时受益**；research/qa 桶 reward 被 web 缺失系统性压低，修后应回升。训练不出现评测的"0 条结果/sample 死等/session 墙钟"——那些是 eval `_run_eval` 专属路径，训练走 train 分区正常出 reward。
 
+
+---
+
+## 五、GT 分派不全 + LH 悬空 executable 引用（2026-08-27，构建 3200×2 后全量核验暴露）
+
+三桶数据里 coding 桶有 D类/SWE/LH 三种 answer_key 形态。核验发现两处会**直接影响 reward 的 correctness 判断**：
+
+### 5.1 GT 静默丢失 1089/6400 行 → correctness 无参照退化为开放判分
+**为什么影响 reward**：`_load_ground_truth` 是 judge 判 correctness 的**唯一 GT 入口**。原来只有 SWE(rubric)/D(checks) 两分支，导致：
+- **177 LH 全灭**（type=longhorizon 落 D 分支、checks 空 → 返回空）；
+- **797 D类产出型**（`_s` from-scratch，GT 在 rubric 不在 checks）→ 空；
+- **checks 键名碎片化**（name/value、description/expected、纯字符串、`[q,v]` 二元组…）多种没被认 → 空。
+
+空 GT 时 judge 收不到"已知正确答案/验收标准"，correctness 只能**凭模型主观开放判**——这正是我们一直要避免的 reward hacking 风险面：无参照时 judge 容易被"看起来完成了"的漂亮轨迹骗高分。**1089 行（17%）的 correctness 信号原本是虚的**，修复后全部锚定到真实 GT（checks 命中率 / rubric 满足率）。
+
+### 5.2 LH 悬空 executable 引用 → 误导 agent + 干扰 task_done 判断
+**为什么影响 reward**：177 个 LH 的 query 都有 longhorizonCoding 格式标配一句"运行预编译 `test*_executable` 观察行为"+"**不要用 python，直接跑 executable**"。但该 executable 不存在（Python 源码已内嵌 query、files/ 也没有）。影响两头：
+- **agent 侧**：被指令带去跑不存在的文件 → 报错/绕路 → 轨迹变脏、可能误判任务做不下去；
+- **judge 侧**：judge 看到 query 要求"运行 executable"却没运行 → 可能据此压 task_done（"没按要求执行"），而实际上 agent 从内嵌源码完成迁移才是对的。
+
+这是"query 文案与真实环境不一致"压 reward 的又一例（同 F4 Windows 路径、F9 缺文件一脉）——**环境/指令层面的噪声，不是模型能力问题**。修复后 query 指向内嵌源码，agent 和 judge 的依据一致，task_done/correctness 不再被悬空引用干扰。
+
+**核验方法（写给未来的自己）**：无 files/ 的任务不能默认"自包含就没事"——用 AI（luna）逐条判 query 是否真不依赖外部文件。974 个无 files/ 里 AI 精准揪出 5 个 LH 有悬空 executable 引用（其余 LH 因源码内嵌更明显被判自包含,但其实全 177 个都有这句,AI 只标了最显眼的）→ 反查确认是格式标配 → 全量 177 一起修，而非只补 AI 标出的 5 个。**AI 核验抓典型，人再顺藤查是否全体同病。**
+
+技术修复动作见 `doc/debug/Bug_Fix_精简总表.md` F14 + F15。

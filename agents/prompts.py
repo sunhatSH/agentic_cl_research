@@ -586,10 +586,14 @@ def _truncate_middle(text: str, limit: int) -> str:
 def _load_ground_truth(record_id: str) -> str:
     """Load answer_key ground truth and format for the judge.
 
-    支持两种 answer_key 形式(按 record_id / type 分派):
-      1. SWE 任务(record_id 以 SWE_ 开头,或 answer_key.type == "swe"):
+    支持三种 answer_key 形式(按 record_id / type 分派):
+      1. longhorizon 任务(record_id 以 LH_ 开头,或 type == "longhorizon"):
+         rubric(迁移规格:ESM/edition/参数对齐) + checks(测试用例:输入→期望输出)组合,
+         correctness = 规格满足度 + 用例通过率。(131/177 的 LH 只有 rubric、checks 空,
+         必须单独分派,否则落 D 类 checks 分支被判空 GT。)
+      2. SWE 任务(record_id 以 SWE_ 开头,或 answer_key.type == "swe"):
          rubric 形式 → 验收标准清单(行为标准,判"满足多少条")。
-      2. D 类型任务:
+      3. D 类型任务:
          checks 形式 → question/answer 清单(判"命中多少个 check")。
          checks 兼容两种数据结构:
            - list: [{"question": q, "answer": a}, ...]
@@ -606,6 +610,48 @@ def _load_ground_truth(record_id: str) -> str:
         if not ak_path.is_file():
             return ""
         ak = json.loads(ak_path.read_text(encoding="utf-8", errors="replace"))
+
+        # ── SWE 任务: rubric 形式(行为验收标准) ──
+        # ── longhorizon 任务(C++→Rust / Python→JS 迁移): rubric(迁移规格) + checks(测试用例) ──
+        #    LH answer_key 同时带 rubric(行为规格:ESM/edition/参数对齐) 和 checks(输入→期望输出)。
+        #    correctness = 迁移规格满足度 + 测试用例通过率的综合。不能走下面 D 类 checks 分支
+        #    (131/177 的 LH checks 为空,只有 rubric),否则 GT 丢失。
+        if ak.get("type") == "longhorizon" or record_id.startswith("LH_"):
+            rubric = ak.get("rubric") or []
+            checks = ak.get("checks") or []
+            if not rubric and not checks:
+                return ""
+            lines = ["\n## Ground-truth for the CORRECTNESS dimension (code migration task)"]
+            if rubric:
+                Nr = len(rubric)
+                lines += [
+                    f"### A. {Nr} migration spec requirements (required behaviors, NOT opinions)",
+                    "The migrated code must satisfy these language/interface/format requirements:",
+                ]
+                for i, c in enumerate(rubric, 1):
+                    lines.append(f"{i}. {str(c).strip()}")
+            if checks:
+                Nc = len(checks)
+                lines += [
+                    "",
+                    f"### B. {Nc} test cases (input args → expected output — verifiable I/O)",
+                    "The migrated program must reproduce these exact outputs:",
+                ]
+                for i, c in enumerate(checks, 1):
+                    if isinstance(c, dict):
+                        q = str(c.get("question", "")).strip()
+                        a = str(c.get("answer", "")).strip()
+                        lines.append(f"{i}. {q[:150]}  →  {a[:200]}")
+            lines += [
+                "",
+                "### correctness score",
+                "Grade CORRECTNESS by BOTH: how many spec requirements (A) the migrated",
+                "code satisfies AND how many test cases (B) it reproduces correctly.",
+                "Weight them together (roughly half each when both present; use whichever",
+                "exists when only one is given). task_done/trajectory/safety scored",
+                "independently — this key only informs correctness.",
+            ]
+            return "\n".join(lines)
 
         # ── SWE 任务: rubric 形式(行为验收标准) ──
         if ak.get("type") == "swe" or record_id.startswith("SWE_"):
@@ -638,20 +684,55 @@ def _load_ground_truth(record_id: str) -> str:
 
         # ── D 类型任务: checks 形式(question/answer) ──
         checks = ak.get("checks") or []
-        if not checks:
-            return ""
-        # 兼容 list 和 dict 两种 checks 结构
+        # 兼容 list 和 dict 两种 checks 结构 + 两种键名(question/answer 或 name/value)
         pairs: list[tuple[str, str]] = []
         if isinstance(checks, dict):
-            pairs = [(str(q), str(a)) for q, a in checks.items() if str(q) and str(a)]
+            pairs = [(str(q), str(a)) for q, a in checks.items() if str(q) and str(a) != ""]
         elif isinstance(checks, list):
             for c in checks:
-                if isinstance(c, dict):
-                    q = str(c.get("question", "")).strip()
-                    a = str(c.get("answer", "")).strip()
-                    if q and a:
-                        pairs.append((q, a))
+                if isinstance(c, str):
+                    # 纯字符串 check(如 "预算总额:3,944,400 元")——本身就是断言
+                    if c.strip():
+                        pairs.append((c.strip()[:200], "(assertion holds)"))
+                elif isinstance(c, (list, tuple)) and len(c) >= 2:
+                    # [question, value] 二元组形式
+                    pairs.append((str(c[0]).strip()[:150], str(c[1]).strip()[:200]))
+                elif isinstance(c, dict):
+                    # 兼容多种键名: question/answer, name/value, description/expected(_value),
+                    # check_name, ok/computed 等
+                    q = str(c.get("question", c.get("description",
+                            c.get("name", c.get("check_name", ""))))).strip()
+                    a = c.get("answer", c.get("value", c.get("expected_value",
+                            c.get("expected", c.get("computed", c.get("ok", None))))))
+                    if q and a is not None:
+                        pairs.append((q, str(a).strip()))
+                    elif not q:
+                        # 无标准键(如 {InvoiceID:..,ExceptionType:..}):整条序列化为一个 check
+                        drop = {"check_id", "id"}
+                        kv = ", ".join(f"{k}={v}" for k, v in c.items() if k not in drop)
+                        if kv:
+                            pairs.append(("expected record", kv))
+        # checks 为空 → 回退到 rubric(_s 产出型/build-from-scratch 任务用 rubric 做验收)
         if not pairs:
+            rubric = ak.get("rubric") or []
+            if isinstance(rubric, list) and rubric:
+                N = len(rubric)
+                lines = [
+                    "\n## Ground-truth acceptance criteria (for the CORRECTNESS dimension)",
+                    f"The task has {N} acceptance criteria below (build-from-scratch task,",
+                    "no fixed input files). Each is a required capability/behavior the",
+                    "deliverable must have — NOT an LLM opinion. Grade CORRECTNESS by how",
+                    "many criteria the agent's solution actually satisfies.",
+                    "",
+                    "### correctness score = fraction of criteria satisfied",
+                    f"     0 satisfied → 0.0;  ALL {N} satisfied → 1.0;  interpolate.",
+                    "task_done/trajectory/safety scored independently — this only informs correctness.",
+                    "",
+                    "### Acceptance criteria",
+                ]
+                for i, c in enumerate(rubric, 1):
+                    lines.append(f"{i}. {str(c).strip()}")
+                return "\n".join(lines)
             return ""
         N = len(pairs)
         lines = [
