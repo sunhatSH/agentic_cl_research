@@ -77,12 +77,37 @@ docker login tcr-rl.tencentcloudcr.com -u <Username> -p <Token>
 
 # 2. 填好 image.env 后构建推送
 bash scripts/validate_sandbox_dockerfile.sh
-bash scripts/build_sandbox_image.sh
+bash scripts/build_sandbox_image.sh          # 改了 Dockerfile/插件必加 BUILD_NO_CACHE=1
 bash scripts/push_sandbox_image.sh
 
 # 3. 改 configs/sandbox_tool.json 的 RoleArn + Image 后
 bash scripts/create_sandbox_via_api.sh custom
 ```
+
+**★ 同 tag（如 v2）覆盖构建后，必须刷新 Tool 的 ImageDigest（2026-08-28 踩坑，耗数小时）**：
+Tool 的 `CustomConfiguration.ImageDigest` 在**建 Tool 时把 `:v2` tag 解析成当时的 digest 快照并锁死**。
+之后即使 `push_sandbox_image.sh` 用同一个 `:v2` tag 覆盖了 registry（digest 变了），Tool 仍拉**旧
+digest** → 起的实例是旧镜像 → 新加的插件/改动不生效（现象：评测/训练里 `web_search` 等一直
+undefined，但 registry 的 v2 明明是新的）。**免删更新**（不用清活跃实例）：
+
+```bash
+# a. 查 registry 里 v2 现在的 digest（新的）
+tccli tcr DescribeImages --RegistryId tcr-hxya4oi8 --NamespaceName agentos-cl-namespace \
+  --RepositoryName agentic-cl-sandbox --ImageVersion v2   # 取 ImageInfoList[].Digest
+# b. 查 Tool 当前锁的 digest（对比，若不同就要更新）
+tccli ags DescribeSandboxToolList --region ap-beijing --ToolIds '["<ToolId>"]'  # CustomConfiguration.ImageDigest
+# c. UpdateSandboxTool 把 ImageDigest 换成新的（照抄现有 CustomConfiguration 只改 digest，见下 JSON）
+tccli ags UpdateSandboxTool --region ap-beijing --cli-input-json file:///tmp/update_tool.json
+# d. AGS 后台预拉新镜像（2GB，几分钟），期间起实例报 409 image is still preparing，正常，重试即可
+# e. 验证插件/改动真进镜像（起新实例 ls）：
+source scripts/env/load_tencent_env.sh && export E2B_VALIDATE_API_KEY=false
+.venv/bin/python scripts/sandbox/verify_web_tools.py     # ✅ 三文件齐 = 生效
+```
+
+> ⚠️ **已起的实例不会自动换镜像**：update digest 后，只有【新起】的实例用新镜像。正在跑的
+> 评测/训练要**重启**才生效（12840 个 STOPPED 历史实例无需清，不影响 update）。
+> `DeleteSandboxTool` 会因"instances still active"失败，所以走 **UpdateSandboxTool**（免删）。
+
 
 **Dockerfile 约束**：不能写 `USER`/`WORKDIR`/`ENV`/`ENTRYPOINT`（快照启动会失败），只能 `RUN pip install` + `COPY`。见 `scripts/validate_sandbox_dockerfile.sh`。
 
@@ -96,6 +121,8 @@ bash scripts/create_sandbox_via_api.sh custom
 | `tccli: command not found` | 用 `~/.local/bin/tccli`（已 symlink） |
 | `docker build` 失败 | 本 Pod 无 docker；在有 docker 的机器跑 `build_sandbox_image.sh` |
 | E2B API 返回 2C/1G | 假值，用 envd `/metrics` 拿真实规格（见概念与术语 §G） |
+| **改了镜像但改动不生效**（如 `web_search` 一直 undefined，但 registry v2 是新的）| Tool 锁了旧 `ImageDigest`；同 tag 覆盖构建后必须 `UpdateSandboxTool` 刷新 digest + 重启评测/训练（见 §7 ★）。用 `scripts/sandbox/verify_web_tools.py` 起新实例确认插件在不在 |
+| `409 image is still preparing` | update digest 后 AGS 后台预拉新镜像（2GB 几分钟），正常，重试即可 |
 
 ## 9. 相关文件
 

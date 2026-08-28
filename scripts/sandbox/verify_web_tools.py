@@ -42,10 +42,10 @@ def main():
         return 2
 
     template = os.environ.get("SANDBOX_TEMPLATE", "agentic-cl-sandbox")
-    print(f"起 e2b 沙箱 template={template} (新 v2 镜像)...", flush=True)
+    print(f"起 e2b 沙箱 template={template} (当前 Tool 指向的镜像)...", flush=True)
     from e2b_code_interpreter import Sandbox
 
-    sb = Sandbox(template=template, timeout=300)
+    sb = Sandbox.create(template=template, timeout=300)
     try:
         def run(cmd):
             r = sb.commands.run(cmd, timeout=60)
