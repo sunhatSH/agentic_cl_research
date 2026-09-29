@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agentic Continual Learning</title>
+<meta name="description" content="Continual reinforcement learning over agentic LLMs: replay buffer and policy constraints on top of GRPO to learn new tasks while mitigating catastrophic forgetting.">
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --border:#232a34;
+    --fg:#e6edf3; --muted:#9aa7b4; --accent:#a855f7; --accent2:#14b8a6;
+    --maxw:960px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.65;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+
+  header{padding:72px 0 52px;text-align:center;
+    background:radial-gradient(1200px 400px at 50% -10%,rgba(168,85,247,.18),transparent 70%),
+               radial-gradient(900px 300px at 50% 0,rgba(20,184,166,.10),transparent 60%);
+    border-bottom:1px solid var(--border)}
+  .badge{display:inline-block;font-size:13px;letter-spacing:.5px;color:var(--muted);
+    border:1px solid var(--border);border-radius:999px;padding:5px 14px;margin-bottom:22px;background:var(--card)}
+  h1{font-size:2.3rem;line-height:1.25;margin:.2em 0 .35em;font-weight:800;
+    background:linear-gradient(90deg,#e6edf3,#c4a5ff 55%,#7ee0d3);
+    -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .authors{font-size:1.05rem;margin:6px 0 2px}
+  .affil{color:var(--muted);font-size:.95rem}
+  .cta{margin-top:28px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:11px 20px;border-radius:10px;
+    font-weight:600;font-size:.95rem;border:1px solid var(--border);background:var(--card);color:var(--fg)}
+  .btn:hover{border-color:var(--accent);text-decoration:none;transform:translateY(-1px);transition:.15s}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+
+  section{padding:52px 0;border-bottom:1px solid var(--border)}
+  h2{font-size:1.6rem;font-weight:700;margin:0 0 8px;text-align:center}
+  .sub{color:var(--muted);text-align:center;margin:0 auto 34px;max-width:700px}
+
+  .abstract{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:26px 30px;color:#c9d4e0}
+  .abstract p{margin:0}
+
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}
+  .feat{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:22px}
+  .feat h3{margin:0 0 6px;font-size:1.08rem}
+  .feat .ic{font-size:1.5rem;margin-bottom:6px}
+  .feat p{margin:0;color:var(--muted);font-size:.95rem}
+  .feat.b1 h3{color:#c79bff}.feat.b2 h3{color:#5bd0c2}
+  .feat.b3 h3{color:#7aa2ff}.feat.b4 h3{color:#5ad19a}
+
+  .eq{background:#0a0e14;border:1px solid var(--border);border-radius:12px;padding:18px 22px;
+    text-align:center;color:#c9d4e0;font-size:1.05rem;overflow-x:auto;margin:24px 0 0}
+  .eq .lbl{color:var(--muted);font-size:.85rem;margin-top:8px}
+
+  figure{margin:26px 0 0;text-align:center}
+  figure img{max-width:100%;border:1px solid var(--border);border-radius:12px;background:#fff;padding:10px}
+  figcaption{color:var(--muted);font-size:.9rem;margin-top:10px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:start}
+
+  pre{background:#0a0e14;border:1px solid var(--border);border-radius:12px;padding:18px;overflow:auto;
+    font-size:.86rem;color:#c9d4e0}
+  code{font-family:"SF Mono",Menlo,Consolas,monospace}
+
+  footer{padding:36px 0 60px;text-align:center;color:var(--muted);font-size:.9rem}
+  @media(max-width:720px){h1{font-size:1.7rem}.grid,.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <span class="badge">Continual Reinforcement Learning · Agentic LLMs</span>
+    <h1>Agentic Continual Learning:<br>Learning New Tasks without Forgetting</h1>
+    <div class="authors">Hao Sun (孙豪)</div>
+    <div class="affil">School of Smart Governance, Renmin University of China</div>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/sunhatSH/agentic_cl_research">★ Code (GitHub)</a>
+      <a class="btn" href="https://sunhatsh.github.io/">← Home</a>
+      <a class="btn" href="https://sunhatsh.github.io/self-evolving-agent-rl/">Self-Evolving RL</a>
+    </div>
+  </div>
+</header>
+
+<section id="abstract">
+  <div class="wrap">
+    <h2>Abstract</h2>
+    <p class="sub">Keep learning new tasks while retaining old abilities — replay and policy constraints on top of GRPO.</p>
+    <div class="abstract">
+      <p>When an agentic LLM is trained on a stream of tasks, reinforcement learning on new tasks tends to
+      <b>erode its ability on earlier ones</b> — catastrophic forgetting. This project builds a
+      <b>continual RL system over agentic LLMs</b>: on top of standard GRPO, it adds an <b>experience replay
+      buffer</b> and <b>policy constraints</b> so the model keeps improving on new tasks while mitigating
+      forgetting. The system uses capability-bucketed replay, token-level U-shaped block weighting, and an
+      entropy term to guard against diversity collapse, all injected into <a
+      href="https://github.com/volcengine/verl">verl</a> without forking. Forgetting is measured on a held-out
+      ClawEval suite across a staged Phase 1--4 experiment matrix.</p>
+    </div>
+  </div>
+</section>
+
+<section id="method">
+  <div class="wrap">
+    <h2>Core Mechanisms</h2>
+    <p class="sub">A composite continual-learning objective, built modularly on top of GRPO.</p>
+
+    <div class="eq">
+      L<sub>cl</sub> = &lambda;<sub>1</sub> L<sub>rl</sub> + &lambda;<sub>2</sub> L<sub>kl</sub> + &lambda;<sub>3</sub> L<sub>replay</sub> + &lambda;<sub>4</sub> L<sub>ent</sub>
+      <div class="lbl">Continual-learning loss: RL objective + KL constraint + replay + entropy regularizer</div>
+    </div>
+
+    <div class="grid" style="margin-top:24px">
+      <div class="feat b1">
+        <div class="ic">🗃️</div>
+        <h3>9-Bucket Replay Buffer</h3>
+        <p>Experience is bucketed by <b>capability/domain</b> (not difficulty); eviction stays within a bucket,
+        and priority uses an <b>anti-forgetting signal</b> rather than raw reward — so rare-but-important
+        abilities are not squeezed out.</p>
+      </div>
+      <div class="feat b2">
+        <div class="ic">⚖️</div>
+        <h3>Token-Level U-Shaped Weighting</h3>
+        <p>Replay tokens are weighted by priority &times; a U-shaped block weight (high at the head and tail,
+        low in the middle), clipped and normalized; a continuous hyperparameter degrades gracefully to
+        uniform weighting.</p>
+      </div>
+      <div class="feat b3">
+        <div class="ic">🔗</div>
+        <h3>KL Policy Constraint</h3>
+        <p>A KL term anchors the policy to a reference, limiting how far new-task updates drift and directly
+        curbing the drift that causes forgetting of old-task behavior.</p>
+      </div>
+      <div class="feat b4">
+        <div class="ic">🎲</div>
+        <h3>Entropy Guard</h3>
+        <p>A small entropy regularizer (&lambda;<sub>4</sub>) stays on throughout training to prevent
+        diversity collapse (Echo Trap) during long continual runs.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="engineering">
+  <div class="wrap">
+    <h2>Engineering</h2>
+    <p class="sub">Fully decoupled from the training framework.</p>
+    <div class="abstract">
+      <p>The replay buffer is a pure-Python module fully decoupled from <b>verl</b>; the custom continual-learning
+      loss is injected via <code>actor.set_loss_fn</code> with <b>no fork of the framework</b>. Blocks are split by
+      action boundaries and fall back to fixed-length segmentation when parsing fails. The codebase ships with
+      ~290 CPU unit tests (verl/GPU-gated tests skipped locally).</p>
+    </div>
+  </div>
+</section>
+
+<section id="results">
+  <div class="wrap">
+    <h2>Experiments</h2>
+    <p class="sub">A staged Phase 1--4 matrix isolates KL and replay, then combines them.</p>
+    <div class="two">
+      <figure>
+        <img src="assets/reward.png" alt="Reward analysis">
+        <figcaption>Reward trends across continual-learning configurations.</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/heatmap.png" alt="Reward heatmap">
+        <figcaption>Per-bucket reward over training — visualizing retention across capability buckets.</figcaption>
+      </figure>
+    </div>
+    <pre style="margin-top:26px"><code>Phase 1 (B1)        — pure-RL forgetting baseline
+Phase 2 (K1-K5)     — KL constraint, isolated
+Phase 3 (R0, R3-R6) — replay, isolated
+Phase 4 (C1-C4)     — KL × replay, combined</code></pre>
+  </div>
+</section>
+
+<section id="code">
+  <div class="wrap">
+    <h2>Get Started</h2>
+    <p class="sub">GRPO + replay buffer + policy constraints on verl, no fork.</p>
+    <pre><code># install
+pip install -e ".[dev]"
+
+# CPU unit tests (~290, verl/GPU tests skipped locally)
+pytest
+
+# bucket / buffer tests
+pytest tests/test_bucket.py -v</code></pre>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/sunhatSH/agentic_cl_research">View on GitHub</a>
+      <a class="btn" href="https://sunhatsh.github.io/">Home</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    © 2026 Hao Sun (孙豪) · Renmin University of China ·
+    <a href="https://github.com/sunhatSH/agentic_cl_research">sunhatSH/agentic_cl_research</a>
+  </div>
+</footer>
+
+</body>
+</html>
